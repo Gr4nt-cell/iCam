@@ -14,16 +14,25 @@ import {
   useMicrophonePermission,
 } from 'react-native-vision-camera';
 import {
+  getProCapabilities,
+  ProCameraView,
+  type ProCameraHandle,
+  type ProCapabilities,
+} from './modules/pro-camera';
+import {
   displayZoom,
   formatFilters,
   lensStops,
+  NATIVE_MODES,
   pickStabilization,
   profileDevice,
   type CaptureMode,
+  type Lens,
   type PhotoSettings,
   type VideoSettings,
 } from './src/camera/hardware';
-import { processBurst } from './src/processing/pipeline';
+import { filterByKey, type FilterKey } from './src/processing/filters';
+import { processBurst, processSingle } from './src/processing/pipeline';
 import {
   FocusRing,
   IconButton,
@@ -34,8 +43,10 @@ import {
   Toast,
   ToneSliders,
   ZoomPills,
+  type ShutterKind,
 } from './src/ui/Controls';
 import { Glass } from './src/ui/Glass';
+import { AUTO_MANUAL, LookPanel, ProPanel, type ManualSettings } from './src/ui/ProPanel';
 import { PermissionGate, SettingsSheet, Viewer } from './src/ui/Sheets';
 
 type Flash = 'off' | 'auto' | 'on';
@@ -43,6 +54,11 @@ type Last = { uri?: string; original?: string; isVideo: boolean; info?: string }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
+const NATIVE_ZOOM_STOPS: Lens[] = [
+  { label: '1', zoom: 1 },
+  { label: '2', zoom: 2 },
+  { label: '5', zoom: 5 },
+];
 
 export default function App() {
   return (
@@ -55,6 +71,7 @@ export default function App() {
 function CameraScreen() {
   const insets = useSafeAreaInsets();
   const cam = useRef<Camera>(null);
+  const pro = useRef<ProCameraHandle>(null);
 
   /* ---------- permissions ---------- */
   const camPerm = useCameraPermission();
@@ -78,6 +95,7 @@ function CameraScreen() {
   const [flash, setFlash] = useState<Flash>('off');
   const [timer, setTimer] = useState<0 | 3 | 10>(0);
   const [zoom, setZoom] = useState(1);
+  const [proZoom, setProZoom] = useState(1);
   const [brightness, setBrightness] = useState(0);
   const [shadows, setShadows] = useState(0);
   const [captureEv, setCaptureEv] = useState<number | null>(null);
@@ -89,6 +107,16 @@ function CameraScreen() {
     hdr: true,
     stabilization: 'cinematic',
   });
+  const [mirrorSelfie, setMirrorSelfie] = useState(true);
+  const [filter, setFilter] = useState<FilterKey>('natural');
+  const [smoothing, setSmoothing] = useState(0);
+  const [showLook, setShowLook] = useState(false);
+  const [manual, setManual] = useState<ManualSettings>(AUTO_MANUAL);
+  const [proVideo, setProVideo] = useState(false);
+  const [dualPrimary, setDualPrimary] = useState<'back' | 'front'>('back');
+  const [caps, setCaps] = useState<ProCapabilities | null>(null);
+  const [vcHold, setVcHold] = useState(false);
+
   const [busy, setBusy] = useState(false);
   const [processing, setProcessing] = useState(false);
   const [recording, setRecording] = useState(false);
@@ -107,9 +135,31 @@ function CameraScreen() {
     return () => sub.remove();
   }, []);
 
-  const isVideo = mode === 'video' || mode === 'action';
+  useEffect(() => {
+    if (!camPerm.hasPermission) return;
+    getProCapabilities()
+      .then(setCaps)
+      .catch(() => setCaps(null));
+  }, [camPerm.hasPermission]);
 
-  /* ---------- hardware ---------- */
+  const isNative = NATIVE_MODES.includes(mode);
+  const isVcVideo = mode === 'video' || mode === 'action';
+  const shutterKind: ShutterKind =
+    mode === 'night' ? 'night' : mode === 'photo' ? 'photo' : mode === 'pro' && !proVideo ? 'photo' : 'video';
+  const isPhotoShot = shutterKind !== 'video';
+
+  const visibleModes = useMemo(
+    () =>
+      MODES.filter((m) => {
+        if (m.key === 'slowmo') return !!caps?.slowMotion;
+        if (m.key === 'dual') return !!caps?.concurrent;
+        if (m.key === 'pro') return caps !== null;
+        return true;
+      }),
+    [caps],
+  );
+
+  /* ---------- hardware (VisionCamera) ---------- */
   const back = useCameraDevice('back', {
     physicalDevices: ['ultra-wide-angle-camera', 'wide-angle-camera', 'telephoto-camera'],
   });
@@ -124,24 +174,24 @@ function CameraScreen() {
   const fps = useMemo(() => {
     const max = format?.maxFps ?? 30;
     const min = format?.minFps ?? 1;
-    const want = mode === 'action' ? 60 : isVideo ? video.fps : 30;
+    const want = mode === 'action' ? 60 : isVcVideo ? video.fps : 30;
     return clamp(want, min, max);
-  }, [format, mode, isVideo, video.fps]);
+  }, [format, mode, isVcVideo, video.fps]);
 
-  const stabilization = isVideo
+  const stabilization = isVcVideo
     ? pickStabilization(format, mode === 'action' ? 'cinematic' : video.stabilization)
     : undefined;
-  const videoHdr = isVideo && mode === 'video' && video.hdr && !!format?.supportsVideoHdr;
-  const photoHdr = !isVideo && photo.nativeHdr && !!format?.supportsPhotoHdr;
-  const stops = useMemo(() => lensStops(device), [device]);
+  const videoHdr = mode === 'video' && video.hdr && !!format?.supportsVideoHdr;
+  const photoHdr = !isVcVideo && photo.nativeHdr && !!format?.supportsPhotoHdr;
+  const stops = useMemo(() => (isNative ? NATIVE_ZOOM_STOPS : lensStops(device)), [device, isNative]);
 
   useEffect(() => {
     if (device) setZoom(device.neutralZoom || 1);
   }, [device?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const exposure = device
-    ? clamp(captureEv ?? brightness * 2, device.minExposure, device.maxExposure)
-    : 0;
+  const exposure = device ? clamp(captureEv ?? brightness * 2, device.minExposure, device.maxExposure) : 0;
+  const lookAvailable = isPhotoShot;
+  const previewFilter = lookAvailable ? filterByKey(filter).preview : undefined;
 
   /* ---------- helpers ---------- */
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -162,13 +212,27 @@ function CameraScreen() {
     (m: CaptureMode) => {
       if (recording || m === mode) return;
       Haptics.selectionAsync();
+      const leavingNative = NATIVE_MODES.includes(mode) && !NATIVE_MODES.includes(m);
+      if (leavingNative) {
+        // let CameraX release the sensor before VisionCamera grabs it again
+        setVcHold(true);
+        setTimeout(() => setVcHold(false), 450);
+      }
       setMode(m);
       setShowSliders(false);
+      if (m === 'video' || m === 'slowmo' || m === 'dual' || m === 'action') setShowLook(false);
     },
     [recording, mode],
   );
 
-  /* ---------- capture: photo ---------- */
+  const saveToGallery = useCallback(
+    async (uri: string) => {
+      if (mediaPerm?.granted) await MediaLibrary.createAssetAsync(uri);
+    },
+    [mediaPerm],
+  );
+
+  /* ---------- capture: HDR+ photo (VisionCamera) ---------- */
   const shootPhoto = useCallback(async () => {
     const c = cam.current;
     if (!c || !device || busy) return;
@@ -200,29 +264,30 @@ function CameraScreen() {
       setToast(night ? `Night Sight · merging ${frames} frames` : `HDR+ · merging ${frames} frame${frames > 1 ? 's' : ''}`);
       await sleep(16);
 
-      const res = await processBurst(paths, { night, brightness, shadows });
-      if (mediaPerm?.granted) await MediaLibrary.createAssetAsync(res.uri);
+      const res = await processBurst(paths, { night, brightness, shadows, smoothing, filter });
+      await saveToGallery(res.uri);
+      const look = [filter !== 'natural' && filterByKey(filter).label, smoothing > 0.01 && 'smoothed']
+        .filter(Boolean)
+        .join(' · ');
       setLast({
         uri: res.uri,
         original,
         isVideo: false,
-        info: `${night ? 'Night Sight' : 'HDR+'} · ${res.frames} frame${res.frames > 1 ? 's' : ''} · ${res.width}×${res.height}`,
+        info: `${night ? 'Night Sight' : 'HDR+'} · ${res.frames} frame${res.frames > 1 ? 's' : ''}${look ? ` · ${look}` : ''}`,
       });
       flashToast('Saved');
     } catch (e: any) {
-      if (paths[0] && mediaPerm?.granted) {
-        await MediaLibrary.createAssetAsync(`file://${paths[0]}`).catch(() => {});
-      }
+      if (paths[0]) await saveToGallery(`file://${paths[0]}`).catch(() => {});
       flashToast(`Processing failed — saved original (${String(e?.message ?? e).slice(0, 60)})`, 4000);
     } finally {
       setCaptureEv(null);
       setProcessing(false);
       setBusy(false);
     }
-  }, [device, busy, mode, flash, photo.frames, brightness, shadows, mediaPerm, flashToast]);
+  }, [device, busy, mode, flash, photo.frames, brightness, shadows, smoothing, filter, saveToGallery, flashToast]);
 
-  /* ---------- capture: video ---------- */
-  const toggleRecording = useCallback(async () => {
+  /* ---------- capture: video (VisionCamera) ---------- */
+  const toggleVcRecording = useCallback(async () => {
     const c = cam.current;
     if (!c) return;
     if (recording) {
@@ -240,7 +305,7 @@ function CameraScreen() {
       onRecordingFinished: async (v) => {
         setRecording(false);
         try {
-          if (mediaPerm?.granted) await MediaLibrary.createAssetAsync(`file://${v.path}`);
+          await saveToGallery(`file://${v.path}`);
           setLast({ isVideo: true, info: `${Math.round(v.duration)} s` });
           flashToast('Video saved');
         } catch {
@@ -252,7 +317,53 @@ function CameraScreen() {
         flashToast(`Recording failed: ${e.message}`, 4000);
       },
     });
-  }, [recording, video.hevc, mediaPerm, flashToast]);
+  }, [recording, video.hevc, saveToGallery, flashToast]);
+
+  /* ---------- capture: native CameraX modes ---------- */
+  const nativeShutter = useCallback(async () => {
+    const p = pro.current;
+    if (!p) return;
+    if (shutterKind !== 'video') {
+      if (busy) return;
+      setBusy(true);
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+      await p.takePhoto().catch(() => setBusy(false));
+      return;
+    }
+    if (recording) {
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+      await p.stopRecording();
+    } else {
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
+      setRecSeconds(0);
+      setRecording(true);
+      await p.startRecording().catch(() => setRecording(false));
+    }
+  }, [shutterKind, busy, recording]);
+
+  const onProPhoto = useCallback(
+    async (path: string) => {
+      const original = `file://${path}`;
+      try {
+        let uri = original;
+        if (smoothing > 0.01 || filter !== 'natural') {
+          setLast({ uri: original, original, isVideo: false });
+          setProcessing(true);
+          uri = await processSingle(path, smoothing, filter);
+        }
+        await saveToGallery(uri);
+        setLast({ uri, original, isVideo: false, info: 'Pro' });
+        flashToast('Saved');
+      } catch (e: any) {
+        await saveToGallery(original).catch(() => {});
+        flashToast(`Saved original (${String(e?.message ?? e).slice(0, 60)})`, 3500);
+      } finally {
+        setProcessing(false);
+        setBusy(false);
+      }
+    },
+    [smoothing, filter, saveToGallery, flashToast],
+  );
 
   useEffect(() => {
     if (!recording) return;
@@ -261,7 +372,8 @@ function CameraScreen() {
   }, [recording]);
 
   const onShutter = useCallback(async () => {
-    if (isVideo) return toggleRecording();
+    if (isNative) return nativeShutter();
+    if (isVcVideo) return toggleVcRecording();
     if (timer > 0) {
       for (let t = timer; t > 0; t--) {
         setCountdown(t);
@@ -271,12 +383,14 @@ function CameraScreen() {
       setCountdown(0);
     }
     return shootPhoto();
-  }, [isVideo, timer, toggleRecording, shootPhoto]);
+  }, [isNative, isVcVideo, timer, nativeShutter, toggleVcRecording, shootPhoto]);
 
   /* ---------- gestures: tap-to-focus, pinch-to-zoom, swipe modes ---------- */
-  const live = useRef({ zoom, device, mode, recording });
-  live.current = { zoom, device, mode, recording };
+  const live = useRef({ zoom, proZoom, device, mode, recording, isNative, visibleModes });
+  live.current = { zoom, proZoom, device, mode, recording, isNative, visibleModes };
   const gesture = useRef({ pinchStart: 0, zoomStart: 1, pinched: false });
+  const changeModeRef = useRef(changeMode);
+  changeModeRef.current = changeMode;
 
   const responder = useMemo(
     () =>
@@ -284,40 +398,45 @@ function CameraScreen() {
         onStartShouldSetPanResponder: () => true,
         onMoveShouldSetPanResponder: () => true,
         onPanResponderGrant: () => {
-          gesture.current = { pinchStart: 0, zoomStart: live.current.zoom, pinched: false };
+          gesture.current = { pinchStart: 0, zoomStart: 1, pinched: false };
         },
         onPanResponderMove: (e) => {
           const t = e.nativeEvent.touches;
-          const d = live.current.device;
-          if (t.length >= 2 && d) {
-            const dist = Math.hypot(t[0].pageX - t[1].pageX, t[0].pageY - t[1].pageY);
-            if (!gesture.current.pinchStart) {
-              gesture.current.pinchStart = dist;
-              gesture.current.zoomStart = live.current.zoom;
-            }
-            gesture.current.pinched = true;
-            const z = gesture.current.zoomStart * (dist / gesture.current.pinchStart);
+          if (t.length < 2) return;
+          const L = live.current;
+          const dist = Math.hypot(t[0].pageX - t[1].pageX, t[0].pageY - t[1].pageY);
+          if (!gesture.current.pinchStart) {
+            gesture.current.pinchStart = dist;
+            gesture.current.zoomStart = L.isNative ? L.proZoom : L.zoom;
+          }
+          gesture.current.pinched = true;
+          const z = gesture.current.zoomStart * (dist / gesture.current.pinchStart);
+          if (L.isNative) setProZoom(clamp(z, 1, 10));
+          else if (L.device) {
+            const d = L.device;
             setZoom(clamp(z, d.minZoom, Math.min(d.maxZoom, (d.neutralZoom || 1) * 20)));
           }
         },
         onPanResponderRelease: (e, g) => {
           if (gesture.current.pinched) return;
+          const L = live.current;
           if (Math.abs(g.dx) < 10 && Math.abs(g.dy) < 10) {
             const { locationX: x, locationY: y } = e.nativeEvent;
             setFocus({ x, y, key: Date.now() });
-            pokeSliders();
-            if (live.current.device?.supportsFocus) cam.current?.focus({ x, y }).catch(() => {});
-          } else if (Math.abs(g.dx) > 70 && Math.abs(g.dx) > Math.abs(g.dy) * 1.5 && !live.current.recording) {
-            const idx = MODES.findIndex((m) => m.key === live.current.mode);
-            const next = MODES[clamp(idx + (g.dx < 0 ? 1 : -1), 0, MODES.length - 1)];
+            if (!L.isNative) {
+              pokeSliders();
+              if (L.device?.supportsFocus) cam.current?.focus({ x, y }).catch(() => {});
+            }
+          } else if (Math.abs(g.dx) > 70 && Math.abs(g.dx) > Math.abs(g.dy) * 1.5 && !L.recording) {
+            const list = L.visibleModes;
+            const idx = list.findIndex((m) => m.key === L.mode);
+            const next = list[clamp(idx + (g.dx < 0 ? 1 : -1), 0, list.length - 1)];
             changeModeRef.current(next.key);
           }
         },
       }),
     [pokeSliders],
   );
-  const changeModeRef = useRef(changeMode);
-  changeModeRef.current = changeMode;
 
   /* ---------- render ---------- */
   const missing = [
@@ -339,25 +458,92 @@ function CameraScreen() {
   const timerIcon = timer === 3 ? 'timer-3' : timer === 10 ? 'timer-10' : 'timer-off-outline';
   const mm = String(Math.floor(recSeconds / 60)).padStart(2, '0');
   const ss = String(recSeconds % 60).padStart(2, '0');
+  const previewStyle = [StyleSheet.absoluteFill, previewFilter ? { filter: previewFilter } : null];
+  const isMirrored = facing === 'front' ? mirrorSelfie : false;
+
+  const badge =
+    mode === 'night'
+      ? 'NIGHT'
+      : mode === 'photo'
+        ? 'HDR+'
+        : mode === 'pro'
+          ? proVideo
+            ? 'PRO VIDEO'
+            : 'PRO'
+          : mode === 'slowmo'
+            ? 'SLO-MO'
+            : mode === 'dual'
+              ? 'DUAL'
+              : mode === 'action'
+                ? `ACTION · ${fps}`
+                : `${video.resolution === '4k' ? '4K' : '1080p'} · ${fps}${videoHdr ? ' · HDR' : ''}`;
 
   return (
     <View style={styles.root}>
       <StatusBar style="light" hidden />
 
-      {device ? (
+      {isNative ? (
+        <ProCameraView
+          ref={pro}
+          style={previewStyle}
+          mode={mode as 'pro' | 'slowmo' | 'dual'}
+          facing={facing}
+          dualPrimary={dualPrimary}
+          iso={manual.iso}
+          shutterNs={manual.shutterNs}
+          whiteBalance={manual.whiteBalance}
+          kelvin={manual.kelvin}
+          evBias={manual.ev}
+          focusDistance={manual.focusDistance}
+          zoom={proZoom}
+          torch={flash === 'on' && shutterKind === 'video'}
+          mirror={mirrorSelfie}
+          audio={micPerm.hasPermission}
+          active={appActive && !viewerOpen}
+          onReady={(e) => {
+            if (e.nativeEvent.mode === 'slowmo' && e.nativeEvent.slowMotionFps) {
+              flashToast(`Slow motion · ${e.nativeEvent.slowMotionFps} fps`);
+            }
+          }}
+          onError={(e) => {
+            setBusy(false);
+            flashToast(e.nativeEvent.message, 4000);
+          }}
+          onPhotoCaptured={(e) => onProPhoto(e.nativeEvent.path)}
+          onRecordingFinished={async (e) => {
+            setRecording(false);
+            const { path, durationMs, slowMotion, error } = e.nativeEvent;
+            if (!path) {
+              flashToast(error ?? 'Recording failed', 4000);
+              return;
+            }
+            try {
+              await saveToGallery(`file://${path}`);
+              setLast({
+                isVideo: true,
+                info: `${slowMotion ? 'Slow motion · ' : mode === 'dual' ? 'Dual · ' : ''}${Math.round(durationMs / 1000)} s`,
+              });
+              flashToast(slowMotion ? 'Slow-motion video saved' : 'Video saved');
+            } catch {
+              flashToast('Could not save video');
+            }
+          }}
+        />
+      ) : device ? (
         <Camera
           ref={cam}
-          style={StyleSheet.absoluteFill}
+          style={previewStyle}
           device={device}
-          isActive={appActive && !viewerOpen}
-          photo={!isVideo}
-          video={isVideo}
-          audio={isVideo && micPerm.hasPermission}
+          isActive={appActive && !viewerOpen && !vcHold}
+          photo={!isVcVideo}
+          video={isVcVideo}
+          audio={isVcVideo && micPerm.hasPermission}
           format={format}
           fps={fps}
           zoom={zoom}
           exposure={exposure}
-          torch={isVideo && flash === 'on' && device.hasTorch ? 'on' : 'off'}
+          isMirrored={isMirrored}
+          torch={isVcVideo && flash === 'on' && device.hasTorch ? 'on' : 'off'}
           lowLightBoost={mode === 'night' && device.supportsLowLightBoost}
           videoHdr={videoHdr}
           photoHdr={photoHdr}
@@ -381,34 +567,36 @@ function CameraScreen() {
       {/* Top bar */}
       <View style={[styles.top, { top: insets.top + 10 }]} pointerEvents="box-none">
         <Glass radius={24} style={styles.topPill}>
-          <Pressable
-            hitSlop={8}
-            onPress={() => setFlash((f) => (f === 'off' ? 'auto' : f === 'auto' ? 'on' : 'off'))}
-            disabled={!device?.hasFlash && !device?.hasTorch}
-          >
-            <MaterialCommunityIcons name={flashIcon} size={22} color={device?.hasFlash ? '#fff' : 'rgba(255,255,255,0.35)'} />
+          <Pressable hitSlop={8} onPress={() => setFlash((f) => (f === 'off' ? 'auto' : f === 'auto' ? 'on' : 'off'))}>
+            <MaterialCommunityIcons name={flashIcon} size={22} color="#fff" />
           </Pressable>
-          {!isVideo && (
+          {!isNative && !isVcVideo && (
             <Pressable hitSlop={8} onPress={() => setTimer((t) => (t === 0 ? 3 : t === 3 ? 10 : 0))}>
               <MaterialCommunityIcons name={timerIcon} size={22} color="#fff" />
             </Pressable>
           )}
-          {isVideo ? (
-            <Pressable
-              hitSlop={8}
-              onPress={() =>
-                mode === 'video' &&
-                setVideo((v) => ({ ...v, resolution: v.resolution === '4k' ? '1080p' : '4k' }))
-              }
-            >
-              <Text style={styles.badge}>
-                {mode === 'action' ? 'ACTION' : video.resolution === '4k' ? '4K' : '1080p'} · {fps}
-                {videoHdr ? ' · HDR' : ''}
-              </Text>
+          {lookAvailable && (
+            <Pressable hitSlop={8} onPress={() => setShowLook((v) => !v)}>
+              <MaterialCommunityIcons
+                name="palette-outline"
+                size={22}
+                color={showLook || filter !== 'natural' || smoothing > 0.01 ? '#ffd76a' : '#fff'}
+              />
             </Pressable>
-          ) : (
-            <Text style={styles.badge}>{mode === 'night' ? 'NIGHT' : 'HDR+'}</Text>
           )}
+          {facing === 'front' && mode !== 'dual' && (
+            <Pressable hitSlop={8} onPress={() => setMirrorSelfie((v) => !v)}>
+              <MaterialCommunityIcons name="flip-horizontal" size={22} color={mirrorSelfie ? '#ffd76a' : '#fff'} />
+            </Pressable>
+          )}
+          <Pressable
+            hitSlop={8}
+            onPress={() =>
+              mode === 'video' && setVideo((v) => ({ ...v, resolution: v.resolution === '4k' ? '1080p' : '4k' }))
+            }
+          >
+            <Text style={styles.badge}>{badge}</Text>
+          </Pressable>
         </Glass>
         {recording ? (
           <Glass radius={18} style={styles.recBadge} tint="rgba(255,59,48,0.55)">
@@ -430,11 +618,23 @@ function CameraScreen() {
       {/* Bottom controls */}
       <View style={[styles.bottom, { paddingBottom: insets.bottom + 14 }]} pointerEvents="box-none">
         <Toast text={toast} />
-        {showSliders && (
+        {showLook && lookAvailable && (
+          <LookPanel filter={filter} onFilter={setFilter} smoothing={smoothing} onSmoothing={setSmoothing} />
+        )}
+        {mode === 'pro' && !showLook && (
+          <ProPanel
+            value={manual}
+            onChange={setManual}
+            caps={caps}
+            video={proVideo}
+            onToggleVideo={() => !recording && setProVideo((v) => !v)}
+          />
+        )}
+        {showSliders && !isNative && (
           <ToneSliders
             brightness={brightness}
             shadows={shadows}
-            showShadows={!isVideo}
+            showShadows={!isVcVideo}
             onBrightness={(v) => {
               setBrightness(v);
               pokeSliders();
@@ -447,26 +647,35 @@ function CameraScreen() {
         )}
         <ZoomPills
           stops={stops}
-          zoom={zoom}
-          label={displayZoom(device, zoom)}
+          zoom={isNative ? proZoom : zoom}
+          label={isNative ? (Math.round(proZoom * 10) / 10).toString() : displayZoom(device, zoom)}
           onSelect={(z) => {
             Haptics.selectionAsync();
-            setZoom(z);
+            if (isNative) setProZoom(z);
+            else setZoom(z);
           }}
         />
-        <ModeCarousel mode={mode} onChange={changeMode} disabled={recording} />
+        <ModeCarousel mode={mode} modes={visibleModes} onChange={changeMode} disabled={recording} />
         <View style={styles.shutterRow}>
           <Thumb uri={last?.uri} processing={processing} onPress={() => setViewerOpen(true)} />
-          <Shutter mode={mode} recording={recording} busy={busy || countdown > 0} onPress={onShutter} />
-          <IconButton
-            icon="camera-flip-outline"
-            size={56}
-            onPress={() => {
-              if (recording) return;
-              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-              setFacing((f) => (f === 'back' ? 'front' : 'back'));
-            }}
-          />
+          <Shutter kind={shutterKind} recording={recording} busy={busy || countdown > 0} onPress={onShutter} />
+          {mode === 'dual' ? (
+            <IconButton
+              icon="swap-horizontal"
+              size={56}
+              onPress={() => !recording && setDualPrimary((p) => (p === 'back' ? 'front' : 'back'))}
+            />
+          ) : (
+            <IconButton
+              icon="camera-flip-outline"
+              size={56}
+              onPress={() => {
+                if (recording) return;
+                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                setFacing((f) => (f === 'back' ? 'front' : 'back'));
+              }}
+            />
+          )}
         </View>
       </View>
 
@@ -481,6 +690,9 @@ function CameraScreen() {
         supportsVideoHdr={!!device?.formats.some((f) => f.supportsVideoHdr)}
         supportsPhotoHdr={!!device?.formats.some((f) => f.supportsPhotoHdr)}
         bottomInset={insets.bottom}
+        mirrorSelfie={mirrorSelfie}
+        onMirrorSelfie={setMirrorSelfie}
+        capabilities={caps}
       />
       <Viewer
         visible={viewerOpen}
@@ -499,12 +711,12 @@ const styles = StyleSheet.create({
   center: { alignItems: 'center', justifyContent: 'center' },
   dim: { color: 'rgba(255,255,255,0.6)' },
   top: { position: 'absolute', left: 16, right: 16, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  topPill: { flexDirection: 'row', alignItems: 'center', gap: 18, paddingHorizontal: 16, height: 44 },
+  topPill: { flexDirection: 'row', alignItems: 'center', gap: 16, paddingHorizontal: 16, height: 44 },
   badge: { color: '#fff', fontSize: 12, fontWeight: '800', letterSpacing: 0.6 },
   recBadge: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 12, height: 32 },
   recLed: { width: 8, height: 8, borderRadius: 4, backgroundColor: '#fff' },
   recText: { color: '#fff', fontWeight: '700', fontVariant: ['tabular-nums'] },
   countdown: { color: '#fff', fontSize: 96, fontWeight: '200' },
-  bottom: { position: 'absolute', left: 0, right: 0, bottom: 0, gap: 14 },
+  bottom: { position: 'absolute', left: 0, right: 0, bottom: 0, gap: 12 },
   shutterRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 36 },
 });

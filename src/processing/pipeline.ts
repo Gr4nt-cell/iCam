@@ -14,7 +14,8 @@ import {
 import { File, Paths } from 'expo-file-system';
 import { estimateShift, type LumaPlane } from './align';
 import { readExifOrientation } from './exif';
-import { mergeSkSL, TONE_SKSL } from './shaders';
+import { filterByKey, type FilterKey } from './filters';
+import { FILTER_SKSL, mergeSkSL, SMOOTH_SKSL, TONE_SKSL } from './shaders';
 
 /** Long edge we process at (≈12.5 MP at 4:3) – keeps GPU memory and time bounded. */
 const MAX_EDGE = 4096;
@@ -25,6 +26,9 @@ export type ProcessOptions = {
   brightness: number;
   /** Pixel "Shadows" slider, -1…1 */
   shadows: number;
+  /** Face smoothing strength 0…1 (0 = off) */
+  smoothing?: number;
+  filter?: FilterKey;
 };
 
 export type ProcessResult = { uri: string; frames: number; width: number; height: number };
@@ -234,6 +238,41 @@ function toneMap(img: SkImage, opts: ProcessOptions): SkImage {
   return snapshot(surf);
 }
 
+function shade(img: SkImage, key: string, src: string, uniforms: number[]): SkImage {
+  const fx = effect(key, src);
+  const child = img.makeShaderOptions(TileMode.Clamp, TileMode.Clamp, FilterMode.Linear, MipmapMode.None);
+  const surf = surface(img.width(), img.height());
+  const paint = Skia.Paint();
+  paint.setShader(fx.makeShaderWithChildren(uniforms, [child]));
+  surf.getCanvas().drawPaint(paint);
+  return snapshot(surf);
+}
+
+/** Skin smoothing + colour filter, applied after tone mapping. */
+export function finishLook(img: SkImage, smoothing = 0, filter: FilterKey = 'natural'): SkImage {
+  let out = img;
+  if (smoothing > 0.01) {
+    const radius = Math.max(3, Math.min(img.width(), img.height()) / 380);
+    out = shade(out, 'smooth', SMOOTH_SKSL, [smoothing, radius]);
+  }
+  const f = filterByKey(filter);
+  if (f.key !== 'natural') {
+    out = shade(out, 'filter', FILTER_SKSL, [
+      f.sat, f.contrast, f.warmth, f.fade, f.mono, f.vignette, out.width(), out.height(),
+    ]);
+  }
+  return out;
+}
+
+/** Applies smoothing/filter to an already-processed photo file (used for Pro-mode shots). */
+export async function processSingle(path: string, smoothing: number, filter: FilterKey): Promise<string> {
+  const img = finishLook(await loadUpright(path), smoothing, filter);
+  const file = new File(Paths.cache, `iCam_${Date.now()}.jpg`);
+  file.create({ overwrite: true });
+  file.write(img.encodeToBytes(ImageFormat.JPEG, 95));
+  return file.uri;
+}
+
 /**
  * Full HDR+-style pipeline: decode → upright → align → robust merge → local tone map → JPEG.
  * Writes the result to the app cache and returns its file URI.
@@ -255,7 +294,9 @@ export async function processBurst(paths: string[], opts: ProcessOptions): Promi
     merged = merge(usable, offsets, opts.night ? 0.015 : 0.006);
   }
   await yieldFrame();
-  const out = toneMap(merged, opts);
+  let out = toneMap(merged, opts);
+  await yieldFrame();
+  out = finishLook(out, opts.smoothing ?? 0, opts.filter ?? 'natural');
   const bytes = out.encodeToBytes(ImageFormat.JPEG, 94);
 
   const file = new File(Paths.cache, `iCam_${Date.now()}.jpg`);

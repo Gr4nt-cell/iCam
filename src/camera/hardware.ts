@@ -5,7 +5,10 @@ import type {
   VideoStabilizationMode,
 } from 'react-native-vision-camera';
 
-export type CaptureMode = 'night' | 'photo' | 'video' | 'action';
+export type CaptureMode = 'night' | 'photo' | 'pro' | 'video' | 'slowmo' | 'dual' | 'action';
+
+/** Modes handled by the native CameraX module instead of VisionCamera. */
+export const NATIVE_MODES: CaptureMode[] = ['pro', 'slowmo', 'dual'];
 
 export type VideoSettings = {
   resolution: '4k' | '1080p';
@@ -74,7 +77,7 @@ export function pickStabilization(
  * video targets the requested resolution / frame rate / stabilization / HDR.
  */
 export function formatFilters(mode: CaptureMode, video: VideoSettings): FormatFilter[] {
-  if (mode === 'photo' || mode === 'night') {
+  if (mode !== 'video' && mode !== 'action') {
     return [
       { photoAspectRatio: 4 / 3 },
       { photoResolution: { width: 4032, height: 3024 } },

@@ -93,3 +93,70 @@ half4 main(float2 p) {
   return half4(half3(g), 1.0);
 }
 `;
+
+/**
+ * Face/skin smoothing: an edge-preserving (bilateral-style) blur on a 16-tap ring,
+ * applied only where pixels fall in the skin-tone range of YCbCr, so eyes, hair,
+ * lips and background keep their detail.
+ * Uniform order: strength, radius
+ */
+export const SMOOTH_SKSL = `
+uniform shader img;
+uniform float strength;
+uniform float radius;
+
+float skinMask(float3 c) {
+  float y = dot(c, float3(0.299, 0.587, 0.114));
+  float cb = 0.5 - 0.168736 * c.r - 0.331264 * c.g + 0.5 * c.b;
+  float cr = 0.5 + 0.5 * c.r - 0.418688 * c.g - 0.081312 * c.b;
+  return smoothstep(0.27, 0.32, cb) * (1.0 - smoothstep(0.48, 0.53, cb)) *
+         smoothstep(0.50, 0.54, cr) * (1.0 - smoothstep(0.67, 0.71, cr)) *
+         smoothstep(0.12, 0.22, y);
+}
+
+half4 main(float2 p) {
+  float3 c = img.eval(p).rgb;
+  float m = skinMask(c) * strength;
+  if (m < 0.01) { return half4(half3(c), 1.0); }
+  float3 acc = c;
+  float w = 1.0;
+  for (int i = 0; i < 16; i++) {
+    float fi = float(i);
+    float a = fi * 0.39269908;
+    float r = mod(fi, 2.0) < 0.5 ? radius : radius * 0.5;
+    float3 s = img.eval(p + float2(cos(a), sin(a)) * r).rgb;
+    float3 d = s - c;
+    float wk = exp(-dot(d, d) / 0.010);
+    acc += s * wk;
+    w += wk;
+  }
+  float3 o = mix(c, acc / w, m);
+  o = mix(o, o * 1.03 + 0.008, 0.5 * m); // a touch of glow on skin
+  return half4(half3(clamp(o, 0.0, 1.0)), 1.0);
+}
+`;
+
+/** Uniform order: sat, contrast, warmth, fade, mono, vignette, size(float2) */
+export const FILTER_SKSL = `
+uniform shader img;
+uniform float sat;
+uniform float contrast;
+uniform float warmth;
+uniform float fade;
+uniform float mono;
+uniform float vignette;
+uniform float2 size;
+
+half4 main(float2 p) {
+  float3 c = img.eval(p).rgb;
+  float l = dot(c, float3(0.2126, 0.7152, 0.0722));
+  c = mix(float3(l), c, sat);
+  c = mix(c, float3(l), mono);
+  c *= float3(1.0 + warmth, 1.0 + warmth * 0.2, 1.0 - warmth);
+  c = (c - 0.5) * contrast + 0.5;
+  c = c * (1.0 - fade) + fade;
+  float2 uv = p / size - 0.5;
+  c *= 1.0 - vignette * smoothstep(0.3, 0.85, length(uv) * 1.3);
+  return half4(half3(clamp(c, 0.0, 1.0)), 1.0);
+}
+`;

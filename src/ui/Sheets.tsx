@@ -17,6 +17,9 @@ type SettingsProps = {
   supportsVideoHdr: boolean;
   supportsPhotoHdr: boolean;
   bottomInset: number;
+  mirrorSelfie: boolean;
+  onMirrorSelfie: (v: boolean) => void;
+  capabilities: { concurrent: boolean; slowMotion: boolean; manualSensor: boolean } | null;
 };
 
 export function SettingsSheet(p: SettingsProps) {
@@ -42,6 +45,12 @@ export function SettingsSheet(p: SettingsProps) {
                   <Toggle value={p.photo.nativeHdr} onChange={(v) => p.onPhoto({ ...p.photo, nativeHdr: v })} />
                 </Row>
               )}
+            </Section>
+
+            <Section title="Selfie">
+              <Row label="Mirror front camera" hint="Save selfie photos and videos as you see them in the viewfinder">
+                <Toggle value={p.mirrorSelfie} onChange={p.onMirrorSelfie} />
+              </Row>
             </Section>
 
             <Section title="Video">
@@ -84,6 +93,16 @@ export function SettingsSheet(p: SettingsProps) {
             </Section>
 
             <Section title="Camera hardware detected">
+              {p.capabilities && (
+                <View style={s.hwCard}>
+                  <Text style={s.hwTitle}>Advanced features</Text>
+                  <Text style={s.hwLine}>
+                    Manual ISO / shutter / focus: {p.capabilities.manualSensor ? 'yes' : 'no'}
+                  </Text>
+                  <Text style={s.hwLine}>Slow motion (high-speed): {p.capabilities.slowMotion ? 'yes' : 'no'}</Text>
+                  <Text style={s.hwLine}>Dual front + back recording: {p.capabilities.concurrent ? 'yes' : 'no'}</Text>
+                </View>
+              )}
               {p.profiles.map((d) => (
                 <View key={d.id} style={s.hwCard}>
                   <Text style={s.hwTitle}>

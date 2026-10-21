@@ -6,6 +6,7 @@ import {
   Image,
   PanResponder,
   Pressable,
+  ScrollView,
   StyleSheet,
   Text,
   View,
@@ -15,10 +16,15 @@ import { Glass, GlassCircle } from './Glass';
 
 export const MODES: { key: CaptureMode; label: string }[] = [
   { key: 'night', label: 'Night Sight' },
+  { key: 'pro', label: 'Pro' },
   { key: 'photo', label: 'Photo' },
   { key: 'video', label: 'Video' },
+  { key: 'slowmo', label: 'Slo-mo' },
+  { key: 'dual', label: 'Dual' },
   { key: 'action', label: 'Action' },
 ];
+
+export type ShutterKind = 'photo' | 'night' | 'video';
 
 /* ---------------- Zoom pills ---------------- */
 
@@ -61,25 +67,48 @@ export function ZoomPills({
 
 export function ModeCarousel({
   mode,
+  modes,
   onChange,
   disabled,
 }: {
   mode: CaptureMode;
+  modes: { key: CaptureMode; label: string }[];
   onChange: (m: CaptureMode) => void;
   disabled?: boolean;
 }) {
+  const scroller = useRef<ScrollView>(null);
+  const xs = useRef<Record<string, number>>({});
+  useEffect(() => {
+    const x = xs.current[mode];
+    if (x != null) scroller.current?.scrollTo({ x: Math.max(0, x - 110), animated: true });
+  }, [mode]);
   return (
     <Glass radius={22} style={styles.modeBar}>
-      {MODES.map((m) => {
+      <ScrollView
+        ref={scroller}
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        contentContainerStyle={{ padding: 4 }}
+      >
+      {modes.map((m) => {
         const active = m.key === mode;
         return (
-          <Pressable key={m.key} disabled={disabled} onPress={() => onChange(m.key)} hitSlop={4}>
+          <Pressable
+            key={m.key}
+            disabled={disabled}
+            onPress={() => onChange(m.key)}
+            hitSlop={4}
+            onLayout={(e) => {
+              xs.current[m.key] = e.nativeEvent.layout.x;
+            }}
+          >
             <View style={[styles.modeChip, active && styles.modeChipActive]}>
               <Text style={[styles.modeText, active && styles.modeTextActive]}>{m.label}</Text>
             </View>
           </Pressable>
         );
       })}
+      </ScrollView>
     </Glass>
   );
 }
@@ -87,18 +116,18 @@ export function ModeCarousel({
 /* ---------------- Shutter ---------------- */
 
 export function Shutter({
-  mode,
+  kind,
   recording,
   busy,
   onPress,
 }: {
-  mode: CaptureMode;
+  kind: ShutterKind;
   recording: boolean;
   busy: boolean;
   onPress: () => void;
 }) {
   const scale = useRef(new Animated.Value(1)).current;
-  const isVideo = mode === 'video' || mode === 'action';
+  const isVideo = kind === 'video';
   const press = (to: number) =>
     Animated.spring(scale, { toValue: to, useNativeDriver: true, speed: 40, bounciness: 8 }).start();
 
@@ -114,8 +143,8 @@ export function Shutter({
         {isVideo ? (
           <View style={[styles.recDot, recording && styles.recSquare]} />
         ) : (
-          <View style={[styles.shutterInner, mode === 'night' && styles.shutterNight]}>
-            {mode === 'night' && <MaterialCommunityIcons name="weather-night" size={26} color="#1b1b1f" />}
+          <View style={[styles.shutterInner, kind === 'night' && styles.shutterNight]}>
+            {kind === 'night' && <MaterialCommunityIcons name="weather-night" size={26} color="#1b1b1f" />}
           </View>
         )}
       </Animated.View>
@@ -197,7 +226,17 @@ export function ToneSliders({
   );
 }
 
-function Slider({ value, onChange }: { value: number; onChange: (v: number) => void }) {
+export function Slider({
+  value,
+  onChange,
+  min = -1,
+  max = 1,
+}: {
+  value: number;
+  onChange: (v: number) => void;
+  min?: number;
+  max?: number;
+}) {
   const [width, setWidth] = useState(1);
   const startVal = useRef(value);
   const latest = useRef(value);
@@ -206,6 +245,8 @@ function Slider({ value, onChange }: { value: number; onChange: (v: number) => v
   widthRef.current = width;
   const onChangeRef = useRef(onChange);
   onChangeRef.current = onChange;
+  const rangeRef = useRef({ min, max });
+  rangeRef.current = { min, max };
 
   const pan = useRef(
     PanResponder.create({
@@ -215,17 +256,18 @@ function Slider({ value, onChange }: { value: number; onChange: (v: number) => v
         startVal.current = latest.current;
       },
       onPanResponderMove: (_, g) => {
-        const v = startVal.current + (g.dx / widthRef.current) * 2;
-        onChangeRef.current(Math.max(-1, Math.min(1, v)));
+        const r = rangeRef.current;
+        const v = startVal.current + (g.dx / widthRef.current) * (r.max - r.min);
+        onChangeRef.current(Math.max(r.min, Math.min(r.max, v)));
       },
     }),
   ).current;
 
-  const x = ((value + 1) / 2) * width;
+  const x = ((value - min) / (max - min)) * width;
   return (
     <View style={styles.sliderTrackWrap} onLayout={(e) => setWidth(e.nativeEvent.layout.width)} {...pan.panHandlers}>
       <View style={styles.sliderTrack} />
-      <View style={[styles.sliderCenterTick]} />
+      {min < 0 && max > 0 ? <View style={[styles.sliderCenterTick]} /> : null}
       <View style={[styles.sliderKnob, { left: x - 11 }]} />
     </View>
   );
@@ -271,7 +313,7 @@ export const styles = StyleSheet.create({
   zoomPillActive: { backgroundColor: 'rgba(255,255,255,0.92)' },
   zoomText: { color: '#fff', fontSize: 13, fontWeight: '600' },
   zoomTextActive: { color: '#111', fontWeight: '700' },
-  modeBar: { flexDirection: 'row', padding: 4, alignSelf: 'center' },
+  modeBar: { alignSelf: 'center', maxWidth: '94%' },
   modeChip: { paddingHorizontal: 14, height: 36, borderRadius: 18, justifyContent: 'center' },
   modeChipActive: { backgroundColor: 'rgba(214,228,255,0.95)' },
   modeText: { color: 'rgba(255,255,255,0.85)', fontSize: 14, fontWeight: '600' },

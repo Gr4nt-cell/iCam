@@ -11,47 +11,62 @@ concurrency:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    defaults:
+      run:
+        shell: bash
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
 
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: 17
-
-      - uses: android-actions/setup-android@v3
 
       - uses: actions/cache@v4
         with:
           path: |
             ~/.gradle/caches
             ~/.gradle/wrapper
-          key: gradle-${{ runner.os }}-${{ hashFiles('package.json', 'app.json') }}
+          key: gradle-${{ runner.os }}-${{ hashFiles('package.json', 'app.json', 'modules/**/build.gradle') }}
           restore-keys: gradle-${{ runner.os }}-
 
+      - name: Check Android SDK
+        run: |
+          echo "ANDROID_HOME=${ANDROID_HOME:-$ANDROID_SDK_ROOT}"
+          test -d "${ANDROID_HOME:-$ANDROID_SDK_ROOT}"
+
       - name: Install dependencies
-        run: npm install --legacy-peer-deps --no-audit --no-fund
+        run: |
+          set -o pipefail
+          npm install --legacy-peer-deps --no-audit --no-fund 2>&1 | tee -a build.log
 
       - name: Align Expo package versions
-        run: npx expo install --fix -- --legacy-peer-deps
+        run: |
+          set -o pipefail
+          npx expo install --fix -- --legacy-peer-deps 2>&1 | tee -a build.log
 
       - name: Type-check
-        run: npx tsc --noEmit
+        run: |
+          set -o pipefail
+          npx tsc --noEmit 2>&1 | tee -a build.log
 
       - name: Generate native Android project
-        run: npx expo prebuild --platform android --clean --no-install
+        run: |
+          set -o pipefail
+          npx expo prebuild --platform android --clean --no-install 2>&1 | tee -a build.log
 
       - name: Build release APK (arm64)
         working-directory: android
         run: |
+          set -o pipefail
           echo "org.gradle.jvmargs=-Xmx6g -XX:MaxMetaspaceSize=1g" >> gradle.properties
-          ./gradlew assembleRelease --no-daemon -PreactNativeArchitectures=arm64-v8a
+          ./gradlew assembleRelease --no-daemon -PreactNativeArchitectures=arm64-v8a 2>&1 | tee -a ../build.log
 
       - name: Rename APK
         run: |
@@ -63,3 +78,14 @@ jobs:
           name: iCam-apk
           path: out/*.apk
           retention-days: 30
+
+      # Turn the relevant error lines into annotations so they're readable from the run page / API
+      - name: Report errors
+        if: failure()
+        run: |
+          touch build.log
+          grep -nE "error|Error|ERROR|FAILED|e: |Unresolved|What went wrong|Could not" build.log \
+            | grep -vE "warning:|ERR_PNPM|errorprone" | tail -45 > errors.txt || true
+          [ -s errors.txt ] || tail -40 build.log > errors.txt
+          msg=$(sed -e 's/%/%25/g' errors.txt | awk '{printf "%s%%0A", $0}' | cut -c1-60000)
+          echo "::error title=Build errors::${msg}"
