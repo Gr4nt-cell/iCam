@@ -154,6 +154,8 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
     addView(pipPreview, android.widget.FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
   }
   private val root = android.widget.FrameLayout(context)
+  private var portraitProcessor: PortraitProcessor? = null
+  private var bokeh = 0.6f
   private var dualComposed = false
   private var pendingDualRecord = false
 
@@ -184,6 +186,10 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
   fun setNightExtension(v: Boolean) = rebindOnChange(nightExtension, v) { nightExtension = it }
   fun setAudio(v: Boolean) { audio = v }
   fun setAspect(v: String) = rebindOnChange(aspect, v) { aspect = it }
+  fun setBokeh(v: Float) {
+    bokeh = v.coerceIn(0f, 1f)
+    portraitProcessor?.strength = bokeh
+  }
   fun setPreviewFit(v: Boolean) {
     previewFit = v
     previewView.scaleType = if (v) PreviewView.ScaleType.FIT_CENTER else PreviewView.ScaleType.FILL_CENTER
@@ -306,6 +312,8 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
     recording?.stop()
     recording = null
     provider?.unbindAll()
+    portraitProcessor?.release()
+    portraitProcessor = null
     camera = null
   }
 
@@ -464,6 +472,24 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
       else if (supported.contains(DynamicRange.HDR_UNSPECIFIED_10_BIT)) vb.setDynamicRange(DynamicRange.HDR_UNSPECIFIED_10_BIT)
     }
     val vc = vb.build()
+    if (portraitVideo) {
+      // Real-time background blur on preview + recording via a GPU effect
+      try {
+        val proc = portraitProcessor ?: PortraitProcessor().also { portraitProcessor = it }
+        proc.strength = bokeh
+        val group = UseCaseGroup.Builder()
+          .addUseCase(newPreview(previewStab, ois))
+          .addUseCase(vc)
+          .addEffect(PortraitVideoEffect(proc))
+          .build()
+        camera = p.bindToLifecycle(owner, sel, group)
+        videoCapture = vc
+        return
+      } catch (e: Throwable) {
+        p.unbindAll()
+        emitError("Background blur isn't supported here – recording without it")
+      }
+    }
     camera = try {
       p.bindToLifecycle(owner, sel, newPreview(previewStab, ois), vc)
     } catch (e: Throwable) {

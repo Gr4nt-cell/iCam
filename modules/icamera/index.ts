@@ -89,6 +89,8 @@ export type ICameraProps = ViewProps & {
   aspect?: '4:3' | '16:9';
   /** Letterbox the preview (what you see = what you get) instead of filling the screen */
   previewFit?: boolean;
+  /** Portrait video background blur strength 0..1 */
+  bokeh?: number;
   onReady?: (e: NativeEvent<ReadyEvent>) => void;
   onError?: (e: NativeEvent<{ message: string }>) => void;
   onRecordingFinished?: (

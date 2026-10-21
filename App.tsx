@@ -36,6 +36,7 @@ import {
   ToneSliders,
   ZoomPills,
   type ShutterKind,
+  Slider,
 } from './src/ui/Controls';
 import { clearSettings, loadSettings, saveSettings } from './src/settings';
 import { DualPipFrame } from './src/ui/DualPip';
@@ -544,6 +545,7 @@ function CameraScreen() {
           dualPip={pip}
           aspect={aspect === '16:9' || aspect === 'full' ? '16:9' : '4:3'}
           previewFit={isPhotoShot && aspect !== 'full'}
+          bokeh={bokeh}
           onReady={(e) => {
             const r = e.nativeEvent;
             setReady(r);
@@ -693,6 +695,16 @@ function CameraScreen() {
             onBlur={setBokeh}
           />
         )}
+        {mode === 'pvideo' && (
+          <Glass radius={22} style={styles.blurRow}>
+            <MaterialCommunityIcons name="blur" size={20} color="#fff" />
+            <Text style={styles.blurLabel}>Blur</Text>
+            <View style={{ flex: 1 }}>
+              <Slider value={bokeh} min={0} max={1} onChange={setBokeh} />
+            </View>
+            <Text style={styles.blurLabel}>{Math.round(bokeh * 100)}</Text>
+          </Glass>
+        )}
         {mode === 'pro' && !showLook && (
           <ProPanel
             value={manual}
@@ -825,6 +837,8 @@ const styles = StyleSheet.create({
   bottom: { position: 'absolute', left: 0, right: 0, bottom: 0, gap: 12 },
   shutterRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 18 },
   dock: { marginHorizontal: 14, paddingTop: 12, paddingBottom: 18, gap: 18 },
+  blurRow: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 14, height: 50, marginHorizontal: 24 },
+  blurLabel: { color: '#fff', fontSize: 13, fontWeight: '600' },
   cropBar: { position: 'absolute', left: 0, right: 0, backgroundColor: 'rgba(0,0,0,0.55)' },
   aspectChip: { color: '#fff', fontSize: 12, fontWeight: '800', borderWidth: 1.5, borderColor: '#fff', borderRadius: 6, paddingHorizontal: 5, paddingVertical: 1 },
   zoomRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 22 },

@@ -115,6 +115,7 @@ class ICameraModule : Module() {
       Prop("stabilization") { view: ICameraView, v: String -> view.setStabilization(v) }
       Prop("nightExtension") { view: ICameraView, v: Boolean -> view.setNightExtension(v) }
       Prop("aspect") { view: ICameraView, v: String -> view.setAspect(v) }
+      Prop("bokeh") { view: ICameraView, v: Double -> view.setBokeh(v.toFloat()) }
       Prop("previewFit") { view: ICameraView, v: Boolean -> view.setPreviewFit(v) }
       Prop("dualPip") { view: ICameraView, v: Map<String, Any?> ->
         view.setDualPip(
