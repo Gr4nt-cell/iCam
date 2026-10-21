@@ -22,6 +22,12 @@ g.ErrorUtils?.setGlobalHandler?.((e: unknown, isFatal?: boolean) => {
   if (!isFatal && previous) previous(e, isFatal);
 });
 
+// Show a crash recorded on the previous run (native side writes it before the app closes)
+try {
+  const crash = require('./modules/icamera').takeLastCrash();
+  if (crash) report(new Error(`Previous launch crashed:\n\n${crash}`));
+} catch {}
+
 let App: React.ComponentType | null = null;
 try {
   App = require('./App').default;
@@ -31,7 +37,9 @@ try {
 
 function describe(e: unknown) {
   const err = e as { message?: string; stack?: string };
-  return `${err?.message ?? String(e)}\n\n${String(err?.stack ?? '').slice(0, 4000)}`;
+  const msg = err?.message ?? String(e);
+  if (msg.startsWith('Previous launch crashed')) return msg;
+  return `${msg}\n\n${String(err?.stack ?? '').slice(0, 4000)}`;
 }
 
 function Root() {
@@ -48,7 +56,7 @@ function Root() {
     return React.createElement(
       View,
       { style: { flex: 1, backgroundColor: '#000', padding: 24, paddingTop: 72, gap: 12 } },
-      React.createElement(Text, { style: { color: '#fff', fontSize: 22, fontWeight: '700' } }, 'iCam failed to start'),
+      React.createElement(Text, { style: { color: '#fff', fontSize: 22, fontWeight: '700' } }, 'iCam ran into a problem'),
       React.createElement(
         Text,
         { style: { color: 'rgba(255,255,255,0.7)' } },

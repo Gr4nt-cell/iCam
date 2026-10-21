@@ -5,7 +5,8 @@ APK=$(ls out/*.apk | head -1)
 adb install -r -g "$APK"
 adb logcat -c
 adb shell monkey -p com.gr4nt.icam -c android.intent.category.LAUNCHER 1
-sleep 30
+sleep 45
+adb shell input keyevent KEYCODE_ENTER >/dev/null 2>&1; sleep 2
 adb logcat -d > logcat.txt
 # Read whatever text is on screen (shows the in-app error screen if startup failed)
 adb shell uiautomator dump /sdcard/ui.xml >/dev/null 2>&1

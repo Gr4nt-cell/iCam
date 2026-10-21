@@ -98,7 +98,19 @@ export type ICameraHandle = {
   focus: (x: number, y: number) => Promise<void>;
 };
 
-const NativeModule = requireOptionalNativeModule<{ getCapabilities: () => Promise<Capabilities> }>('ICamera');
+const NativeModule = requireOptionalNativeModule<{
+  getCapabilities: () => Promise<Capabilities>;
+  takeLastCrash: () => string | null;
+}>('ICamera');
+
+/** Crash report saved by the native handler on the previous run (cleared once read). */
+export function takeLastCrash(): string | null {
+  try {
+    return NativeModule?.takeLastCrash() ?? null;
+  } catch {
+    return null;
+  }
+}
 
 let NativeView: React.ComponentType<any> | null = null;
 function nativeView() {
