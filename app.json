@@ -29,15 +29,6 @@
     },
     "plugins": [
       [
-        "react-native-vision-camera",
-        {
-          "cameraPermissionText": "iCam needs the camera to take photos and videos.",
-          "enableMicrophonePermission": true,
-          "microphonePermissionText": "iCam needs the microphone to record sound with your videos.",
-          "enableLocation": false
-        }
-      ],
-      [
         "expo-media-library",
         {
           "photosPermission": "iCam saves your photos and videos to your gallery.",

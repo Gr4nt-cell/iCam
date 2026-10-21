@@ -1,7 +1,7 @@
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import React, { useMemo, useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
-import type { ProCapabilities, WhiteBalance } from '../../modules/pro-camera';
+import type { Capabilities, WhiteBalance } from '../../modules/icamera';
 import { FILTERS, type FilterKey } from '../processing/filters';
 import { Slider } from './Controls';
 import { Glass } from './Glass';
@@ -69,7 +69,7 @@ export function ProPanel({
 }: {
   value: ManualSettings;
   onChange: (v: ManualSettings) => void;
-  caps: ProCapabilities | null;
+  caps: Capabilities | null;
   video: boolean;
   onToggleVideo: () => void;
 }) {

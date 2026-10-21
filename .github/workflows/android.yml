@@ -56,10 +56,6 @@ jobs:
           set -o pipefail
           npx tsc --noEmit 2>&1 | tee -a build.log
 
-      - name: Report CameraX versions
-        run: |
-          v=$(grep -nE "camera" node_modules/react-native-vision-camera/android/build.gradle | head -12 | awk '{printf "%s%%0A", $0}')
-          echo "::notice title=VisionCamera CameraX deps::${v}"
 
       - name: Generate native Android project
         run: |

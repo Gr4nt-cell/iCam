@@ -1,7 +1,8 @@
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import React, { useState } from 'react';
 import { Image, Modal, Pressable, ScrollView, StyleSheet, Switch, Text, View } from 'react-native';
-import type { DeviceProfile, PhotoSettings, VideoSettings } from '../camera/hardware';
+import type { Capabilities } from '../../modules/icamera';
+import type { PhotoSettings, VideoSettings } from '../camera/hardware';
 import { Glass } from './Glass';
 
 /* ---------------- Settings ---------------- */
@@ -13,13 +14,11 @@ type SettingsProps = {
   video: VideoSettings;
   onPhoto: (p: PhotoSettings) => void;
   onVideo: (v: VideoSettings) => void;
-  profiles: DeviceProfile[];
   supportsVideoHdr: boolean;
-  supportsPhotoHdr: boolean;
   bottomInset: number;
   mirrorSelfie: boolean;
   onMirrorSelfie: (v: boolean) => void;
-  capabilities: { concurrent: boolean; slowMotion: boolean; manualSensor: boolean } | null;
+  capabilities: Capabilities | null;
 };
 
 export function SettingsSheet(p: SettingsProps) {
@@ -40,11 +39,11 @@ export function SettingsSheet(p: SettingsProps) {
                   onChange={(v) => p.onPhoto({ ...p.photo, frames: Number(v) as PhotoSettings['frames'] })}
                 />
               </Row>
-              {p.supportsPhotoHdr && (
-                <Row label="Hardware photo HDR" hint="Device vendor HDR before our pipeline">
-                  <Toggle value={p.photo.nativeHdr} onChange={(v) => p.onPhoto({ ...p.photo, nativeHdr: v })} />
+              {p.capabilities?.nightExtension ? (
+                <Row label="Phone's Night mode" hint="Use the phone maker's night processing in Night Sight">
+                  <Toggle value={p.photo.vendorNight} onChange={(v) => p.onPhoto({ ...p.photo, vendorNight: v })} />
                 </Row>
-              )}
+              ) : null}
             </Section>
 
             <Section title="Selfie">
@@ -77,9 +76,6 @@ export function SettingsSheet(p: SettingsProps) {
                   onChange={(v) => p.onVideo({ ...p.video, stabilization: v as VideoSettings['stabilization'] })}
                 />
               </Row>
-              <Row label="HEVC (H.265)" hint="Half the file size at the same quality">
-                <Toggle value={p.video.hevc} onChange={(v) => p.onVideo({ ...p.video, hevc: v })} />
-              </Row>
               <Row
                 label="HDR video"
                 hint={p.supportsVideoHdr ? '10-bit HDR where the sensor supports it' : 'Not supported by this camera'}
@@ -93,42 +89,53 @@ export function SettingsSheet(p: SettingsProps) {
             </Section>
 
             <Section title="Camera hardware detected">
-              {p.capabilities && (
+              {p.capabilities ? (
                 <View style={s.hwCard}>
                   <Text style={s.hwTitle}>Advanced features</Text>
-                  <Text style={s.hwLine}>
-                    Manual ISO / shutter / focus: {p.capabilities.manualSensor ? 'yes' : 'no'}
-                  </Text>
+                  <Text style={s.hwLine}>Manual ISO / shutter / focus: {p.capabilities.manualSensor ? 'yes' : 'no'}</Text>
                   <Text style={s.hwLine}>Slow motion (high-speed): {p.capabilities.slowMotion ? 'yes' : 'no'}</Text>
                   <Text style={s.hwLine}>Dual front + back recording: {p.capabilities.concurrent ? 'yes' : 'no'}</Text>
+                  <Text style={s.hwLine}>Phone maker Night mode: {p.capabilities.nightExtension ? 'yes' : 'no'}</Text>
                 </View>
+              ) : (
+                <Text style={s.rowHint}>Reading camera hardware…</Text>
               )}
-              {p.profiles.map((d) => (
+              {p.capabilities?.cameras.map((d) => (
                 <View key={d.id} style={s.hwCard}>
                   <Text style={s.hwTitle}>
-                    {d.position === 'back' ? 'Rear' : d.position === 'front' ? 'Front' : 'External'} · {d.lenses}
+                    {d.position === 'back' ? 'Rear' : d.position === 'front' ? 'Front' : 'External'} camera · id {d.id}
+                    {d.physicalCameras > 1 ? ` · ${d.physicalCameras} lenses` : ''}
                   </Text>
                   <Text style={s.hwLine}>
-                    {d.maxPhotoMp} MP · video {d.maxVideo} · up to {d.maxFps} fps
+                    {d.maxPhotoMp} MP · video {d.videoQualities.join(' / ') || '—'} · up to {d.maxFps} fps
                   </Text>
                   <Text style={s.hwLine}>
-                    Zoom {d.zoomRange} · Exposure {d.exposureRange}
+                    Zoom {d.zoomMin.toFixed(1)}× – {d.zoomMax.toFixed(0)}× · EV {d.evMin.toFixed(1)} … {d.evMax.toFixed(1)}
                   </Text>
                   <Text style={s.hwLine}>
-                    Level {d.hardwareLevel} · {d.formats} formats · sensor {d.sensorOrientation}
+                    Level {d.hardwareLevel} · focal {d.focalLengths.map((f) => f.toFixed(1)).join(', ')} mm
                   </Text>
+                  {d.isoMax ? (
+                    <Text style={s.hwLine}>
+                      ISO {d.isoMin}–{d.isoMax} · shutter {Math.round(1e9 / Math.max(1, d.exposureMinNs))
+                        ? `1/${Math.round(1e9 / Math.max(1, d.exposureMinNs))}`
+                        : '—'}{' '}
+                      – {(d.exposureMaxNs / 1e9).toFixed(1)} s
+                    </Text>
+                  ) : null}
                   <Text style={s.hwLine}>
                     {[
                       d.videoHdr && 'HDR video',
-                      d.photoHdr && 'HDR photo',
-                      d.lowLightBoost && 'low-light boost',
+                      d.previewStabilization && 'cinematic stabilization',
+                      d.videoStabilization && 'video stabilization',
+                      d.slowMotion && 'slow motion',
+                      d.nightExtension && 'night mode',
+                      d.raw && 'RAW',
                       d.flash && 'flash',
-                      d.focus && 'tap-to-focus',
                     ]
                       .filter(Boolean)
                       .join(' · ') || 'basic'}
                   </Text>
-                  <Text style={s.hwLine}>Stabilization: {d.stabilization}</Text>
                 </View>
               ))}
             </Section>

@@ -1,6 +1,6 @@
 # iCam
 
-A Pixel-style camera for Android with a Liquid Glass interface, built with Expo, VisionCamera and Skia.
+A Pixel-style camera for Android with a Liquid Glass interface, built with Expo, a native CameraX module (`modules/icamera`) and Skia.
 
 ## What it does
 
