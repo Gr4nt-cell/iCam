@@ -21,7 +21,11 @@
       ],
       "blockedPermissions": [
         "android.permission.SYSTEM_ALERT_WINDOW"
-      ]
+      ],
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#0B0F1C"
+      }
     },
     "plugins": [
       [
@@ -49,7 +53,16 @@
             "enableProguardInReleaseBuilds": false
           }
         }
+      ],
+      [
+        "expo-splash-screen",
+        {
+          "image": "./assets/splash-icon.png",
+          "imageWidth": 180,
+          "backgroundColor": "#000000"
+        }
       ]
-    ]
+    ],
+    "icon": "./assets/icon.png"
   }
 }

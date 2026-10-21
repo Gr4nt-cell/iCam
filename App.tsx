@@ -15,6 +15,7 @@ import {
 } from 'react-native-vision-camera';
 import {
   getProCapabilities,
+  proCameraAvailable,
   ProCameraView,
   type ProCameraHandle,
   type ProCapabilities,
@@ -45,6 +46,7 @@ import {
   ZoomPills,
   type ShutterKind,
 } from './src/ui/Controls';
+import { ErrorBoundary } from './src/ui/ErrorBoundary';
 import { Glass } from './src/ui/Glass';
 import { AUTO_MANUAL, LookPanel, ProPanel, type ManualSettings } from './src/ui/ProPanel';
 import { PermissionGate, SettingsSheet, Viewer } from './src/ui/Sheets';
@@ -62,9 +64,11 @@ const NATIVE_ZOOM_STOPS: Lens[] = [
 
 export default function App() {
   return (
-    <SafeAreaProvider>
-      <CameraScreen />
-    </SafeAreaProvider>
+    <ErrorBoundary>
+      <SafeAreaProvider>
+        <CameraScreen />
+      </SafeAreaProvider>
+    </ErrorBoundary>
   );
 }
 
@@ -136,7 +140,7 @@ function CameraScreen() {
   }, []);
 
   useEffect(() => {
-    if (!camPerm.hasPermission) return;
+    if (!camPerm.hasPermission || !proCameraAvailable) return;
     getProCapabilities()
       .then(setCaps)
       .catch(() => setCaps(null));

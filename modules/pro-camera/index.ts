@@ -1,4 +1,4 @@
-import { requireNativeModule, requireNativeView } from 'expo';
+import { requireNativeView, requireOptionalNativeModule } from 'expo';
 import React, { forwardRef } from 'react';
 import type { ViewProps } from 'react-native';
 
@@ -50,14 +50,23 @@ export type ProCameraHandle = {
   takePhoto: () => Promise<void>;
 };
 
-const NativeModule = requireNativeModule('ProCamera');
-const NativeView: React.ComponentType<any> = requireNativeView('ProCamera');
+const NativeModule = requireOptionalNativeModule<{ getCapabilities: () => Promise<ProCapabilities> }>('ProCamera');
+
+let NativeView: React.ComponentType<any> | null = null;
+function nativeView() {
+  if (!NativeView && NativeModule) NativeView = requireNativeView('ProCamera');
+  return NativeView;
+}
+
+export const proCameraAvailable = !!NativeModule;
 
 export function getProCapabilities(): Promise<ProCapabilities> {
+  if (!NativeModule) return Promise.reject(new Error('ProCamera native module not linked'));
   return NativeModule.getCapabilities();
 }
 
-export const ProCameraView = forwardRef<ProCameraHandle, ProCameraProps>((props, ref) =>
-  React.createElement(NativeView, { ...props, ref }),
-);
+export const ProCameraView = forwardRef<ProCameraHandle, ProCameraProps>((props, ref) => {
+  const V = nativeView();
+  return V ? React.createElement(V, { ...props, ref }) : null;
+});
 ProCameraView.displayName = 'ProCameraView';
