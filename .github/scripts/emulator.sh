@@ -20,6 +20,8 @@ if [ ! -x "$SDK/cmdline-tools/latest/bin/sdkmanager" ]; then
   mv /tmp/clt/cmdline-tools "$SDK/cmdline-tools/latest"
 fi
 export PATH="$SDK/cmdline-tools/latest/bin:$SDK/emulator:$SDK/platform-tools:$PATH"
+export ANDROID_USER_HOME="$HOME/.android" ANDROID_AVD_HOME="$HOME/.android/avd"
+mkdir -p "$ANDROID_AVD_HOME"
 
 note "Disk: $(df -h / | tail -1)"
 (yes || true) | sdkmanager --licenses >/dev/null 2>&1
@@ -28,7 +30,8 @@ timeout 600 sdkmanager --install "platform-tools" "emulator" "system-images;andr
 ls -la /dev/kvm || note "no /dev/kvm"
 
 echo no | avdmanager create avd -n smoke -k "system-images;android-34;google_apis;x86_64" -d pixel_6 --force \
-  >/dev/null 2>&1 || fail "avd create"
+  > /tmp/avd.log 2>&1 || { cat /tmp/avd.log; fail "avd create"; }
+emulator -list-avds | grep -q smoke || { cat /tmp/avd.log; ls -R "$HOME/.android" | head; fail "avd not found after create"; }
 
 note "Starting emulator"
 nohup emulator -avd smoke -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim \
