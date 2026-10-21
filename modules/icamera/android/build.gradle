@@ -26,4 +26,6 @@ dependencies {
   implementation "androidx.camera:camera-video:$camerax"
   implementation "androidx.camera:camera-view:$camerax"
   implementation "androidx.camera:camera-extensions:$camerax"
+  // On-device person segmentation for Portrait mode
+  implementation "com.google.mlkit:segmentation-selfie:16.0.0-beta6"
 }

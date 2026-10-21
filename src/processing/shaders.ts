@@ -274,3 +274,38 @@ half4 main(float2 p) {
   return half4(half3(clamp(c, 0.0, 1.0)), 1.0);
 }
 `;
+
+/**
+ * Portrait, step 1: keep only the background (premultiplied by 1 − mask) so the blur below
+ * never smears the person's colours into it. Children: img, mask
+ */
+export const BG_PREP_SKSL = `
+uniform shader img;
+uniform shader mask;
+half4 main(float2 p) {
+  float m = smoothstep(0.25, 0.65, mask.eval(p).r);
+  float a = 1.0 - m;
+  float3 c = img.eval(p).rgb;
+  // lift highlights a little so out-of-focus lights bloom like real bokeh
+  float l = dot(c, float3(0.299, 0.587, 0.114));
+  c *= 1.0 + 0.35 * smoothstep(0.75, 1.0, l);
+  return half4(half3(c * a), half(a));
+}
+`;
+
+/**
+ * Portrait, step 2: composite the sharp person over the blurred background with a feathered edge.
+ * Children: img (sharp), blurred (premultiplied background), mask (feathered)
+ */
+export const PORTRAIT_SKSL = `
+uniform shader img;
+uniform shader blurred;
+uniform shader mask;
+half4 main(float2 p) {
+  float3 c = img.eval(p).rgb;
+  float4 b = blurred.eval(p);
+  float3 bg = b.a > 0.02 ? b.rgb / b.a : c;
+  float m = smoothstep(0.3, 0.7, mask.eval(p).r);
+  return half4(half3(clamp(mix(bg, c, m), 0.0, 1.0)), 1.0);
+}
+`;

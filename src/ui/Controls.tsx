@@ -18,7 +18,9 @@ export const MODES: { key: CaptureMode; label: string }[] = [
   { key: 'night', label: 'Night Sight' },
   { key: 'pro', label: 'Pro' },
   { key: 'photo', label: 'Photo' },
+  { key: 'portrait', label: 'Portrait' },
   { key: 'video', label: 'Video' },
+  { key: 'pvideo', label: 'Portrait video' },
   { key: 'slowmo', label: 'Slo-mo' },
   { key: 'dual', label: 'Dual' },
   { key: 'action', label: 'Action' },
@@ -134,11 +136,29 @@ export function Shutter({
 
 /* ---------------- Thumbnail ---------------- */
 
-export function Thumb({ uri, processing, onPress }: { uri?: string; processing: boolean; onPress: () => void }) {
+export function Thumb({
+  uri,
+  processing,
+  onPress,
+  isVideo,
+  enabled,
+}: {
+  uri?: string;
+  processing: boolean;
+  onPress: () => void;
+  isVideo?: boolean;
+  enabled?: boolean;
+}) {
   return (
-    <Pressable onPress={onPress} disabled={!uri}>
+    <Pressable onPress={onPress} disabled={!uri && !enabled}>
       <Glass radius={28} style={styles.thumb}>
-        {uri ? <Image source={{ uri }} style={styles.thumbImg} /> : null}
+        {uri ? (
+          <Image source={{ uri }} style={styles.thumbImg} />
+        ) : isVideo ? (
+          <View style={[StyleSheet.absoluteFill, styles.center]}>
+            <MaterialCommunityIcons name="play-circle-outline" size={28} color="#fff" />
+          </View>
+        ) : null}
         {processing && (
           <View style={[StyleSheet.absoluteFill, styles.center, { backgroundColor: 'rgba(0,0,0,0.14)' }]}>
             <ActivityIndicator color="#fff" />

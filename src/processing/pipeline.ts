@@ -14,7 +14,17 @@ import {
 import { File, Paths } from 'expo-file-system';
 import { estimateNoise, estimateShift, refineSubpixel, tileResiduals, type LumaPlane } from './align';
 import { filterByKey, type FilterKey } from './filters';
-import { DENOISE_SKSL, FILTER_SKSL, FUSE_SKSL, LEVELS_SKSL, mergeSkSL, SMOOTH_SKSL, TONE_SKSL } from './shaders';
+import {
+  BG_PREP_SKSL,
+  DENOISE_SKSL,
+  FILTER_SKSL,
+  FUSE_SKSL,
+  LEVELS_SKSL,
+  mergeSkSL,
+  PORTRAIT_SKSL,
+  SMOOTH_SKSL,
+  TONE_SKSL,
+} from './shaders';
 
 /** Long edge we process at (≈12.5 MP at 4:3) – keeps GPU memory and time bounded. */
 const MAX_EDGE = 4096;
@@ -37,6 +47,8 @@ export type ProcessOptions = {
   meta?: PhotoMeta[];
   /** Output width/height ratio in portrait (3/4, 9/16, 1, or the screen's) */
   aspect?: number;
+  /** Portrait mode: person mask (grayscale PNG on the upright photo) and blur strength 0..1 */
+  portrait?: { maskPath: string; strength: number };
 };
 
 export type ProcessResult = { uri: string; frames: number; width: number; height: number };
@@ -437,6 +449,51 @@ export async function processSingle(
  * Full HDR+-style pipeline: decode → upright → align → robust merge → local tone map → JPEG.
  * Writes the result to the app cache and returns its file URI.
  */
+/**
+ * Portrait background blur: masked (no colour bleed) lens-style blur of the background,
+ * then the sharp subject composited back with a feathered edge.
+ */
+export async function applyPortrait(img: SkImage, maskPath: string, strength: number): Promise<SkImage> {
+  const W = img.width();
+  const H = img.height();
+  const uri = maskPath.startsWith('file://') ? maskPath : `file://${maskPath}`;
+  const rawMask = Skia.Image.MakeImageFromEncoded(Skia.Data.fromBytes(await new File(uri).bytes()));
+  if (!rawMask) return img;
+
+  // Feather the mask a little so hair / shoulders blend naturally
+  const mw = rawMask.width();
+  const mh = rawMask.height();
+  const mask = resized(rawMask, mw, mh, Math.max(1, mw / 300));
+  const mm = Skia.Matrix();
+  mm.scale(W / mw, H / mh);
+  const lin = (i: SkImage, m?: ReturnType<typeof Skia.Matrix>) =>
+    i.makeShaderOptions(TileMode.Clamp, TileMode.Clamp, FilterMode.Linear, MipmapMode.None, m);
+
+  // Background only (premultiplied), at quarter resolution, then a strong blur
+  const q = 4;
+  const bw = Math.max(8, Math.round(W / q));
+  const bh = Math.max(8, Math.round(H / q));
+  const prep = effect('bgprep', BG_PREP_SKSL);
+  const ps = surface(bw, bh);
+  const pp = Skia.Paint();
+  const toQuarter = Skia.Matrix();
+  toQuarter.scale(1 / q, 1 / q);
+  pp.setShader(prep.makeShaderWithChildren([], [lin(img), lin(mask, mm)], toQuarter));
+  ps.getCanvas().drawPaint(pp);
+  const bg = snapshot(ps);
+  const sigma = (Math.min(bw, bh) / 55) * (0.35 + strength * 1.1);
+  const blurred = resized(bg, bw, bh, sigma);
+
+  const bm = Skia.Matrix();
+  bm.scale(W / bw, H / bh);
+  const fx = effect('portrait', PORTRAIT_SKSL);
+  const surf = surface(W, H);
+  const paint = Skia.Paint();
+  paint.setShader(fx.makeShaderWithChildren([], [lin(img), lin(blurred, bm), lin(mask, mm)]));
+  surf.getCanvas().drawPaint(paint);
+  return snapshot(surf);
+}
+
 /** Auto levels from a small preview of the result: sets black/white points to remove haze. */
 function autoLevels(img: SkImage): SkImage {
   const W = img.width();
@@ -519,6 +576,10 @@ export async function processBurst(paths: string[], opts: ProcessOptions): Promi
   let out = toneMap(merged, opts);
   await yieldFrame();
   out = autoLevels(out);
+  if (opts.portrait) {
+    await yieldFrame();
+    out = await applyPortrait(out, opts.portrait.maskPath, opts.portrait.strength);
+  }
   out = finishLook(out, opts.smoothing ?? 0, opts.filter ?? 'natural');
   out = cropToAspect(out, opts.aspect);
   const bytes = out.encodeToBytes(ImageFormat.JPEG, 95);

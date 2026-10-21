@@ -348,7 +348,7 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
         when (mode) {
           "dual" -> bindDual(p, owner)
           "slowmo" -> bindSlowMo(p, owner)
-          "video", "action" -> bindVideo(p, owner)
+          "video", "action", "pvideo" -> bindVideo(p, owner)
           "pro" -> bindPro(p, owner)
           else -> bindPhoto(p, owner)
         }
@@ -436,14 +436,16 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
     val sel = selector(facing)
     val info = p.getCameraInfo(sel)
     val action = mode == "action"
-    val uhd = !action && videoQuality == "uhd"
-    val targetFps = if (action) 60 else fps
+    val portraitVideo = mode == "pvideo"
+    val uhd = !action && !portraitVideo && videoQuality == "uhd"
+    val targetFps = if (action) 60 else if (portraitVideo) 30 else fps
     val recorder = buildRecorder(if (uhd) Quality.UHD else Quality.FHD, if (uhd) 60_000_000 else 24_000_000)
 
     // Strongest stabilization available: preview stabilization (stabilizes preview + recording,
     // "cinematic"), else video EIS; plus optical stabilization when the lens has OIS.
-    val wantStab = action || stabilization != "off"
-    val previewStab = (action || stabilization == "cinematic") &&
+    // Portrait video always uses the strongest (cinematic) stabilization for smooth footage
+    val wantStab = action || portraitVideo || stabilization != "off"
+    val previewStab = (action || portraitVideo || stabilization == "cinematic") &&
       (try { Preview.getPreviewCapabilities(info).isStabilizationSupported } catch (e: Throwable) { false })
     val videoStabOk = try { Recorder.getVideoCapabilities(info).isStabilizationSupported } catch (e: Throwable) { false }
     val ois = wantStab && oisSupported(info)
@@ -456,7 +458,7 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
       ?.let { vb.setTargetFrameRate(it) }
       ?: ranges.filter { it.upper >= targetFps }.minByOrNull { it.upper }?.let { vb.setTargetFrameRate(Range(it.upper, it.upper)) }
 
-    if (hdrVideo && !action) {
+    if (hdrVideo && !action && !portraitVideo) {
       val supported = Recorder.getVideoCapabilities(info).supportedDynamicRanges
       if (supported.contains(DynamicRange.HLG_10_BIT)) vb.setDynamicRange(DynamicRange.HLG_10_BIT)
       else if (supported.contains(DynamicRange.HDR_UNSPECIFIED_10_BIT)) vb.setDynamicRange(DynamicRange.HDR_UNSPECIFIED_10_BIT)

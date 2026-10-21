@@ -47,6 +47,30 @@ class ICameraModule : Module() {
     /** Finds faces in a photo (upright, normalized 0..1 boxes) for face-priority exposure. */
     AsyncFunction("detectFaces") { path: String -> FaceFinder.find(path) }
 
+    /**
+     * Opens a saved photo/video (MediaStore id) in another app.
+     * chooser = false → the system default gallery (Android offers "Always" the first time);
+     * chooser = true  → the "Open with" picker every time.
+     */
+    AsyncFunction("openMedia") { id: String, isVideo: Boolean, chooser: Boolean ->
+      val activity = appContext.currentActivity ?: throw IllegalStateException("No activity")
+      val base = if (isVideo) android.provider.MediaStore.Video.Media.EXTERNAL_CONTENT_URI
+        else android.provider.MediaStore.Images.Media.EXTERNAL_CONTENT_URI
+      val uri = android.content.ContentUris.withAppendedId(base, id.toLong())
+      val view = android.content.Intent(android.content.Intent.ACTION_VIEW).apply {
+        setDataAndType(uri, if (isVideo) "video/*" else "image/*")
+        addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+      }
+      val intent = if (chooser) android.content.Intent.createChooser(view, "Open with") else view
+      activity.startActivity(intent)
+    }.runOnQueue(expo.modules.kotlin.functions.Queues.MAIN)
+
+    /** Person mask for Portrait mode (grayscale PNG, upright, 1 = person). */
+    AsyncFunction("segmentPerson") { path: String ->
+      val ctx = appContext.reactContext ?: throw IllegalStateException("No context")
+      PersonSegmenter.segment(ctx, path)
+    }
+
     /** Returns (and clears) the crash recorded on the previous run, if any. */
     Function("takeLastCrash") {
       val ctx = appContext.reactContext?.applicationContext ?: return@Function null

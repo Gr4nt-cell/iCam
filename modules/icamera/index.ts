@@ -2,7 +2,7 @@ import { requireNativeView, requireOptionalNativeModule } from 'expo';
 import React, { forwardRef } from 'react';
 import type { ViewProps } from 'react-native';
 
-export type CamMode = 'photo' | 'night' | 'pro' | 'video' | 'slowmo' | 'dual' | 'action';
+export type CamMode = 'photo' | 'portrait' | 'night' | 'pro' | 'video' | 'pvideo' | 'slowmo' | 'dual' | 'action';
 export type WhiteBalance = 'auto' | 'daylight' | 'cloudy' | 'shade' | 'tungsten' | 'fluorescent' | 'twilight' | 'kelvin';
 
 export type CameraProfile = {
@@ -118,7 +118,31 @@ const NativeModule = requireOptionalNativeModule<{
   getCapabilities: () => Promise<Capabilities>;
   takeLastCrash: () => string | null;
   detectFaces: (path: string) => Promise<FaceBox[]>;
+  segmentPerson: (path: string) => Promise<PersonMask | null>;
+  openMedia: (id: string, isVideo: boolean, chooser: boolean) => Promise<void>;
 }>('ICamera');
+
+export type PersonMask = { maskPath: string; width: number; height: number; coverage: number };
+
+/** On-device person segmentation for Portrait photos (null if unavailable). */
+export async function segmentPerson(path: string): Promise<PersonMask | null> {
+  try {
+    return (await NativeModule?.segmentPerson(path)) ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/** Open a saved photo/video in the gallery app (default) or via the "Open with" picker. */
+export async function openMedia(id: string, isVideo: boolean, chooser: boolean): Promise<boolean> {
+  try {
+    if (!NativeModule) return false;
+    await NativeModule.openMedia(id, isVideo, chooser);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 export type FaceBox = { x: number; y: number; w: number; h: number; confidence: number };
 

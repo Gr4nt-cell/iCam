@@ -240,11 +240,16 @@ export function LookPanel({
   onFilter,
   smoothing,
   onSmoothing,
+  blur,
+  onBlur,
 }: {
   filter: FilterKey;
   onFilter: (f: FilterKey) => void;
   smoothing: number;
   onSmoothing: (v: number) => void;
+  /** Portrait background blur strength (shown only in Portrait mode) */
+  blur?: number;
+  onBlur?: (v: number) => void;
 }) {
   return (
     <Glass radius={26} style={s.card}>
@@ -265,6 +270,16 @@ export function LookPanel({
         </View>
         <Text style={s.evLabel}>{Math.round(smoothing * 100)}</Text>
       </View>
+      {blur !== undefined && onBlur ? (
+        <View style={s.evRow}>
+          <MaterialCommunityIcons name="blur" size={20} color="#fff" />
+          <Text style={s.smoothLabel}>Blur</Text>
+          <View style={{ flex: 1 }}>
+            <Slider value={blur} min={0} max={1} onChange={onBlur} />
+          </View>
+          <Text style={s.evLabel}>{Math.round(blur * 100)}</Text>
+        </View>
+      ) : null}
     </Glass>
   );
 }

@@ -22,6 +22,8 @@ type SettingsProps = {
   capabilities: Capabilities | null;
   remember: boolean;
   onRemember: (v: boolean) => void;
+  galleryPref: string;
+  onGalleryPref: (v: string) => void;
   onResetDefaults: () => void;
 };
 
@@ -51,6 +53,17 @@ export function SettingsSheet(p: SettingsProps) {
                   <Toggle value={p.photo.vendorNight} onChange={(v) => p.onPhoto({ ...p.photo, vendorNight: v })} />
                 </Row>
               ) : null}
+            </Section>
+
+            <Section title="Gallery">
+              <Row label="Open photos in" hint="Gallery uses your default app (Android lets you pick “Always” once)">
+                <Segmented
+                  options={['viewer', 'gallery', 'ask']}
+                  labels={['iCam', 'Gallery', 'Ask']}
+                  value={p.galleryPref}
+                  onChange={p.onGalleryPref}
+                />
+              </Row>
             </Section>
 
             <Section title="Saved settings">
@@ -229,6 +242,7 @@ export function Viewer({
   originalUri,
   isVideo,
   info,
+  onOpenGallery,
 }: {
   visible: boolean;
   onClose: () => void;
@@ -236,6 +250,7 @@ export function Viewer({
   originalUri?: string;
   isVideo: boolean;
   info?: string;
+  onOpenGallery?: () => void;
 }) {
   const { width: W } = useWindowDimensions();
   const [split, setSplit] = useState(0.5);
@@ -287,6 +302,14 @@ export function Viewer({
               <MaterialCommunityIcons name="close" size={22} color="#fff" />
             </Glass>
           </Pressable>
+          <View style={{ flexDirection: 'row', gap: 10 }}>
+          {onOpenGallery ? (
+            <Pressable onPress={onOpenGallery} hitSlop={10}>
+              <Glass radius={22} style={{ paddingHorizontal: 14, height: 44, alignItems: 'center', justifyContent: 'center' }}>
+                <Text style={s.viewerText}>Open in Gallery</Text>
+              </Glass>
+            </Pressable>
+          ) : null}
           {canCompare && !isVideo ? (
             <Pressable onPress={() => setCompare((c) => !c)} hitSlop={10}>
               <Glass radius={22} style={{ paddingHorizontal: 14, height: 44, alignItems: 'center', justifyContent: 'center' }}>
@@ -294,6 +317,7 @@ export function Viewer({
               </Glass>
             </Pressable>
           ) : null}
+          </View>
         </View>
         {!isVideo && info ? (
           <View style={s.viewerBottom} pointerEvents="none">

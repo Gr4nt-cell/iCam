@@ -8,6 +8,8 @@ import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-cont
 import {
   cameraModuleAvailable,
   detectFaces,
+  openMedia,
+  segmentPerson,
   getCapabilities,
   ICameraView,
   type Capabilities,
@@ -43,7 +45,8 @@ import { AUTO_MANUAL, LookPanel, ProPanel, type ManualSettings } from './src/ui/
 import { PermissionGate, SettingsSheet, Viewer } from './src/ui/Sheets';
 
 type Flash = 'off' | 'auto' | 'on';
-type Last = { uri?: string; original?: string; isVideo: boolean; info?: string };
+type Last = { uri?: string; original?: string; isVideo: boolean; info?: string; assetId?: string };
+type GalleryPref = 'viewer' | 'gallery' | 'ask';
 type BurstResult = {
   paths: string[];
   evs?: number[];
@@ -57,7 +60,7 @@ const ASPECTS: Aspect[] = ['4:3', '16:9', '1:1', 'full'];
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
-const VIDEO_MODES: CaptureMode[] = ['video', 'slowmo', 'dual', 'action'];
+const VIDEO_MODES: CaptureMode[] = ['video', 'pvideo', 'slowmo', 'dual', 'action'];
 
 export default function App() {
   return (
@@ -129,6 +132,8 @@ function CameraScreen() {
   const [ready, setReady] = useState<ReadyEvent | null>(null);
   const [pip, setPip] = useState({ x: 0.74, y: 0.22, size: 0.34 });
   const [aspect, setAspect] = useState<Aspect>('4:3');
+  const [bokeh, setBokeh] = useState(0.6);
+  const [galleryPref, setGalleryPref] = useState<GalleryPref>('viewer');
   const win = useWindowDimensions();
   const [remember, setRemember] = useState(false);
   const [settingsLoaded, setSettingsLoaded] = useState(false);
@@ -160,6 +165,8 @@ function CameraScreen() {
     brightness: number;
     shadows: number;
     aspect: Aspect;
+    bokeh: number;
+    galleryPref: GalleryPref;
   };
   useEffect(() => {
     loadSettings<Saved>().then((v) => {
@@ -176,6 +183,8 @@ function CameraScreen() {
         if (typeof v.brightness === 'number') setBrightness(v.brightness);
         if (typeof v.shadows === 'number') setShadows(v.shadows);
         if (v.aspect) setAspect(v.aspect);
+        if (typeof v.bokeh === 'number') setBokeh(v.bokeh);
+        if (v.galleryPref) setGalleryPref(v.galleryPref);
       }
       setSettingsLoaded(true);
     });
@@ -184,11 +193,11 @@ function CameraScreen() {
     if (!settingsLoaded) return;
     if (!remember) return;
     const t = setTimeout(
-      () => saveSettings({ remember, mode, photo, video, mirrorSelfie, filter, smoothing, pip, manual, brightness, shadows, aspect }),
+      () => saveSettings({ remember, mode, photo, video, mirrorSelfie, filter, smoothing, pip, manual, brightness, shadows, aspect, bokeh, galleryPref }),
       400,
     );
     return () => clearTimeout(t);
-  }, [settingsLoaded, remember, mode, photo, video, mirrorSelfie, filter, smoothing, pip, manual, brightness, shadows, aspect]);
+  }, [settingsLoaded, remember, mode, photo, video, mirrorSelfie, filter, smoothing, pip, manual, brightness, shadows, aspect, bokeh, galleryPref]);
 
   useEffect(() => {
     const sub = AppState.addEventListener('change', (s) => setAppActive(s === 'active'));
@@ -203,7 +212,13 @@ function CameraScreen() {
   }, [perms.camera]);
 
   const shutterKind: ShutterKind =
-    mode === 'night' ? 'night' : mode === 'photo' ? 'photo' : mode === 'pro' && !proVideo ? 'photo' : 'video';
+    mode === 'night'
+      ? 'night'
+      : mode === 'photo' || mode === 'portrait'
+        ? 'photo'
+        : mode === 'pro' && !proVideo
+          ? 'photo'
+          : 'video';
   const isPhotoShot = shutterKind !== 'video';
   const isVideoMode = VIDEO_MODES.includes(mode) || (mode === 'pro' && proVideo);
 
@@ -243,13 +258,18 @@ function CameraScreen() {
       setMode(m);
       setShowSliders(false);
       if (VIDEO_MODES.includes(m)) setShowLook(false);
+      // Portrait video: flattering tighter framing (2× with a telephoto lens, else 1.5×)
+      if (m === 'pvideo') setZoom(clamp(zoomRange.max >= 5 ? 2 : 1.5, zoomRange.min, zoomRange.max));
+      else if (mode === 'pvideo') setZoom(1);
     },
-    [recording, mode],
+    [recording, mode, zoomRange],
   );
 
   const saveToGallery = useCallback(
-    async (uri: string) => {
-      if (perms.media) await MediaLibrary.createAssetAsync(uri);
+    async (uri: string): Promise<string | undefined> => {
+      if (!perms.media) return undefined;
+      const asset = await MediaLibrary.createAssetAsync(uri);
+      return asset?.id;
     },
     [perms.media],
   );
@@ -306,7 +326,14 @@ function CameraScreen() {
       } else {
         setToast(night ? `Night Sight · merging ${paths.length} frames` : `HDR+ · merging ${paths.length} frame${paths.length > 1 ? 's' : ''}`);
         const faces = await detectFaces(paths[0]);
+        let portrait: { maskPath: string; strength: number } | undefined;
+        if (mode === 'portrait') {
+          const mask = await segmentPerson(paths[0]);
+          if (mask && mask.coverage > 0.02) portrait = { maskPath: mask.maskPath, strength: bokeh };
+          else flashToast('No person found — saved without background blur', 3000);
+        }
         const out = await processBurst(paths, {
+          portrait,
           night,
           brightness,
           shadows,
@@ -319,10 +346,10 @@ function CameraScreen() {
           aspect: aspectRatio,
         });
         uri = out.uri;
-        info = `${night ? 'Night Sight' : 'HDR+'} · ${out.frames} frame${out.frames > 1 ? 's' : ''}${faces.length ? ` · ${faces.length} face${faces.length > 1 ? 's' : ''}` : ''}`;
+        info = `${night ? 'Night Sight' : portrait ? 'Portrait' : 'HDR+'} · ${out.frames} frame${out.frames > 1 ? 's' : ''}${faces.length ? ` · ${faces.length} face${faces.length > 1 ? 's' : ''}` : ''}`;
       }
-      await saveToGallery(uri);
-      setLast({ uri, original, isVideo: false, info: look ? `${info} · ${look}` : info });
+      const assetId = await saveToGallery(uri);
+      setLast({ uri, original, isVideo: false, info: look ? `${info} · ${look}` : info, assetId });
       flashToast('Saved');
     } catch (e: any) {
       if (paths[0]) await saveToGallery(`file://${paths[0]}`).catch(() => {});
@@ -331,7 +358,7 @@ function CameraScreen() {
       setProcessing(false);
       setBusy(false);
     }
-  }, [busy, ready, mode, flash, photo.frames, photo.highlightBracket, brightness, shadows, smoothing, filter, aspectRatio, captureBurst, saveToGallery, flashToast]);
+  }, [busy, ready, mode, flash, photo.frames, photo.highlightBracket, brightness, shadows, smoothing, filter, aspectRatio, bokeh, captureBurst, saveToGallery, flashToast]);
 
   /* ---------- capture: video ---------- */
   const toggleRecording = useCallback(async () => {
@@ -369,6 +396,17 @@ function CameraScreen() {
     }
     return shootPhoto();
   }, [isVideoMode, timer, toggleRecording, shootPhoto]);
+
+ /* ---------- open the last capture: iCam viewer, gallery app, or "Open with" ---------- */
+  const openLast = useCallback(async () => {
+    if (!last) return;
+    if (galleryPref !== 'viewer' && last.assetId) {
+      const ok = await openMedia(last.assetId, last.isVideo, galleryPref === 'ask');
+      if (ok) return;
+      flashToast('No gallery app could open it — showing it here');
+    }
+    setViewerOpen(true);
+  }, [last, galleryPref, flashToast]);
 
   /* ---------- exposure +/- (1/3 EV steps, every mode) ---------- */
   const nudgeExposure = useCallback(
@@ -459,6 +497,10 @@ function CameraScreen() {
         : 'NIGHT'
       : mode === 'photo'
         ? 'HDR+'
+        : mode === 'portrait'
+          ? 'PORTRAIT'
+          : mode === 'pvideo'
+            ? 'PORTRAIT VIDEO'
         : mode === 'pro'
           ? proVideo
             ? 'PRO VIDEO'
@@ -527,9 +569,10 @@ function CameraScreen() {
               return;
             }
             try {
-              await saveToGallery(`file://${path}`);
+              const assetId = await saveToGallery(`file://${path}`);
               setLast({
                 isVideo: true,
+                assetId,
                 info: `${slowMotion ? 'Slow motion · ' : mode === 'dual' ? 'Dual · ' : ''}${Math.round(durationMs / 1000)} s`,
               });
               flashToast(slowMotion ? 'Slow-motion video saved' : 'Video saved');
@@ -641,7 +684,14 @@ function CameraScreen() {
       <View style={[styles.bottom, { paddingBottom: insets.bottom + 14 }]} pointerEvents="box-none">
         <Toast text={toast} />
         {showLook && isPhotoShot && (
-          <LookPanel filter={filter} onFilter={setFilter} smoothing={smoothing} onSmoothing={setSmoothing} />
+          <LookPanel
+            filter={filter}
+            onFilter={setFilter}
+            smoothing={smoothing}
+            onSmoothing={setSmoothing}
+            blur={mode === 'portrait' ? bokeh : undefined}
+            onBlur={setBokeh}
+          />
         )}
         {mode === 'pro' && !showLook && (
           <ProPanel
@@ -683,7 +733,7 @@ function CameraScreen() {
         <Glass radius={34} style={styles.dock}>
           <ModeCarousel mode={mode} modes={visibleModes} onChange={changeMode} disabled={recording} />
           <View style={styles.shutterRow}>
-            <Thumb uri={last?.uri} processing={processing} onPress={() => setViewerOpen(true)} />
+            <Thumb uri={last?.uri} processing={processing} onPress={openLast} isVideo={!!last?.isVideo} enabled={!!last} />
             <Shutter kind={shutterKind} recording={recording} busy={busy || countdown > 0} onPress={onShutter} />
             {mode === 'dual' ? (
               <IconButton
@@ -718,6 +768,8 @@ function CameraScreen() {
         mirrorSelfie={mirrorSelfie}
         onMirrorSelfie={setMirrorSelfie}
         capabilities={caps}
+        galleryPref={galleryPref}
+        onGalleryPref={(v) => setGalleryPref(v as GalleryPref)}
         remember={remember}
         onRemember={(v) => {
           setRemember(v);
@@ -746,6 +798,14 @@ function CameraScreen() {
         originalUri={last?.original}
         isVideo={!!last?.isVideo}
         info={last?.info}
+        onOpenGallery={
+          last?.assetId
+            ? () => {
+                setViewerOpen(false);
+                openMedia(last.assetId!, last.isVideo, galleryPref === 'ask');
+              }
+            : undefined
+        }
       />
     </View>
   );
