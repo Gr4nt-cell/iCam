@@ -558,7 +558,7 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
             if (i + 1 < n) shoot(i + 1) else finish(null)
           }
 
-          override fun emitError(exception: ImageCaptureException) {
+          override fun onError(exception: ImageCaptureException) {
             finish(exception.message ?: "Capture failed")
           }
         },
