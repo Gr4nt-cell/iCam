@@ -112,6 +112,17 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
   private var rearState: Map<String, Any?> = emptyMap()
 
   private var rebindQueued = false
+
+  /** Expo events can't carry null values – drop them. */
+  @Suppress("UNCHECKED_CAST")
+  private fun clean(m: Map<String, Any?>): Map<String, Any> = m.filterValues { it != null } as Map<String, Any>
+  private fun emitReady(m: Map<String, Any?>) = onReady(clean(m))
+  private fun emitError(m: Map<String, Any?>) = onError(clean(m))
+  private fun emitRecordingFinished(m: Map<String, Any?>) = onRecordingFinished(clean(m))
+  private fun emitPhotosCaptured(m: Map<String, Any?>) = onPhotosCaptured(clean(m))
+  private fun emitRearAction(m: Map<String, Any?>) = onRearAction(clean(m))
+  private fun emitRearStatus(m: Map<String, Any?>) = onRearStatus(clean(m))
+
   private var burstEvOffset = 0.0
 
   init {
@@ -152,29 +163,29 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
     val displays = RearDisplays.list(context)
     if (displays.isEmpty()) {
       rearRequested = false
-      onRearStatus(mapOf("active" to false, "reason" to "This phone doesn't make its back screen available to apps"))
+      emitRearStatus(mapOf("active" to false, "reason" to "This phone doesn't make its back screen available to apps"))
       return
     }
     val activity = appContext.currentActivity ?: return
     try {
-      val p = RearScreenPresentation(activity, displays.first()) { action -> onRearAction(mapOf("action" to action)) }
+      val p = RearScreenPresentation(activity, displays.first()) { action -> emitRearAction(mapOf("action" to action)) }
       p.setOnDismissListener {
         if (rear === p) {
           rear = null
           rearRequested = false
           currentPreview?.setSurfaceProvider(previewView.surfaceProvider)
-          onRearStatus(mapOf("active" to false, "reason" to null))
+          emitRearStatus(mapOf("active" to false, "reason" to null))
         }
       }
       p.show()
       rear = p
       p.update(rearState)
       currentPreview?.setSurfaceProvider(p.previewView.surfaceProvider)
-      onRearStatus(mapOf("active" to true, "display" to displays.first().name))
+      emitRearStatus(mapOf("active" to true, "display" to displays.first().name))
     } catch (e: Throwable) {
       rear = null
       rearRequested = false
-      onRearStatus(mapOf("active" to false, "reason" to "The back screen refused the camera view (${e.javaClass.simpleName})"))
+      emitRearStatus(mapOf("active" to false, "reason" to "The back screen refused the camera view (${e.javaClass.simpleName})"))
     }
   }
 
@@ -264,7 +275,7 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
         setTorch(torch)
         applyControls()
         val z = camera?.cameraInfo?.zoomState?.value
-        onReady(
+        emitReady(
           mapOf(
             "mode" to mode,
             "slowMotionFps" to slowFps,
@@ -531,7 +542,7 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
       burstEvOffset = 0.0
       ic.flashMode = firstFlash
       applyControls()
-      onPhotosCaptured(mapOf("paths" to paths, "error" to error, "nightExtension" to usingNightExtension))
+      emitPhotosCaptured(mapOf("paths" to paths, "error" to error, "nightExtension" to usingNightExtension))
     }
 
     fun shoot(i: Int) {
@@ -547,7 +558,7 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
             if (i + 1 < n) shoot(i + 1) else finish(null)
           }
 
-          override fun onError(exception: ImageCaptureException) {
+          override fun emitError(exception: ImageCaptureException) {
             finish(exception.message ?: "Capture failed")
           }
         },
@@ -576,7 +587,7 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
       if (event is VideoRecordEvent.Finalize) {
         recording = null
         val ok = file.exists() && file.length() > 0
-        onRecordingFinished(
+        emitRecordingFinished(
           mapOf(
             "path" to if (ok) file.absolutePath else null,
             "durationMs" to event.recordingStats.recordedDurationNanos / 1_000_000.0,
@@ -593,6 +604,6 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
   }
 
   private fun emitError(message: String) {
-    onError(mapOf("message" to message))
+    emitError(mapOf("message" to message))
   }
 }
