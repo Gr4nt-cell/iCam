@@ -78,7 +78,9 @@ jobs:
 
       - name: Report what got linked
         if: always()
+        continue-on-error: true
         run: |
+          set +e +o pipefail
           enc() { sed -e 's/\x1b\[[0-9;]*m//g' -e 's/%/%25/g' | awk '{printf "%s%%0A", $0}'; }
           r=$(npx expo-modules-autolinking resolve -p android --json 2>&1 | tr ',' '\n' | grep -i -A3 "icamera" | head -20)
           echo "::notice title=Resolve (android)::$( (echo "${r:-icamera NOT in resolve output}") | enc)"
