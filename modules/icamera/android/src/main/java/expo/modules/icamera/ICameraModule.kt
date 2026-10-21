@@ -102,8 +102,8 @@ class ICameraModule : Module() {
     }
   }
 
-  @OptIn(ExperimentalCamera2Interop::class, ExperimentalHighSpeedVideo::class)
-  @androidx.annotation.OptIn(markerClass = [ExperimentalCamera2Interop::class, ExperimentalHighSpeedVideo::class])
+  @OptIn(ExperimentalCamera2Interop::class, ExperimentalHighSpeedVideo::class, androidx.camera.core.ExperimentalSessionConfig::class)
+  @androidx.annotation.OptIn(markerClass = [ExperimentalCamera2Interop::class, ExperimentalHighSpeedVideo::class, androidx.camera.core.ExperimentalSessionConfig::class])
   private fun capabilities(ctx: Context, provider: ProcessCameraProvider, ext: ExtensionsManager?): Map<String, Any?> {
     val pm = ctx.packageManager
     val concurrent = try {
@@ -135,8 +135,8 @@ class ICameraModule : Module() {
     )
   }
 
-  @OptIn(ExperimentalCamera2Interop::class, ExperimentalHighSpeedVideo::class)
-  @androidx.annotation.OptIn(markerClass = [ExperimentalCamera2Interop::class, ExperimentalHighSpeedVideo::class])
+  @OptIn(ExperimentalCamera2Interop::class, ExperimentalHighSpeedVideo::class, androidx.camera.core.ExperimentalSessionConfig::class)
+  @androidx.annotation.OptIn(markerClass = [ExperimentalCamera2Interop::class, ExperimentalHighSpeedVideo::class, androidx.camera.core.ExperimentalSessionConfig::class])
   private fun describe(info: CameraInfo, ext: ExtensionsManager?): Map<String, Any?> {
     val c2 = Camera2CameraInfo.from(info)
     fun <T> ch(key: CameraCharacteristics.Key<T>): T? = try { c2.getCameraCharacteristic(key) } catch (e: Throwable) { null }

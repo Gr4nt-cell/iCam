@@ -130,8 +130,7 @@ jobs:
         if: failure()
         run: |
           touch build.log
-          grep -nE "error|Error|ERROR|FAILED|e: |Unresolved|What went wrong|Could not" build.log \
-            | grep -vE "warning:|ERR_PNPM|errorprone" | tail -45 > errors.txt || true
+          { grep -E "^e: " build.log | head -40; grep -nE "FAILED|What went wrong|Could not|error TS" build.log | head -15; } > errors.txt || true
           [ -s errors.txt ] || tail -40 build.log > errors.txt
           msg=$(sed -e 's/%/%25/g' errors.txt | awk '{printf "%s%%0A", $0}' | cut -c1-60000)
           echo "::error title=Build errors::${msg}"

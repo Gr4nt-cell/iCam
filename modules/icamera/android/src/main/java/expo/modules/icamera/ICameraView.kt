@@ -372,8 +372,8 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
     imageCapture = ic
   }
 
-  @OptIn(ExperimentalHighSpeedVideo::class)
-  @androidx.annotation.OptIn(markerClass = [ExperimentalHighSpeedVideo::class])
+  @OptIn(ExperimentalHighSpeedVideo::class, androidx.camera.core.ExperimentalSessionConfig::class)
+  @androidx.annotation.OptIn(markerClass = [ExperimentalHighSpeedVideo::class, androidx.camera.core.ExperimentalSessionConfig::class])
   private fun bindSlowMo(p: ProcessCameraProvider, owner: LifecycleOwner) {
     val sel = selector(facing)
     val info = p.getCameraInfo(sel)
