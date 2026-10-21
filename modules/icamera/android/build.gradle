@@ -1,0 +1,29 @@
+plugins {
+  id 'com.android.library'
+  id 'expo-module-gradle-plugin'
+}
+
+group = 'expo.modules.icamera'
+version = '1.0.0'
+
+android {
+  namespace "expo.modules.icamera"
+  defaultConfig {
+    versionCode 1
+    versionName "1.0.0"
+  }
+  lintOptions {
+    abortOnError false
+    checkReleaseBuilds false
+  }
+}
+
+dependencies {
+  def camerax = "1.5.1"
+  implementation "androidx.camera:camera-core:$camerax"
+  implementation "androidx.camera:camera-camera2:$camerax"
+  implementation "androidx.camera:camera-lifecycle:$camerax"
+  implementation "androidx.camera:camera-video:$camerax"
+  implementation "androidx.camera:camera-view:$camerax"
+  implementation "androidx.camera:camera-extensions:$camerax"
+}
