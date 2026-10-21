@@ -111,6 +111,9 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
   private var pipY = 0.2f
   private var pipSize = 0.34f
 
+  private var aspect = "4:3"
+  private var previewFit = true
+
   private var rebindQueued = false
 
   /** Expo events can't carry null values – drop them. */
@@ -144,6 +147,19 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
   fun setStabilization(v: String) = rebindOnChange(stabilization, v) { stabilization = it }
   fun setNightExtension(v: Boolean) = rebindOnChange(nightExtension, v) { nightExtension = it }
   fun setAudio(v: Boolean) { audio = v }
+  fun setAspect(v: String) = rebindOnChange(aspect, v) { aspect = it }
+  fun setPreviewFit(v: Boolean) {
+    previewFit = v
+    previewView.scaleType = if (v) PreviewView.ScaleType.FIT_CENTER else PreviewView.ScaleType.FILL_CENTER
+  }
+
+  private fun resolutionSelector(): androidx.camera.core.resolutionselector.ResolutionSelector =
+    androidx.camera.core.resolutionselector.ResolutionSelector.Builder()
+      .setAspectRatioStrategy(
+        if (aspect == "16:9") androidx.camera.core.resolutionselector.AspectRatioStrategy.RATIO_16_9_FALLBACK_AUTO_STRATEGY
+        else androidx.camera.core.resolutionselector.AspectRatioStrategy.RATIO_4_3_FALLBACK_AUTO_STRATEGY,
+      )
+      .build()
   fun setDualPip(x: Float, y: Float, size: Float) {
     val nx = x.coerceIn(0f, 1f); val ny = y.coerceIn(0f, 1f); val ns = size.coerceIn(0.2f, 0.6f)
     if (nx == pipX && ny == pipY && ns == pipSize) return
@@ -259,8 +275,9 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
 
   @OptIn(ExperimentalCamera2Interop::class)
   @androidx.annotation.OptIn(markerClass = [ExperimentalCamera2Interop::class])
-  private fun newPreview(stabilized: Boolean = false, ois: Boolean = false): Preview {
+  private fun newPreview(stabilized: Boolean = false, ois: Boolean = false, matchAspect: Boolean = false): Preview {
     val b = Preview.Builder()
+    if (matchAspect) b.setResolutionSelector(resolutionSelector())
     if (stabilized) b.setPreviewStabilizationEnabled(true)
     if (ois) {
       androidx.camera.camera2.interop.Camera2Interop.Extender(b)
@@ -274,6 +291,7 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
 
   private fun newImageCapture(): ImageCapture =
     ImageCapture.Builder()
+      .setResolutionSelector(resolutionSelector())
       .setCaptureMode(ImageCapture.CAPTURE_MODE_MINIMIZE_LATENCY)
       .setFlashMode(flashMode())
       .build()
@@ -287,7 +305,7 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
     }
     val ic = newImageCapture()
     val ois = !usingNightExtension && oisSupported(p.getCameraInfo(selector(facing)))
-    camera = p.bindToLifecycle(owner, sel, newPreview(false, ois), ic)
+    camera = p.bindToLifecycle(owner, sel, newPreview(false, ois, true), ic)
     imageCapture = ic
   }
 
@@ -343,6 +361,7 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
   private fun bindPro(p: ProcessCameraProvider, owner: LifecycleOwner) {
     val sel = selector(facing)
     val ic = ImageCapture.Builder()
+      .setResolutionSelector(resolutionSelector())
       .setCaptureMode(ImageCapture.CAPTURE_MODE_MAXIMIZE_QUALITY)
       .setFlashMode(flashMode())
       .build()
@@ -350,10 +369,10 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
       .setMirrorMode(if (mirror) MirrorMode.MIRROR_MODE_ON_FRONT_ONLY else MirrorMode.MIRROR_MODE_OFF)
       .build()
     camera = try {
-      p.bindToLifecycle(owner, sel, newPreview(), ic, vc).also { videoCapture = vc }
+      p.bindToLifecycle(owner, sel, newPreview(matchAspect = true), ic, vc).also { videoCapture = vc }
     } catch (e: Throwable) {
       p.unbindAll()
-      p.bindToLifecycle(owner, sel, newPreview(), ic)
+      p.bindToLifecycle(owner, sel, newPreview(matchAspect = true), ic)
     }
     imageCapture = ic
   }
@@ -531,6 +550,8 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
     val withShort = shortEv < 0 && n > 1 && !usingNightExtension && mode != "pro"
     val paths = ArrayList<String>()
     val evs = ArrayList<Double>()
+    val metas = ArrayList<Map<String, Any>>()
+    var failures = 0
     val firstFlash = ic.flashMode
 
     fun currentEv(): Double {
@@ -543,7 +564,8 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
       ic.flashMode = firstFlash
       applyControls()
       emitPhotosCaptured(
-        mapOf("paths" to paths, "evs" to evs, "shortIndex" to if (withShort && paths.size == n + 1) n else -1,
+        mapOf("paths" to paths, "evs" to evs, "meta" to metas,
+          "shortIndex" to if (withShort && paths.size >= 2 && evs.last() < evs.first() - 0.5) paths.size - 1 else -1,
           "error" to error, "nightExtension" to usingNightExtension),
       )
     }
@@ -560,8 +582,9 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
           override fun onImageSaved(output: ImageCapture.OutputFileResults) {
             paths.add(file.absolutePath)
             evs.add(ev)
+            metas.add(photoMeta(file))
             when {
-              i + 1 < n -> shoot(i + 1)
+              i + 1 < n -> postDelayed({ shoot(i + 1) }, 40)
               i + 1 == n && withShort -> {
                 // One darker frame to recover bright windows / sky / lamps
                 burstEvOffset = evShift + shortEv
@@ -573,7 +596,15 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
           }
 
           override fun onError(exception: ImageCaptureException) {
-            finish(if (paths.isEmpty()) exception.message ?: "Capture failed" else null)
+            // Keep the burst going if a single frame fails
+            failures++
+            if (paths.isEmpty() && failures >= 3) {
+              finish(exception.message ?: "Capture failed")
+            } else if (i + 1 < n && failures < 3) {
+              postDelayed({ shoot(i + 1) }, 80)
+            } else {
+              finish(if (paths.isEmpty()) exception.message ?: "Capture failed" else null)
+            }
           }
         },
       )
@@ -586,6 +617,17 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
     } else {
       shoot(0)
     }
+  }
+
+  /** EXIF orientation + raw (stored) pixel size, so JS can rotate/mirror correctly. */
+  private fun photoMeta(file: File): Map<String, Any> {
+    val o = try {
+      android.media.ExifInterface(file.absolutePath)
+        .getAttributeInt(android.media.ExifInterface.TAG_ORIENTATION, android.media.ExifInterface.ORIENTATION_NORMAL)
+    } catch (e: Throwable) { 1 }
+    val b = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
+    android.graphics.BitmapFactory.decodeFile(file.absolutePath, b)
+    return mapOf("orientation" to o, "width" to b.outWidth, "height" to b.outHeight)
   }
 
   @SuppressLint("MissingPermission")

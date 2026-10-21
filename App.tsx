@@ -3,7 +3,7 @@ import * as Haptics from 'expo-haptics';
 import * as MediaLibrary from 'expo-media-library';
 import { StatusBar } from 'expo-status-bar';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { AppState, PanResponder, PermissionsAndroid, Pressable, StyleSheet, Text, View } from 'react-native';
+import { AppState, PanResponder, PermissionsAndroid, Pressable, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
   cameraModuleAvailable,
@@ -22,7 +22,7 @@ import {
   type VideoSettings,
 } from './src/camera/hardware';
 import { filterByKey, type FilterKey } from './src/processing/filters';
-import { processBurst, processSingle } from './src/processing/pipeline';
+import { processBurst, processSingle, type PhotoMeta } from './src/processing/pipeline';
 import {
   FocusRing,
   IconButton,
@@ -44,7 +44,16 @@ import { PermissionGate, SettingsSheet, Viewer } from './src/ui/Sheets';
 
 type Flash = 'off' | 'auto' | 'on';
 type Last = { uri?: string; original?: string; isVideo: boolean; info?: string };
-type BurstResult = { paths: string[]; evs?: number[]; shortIndex?: number; error?: string | null; nightExtension: boolean };
+type BurstResult = {
+  paths: string[];
+  evs?: number[];
+  meta?: PhotoMeta[];
+  shortIndex?: number;
+  error?: string | null;
+  nightExtension: boolean;
+};
+type Aspect = '4:3' | '16:9' | '1:1' | 'full';
+const ASPECTS: Aspect[] = ['4:3', '16:9', '1:1', 'full'];
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
@@ -119,6 +128,8 @@ function CameraScreen() {
   const [caps, setCaps] = useState<Capabilities | null>(null);
   const [ready, setReady] = useState<ReadyEvent | null>(null);
   const [pip, setPip] = useState({ x: 0.74, y: 0.22, size: 0.34 });
+  const [aspect, setAspect] = useState<Aspect>('4:3');
+  const win = useWindowDimensions();
   const [remember, setRemember] = useState(false);
   const [settingsLoaded, setSettingsLoaded] = useState(false);
 
@@ -148,6 +159,7 @@ function CameraScreen() {
     manual: ManualSettings;
     brightness: number;
     shadows: number;
+    aspect: Aspect;
   };
   useEffect(() => {
     loadSettings<Saved>().then((v) => {
@@ -163,6 +175,7 @@ function CameraScreen() {
         if (v.manual) setManual(v.manual);
         if (typeof v.brightness === 'number') setBrightness(v.brightness);
         if (typeof v.shadows === 'number') setShadows(v.shadows);
+        if (v.aspect) setAspect(v.aspect);
       }
       setSettingsLoaded(true);
     });
@@ -171,11 +184,11 @@ function CameraScreen() {
     if (!settingsLoaded) return;
     if (!remember) return;
     const t = setTimeout(
-      () => saveSettings({ remember, mode, photo, video, mirrorSelfie, filter, smoothing, pip, manual, brightness, shadows }),
+      () => saveSettings({ remember, mode, photo, video, mirrorSelfie, filter, smoothing, pip, manual, brightness, shadows, aspect }),
       400,
     );
     return () => clearTimeout(t);
-  }, [settingsLoaded, remember, mode, photo, video, mirrorSelfie, filter, smoothing, pip, manual, brightness, shadows]);
+  }, [settingsLoaded, remember, mode, photo, video, mirrorSelfie, filter, smoothing, pip, manual, brightness, shadows, aspect]);
 
   useEffect(() => {
     const sub = AppState.addEventListener('change', (s) => setAppActive(s === 'active'));
@@ -205,6 +218,8 @@ function CameraScreen() {
   );
 
   const stops = useMemo(() => lensStops(zoomRange.min, zoomRange.max), [zoomRange]);
+  // Output width/height (portrait) for the chosen aspect; 'full' matches the screen
+  const aspectRatio = aspect === '4:3' ? 3 / 4 : aspect === '16:9' ? 9 / 16 : aspect === '1:1' ? 1 : win.width / win.height;
 
   /* ---------- helpers ---------- */
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -286,7 +301,7 @@ function CameraScreen() {
         .join(' · ');
       if (pro || vendorNight) {
         // Already processed by the camera (manual or vendor night) – only apply the look
-        uri = smoothing > 0.01 || filter !== 'natural' ? await processSingle(paths[0], smoothing, filter) : original;
+        uri = await processSingle(paths[0], smoothing, filter, aspectRatio, res.meta?.[0]);
         info = pro ? 'Pro' : 'Night Sight (phone)';
       } else {
         setToast(night ? `Night Sight · merging ${paths.length} frames` : `HDR+ · merging ${paths.length} frame${paths.length > 1 ? 's' : ''}`);
@@ -300,6 +315,8 @@ function CameraScreen() {
           evs: res.evs,
           shortIndex: res.shortIndex ?? -1,
           faces,
+          meta: res.meta,
+          aspect: aspectRatio,
         });
         uri = out.uri;
         info = `${night ? 'Night Sight' : 'HDR+'} · ${out.frames} frame${out.frames > 1 ? 's' : ''}${faces.length ? ` · ${faces.length} face${faces.length > 1 ? 's' : ''}` : ''}`;
@@ -314,7 +331,7 @@ function CameraScreen() {
       setProcessing(false);
       setBusy(false);
     }
-  }, [busy, ready, mode, flash, photo.frames, photo.highlightBracket, brightness, shadows, smoothing, filter, captureBurst, saveToGallery, flashToast]);
+  }, [busy, ready, mode, flash, photo.frames, photo.highlightBracket, brightness, shadows, smoothing, filter, aspectRatio, captureBurst, saveToGallery, flashToast]);
 
   /* ---------- capture: video ---------- */
   const toggleRecording = useCallback(async () => {
@@ -483,6 +500,8 @@ function CameraScreen() {
           stabilization={video.stabilization}
           nightExtension={photo.vendorNight}
           dualPip={pip}
+          aspect={aspect === '16:9' || aspect === 'full' ? '16:9' : '4:3'}
+          previewFit={isPhotoShot && aspect !== 'full'}
           onReady={(e) => {
             const r = e.nativeEvent;
             setReady(r);
@@ -526,6 +545,18 @@ function CameraScreen() {
       )}
 
       <View style={StyleSheet.absoluteFill} {...responder.panHandlers} />
+      {isPhotoShot && aspect === '1:1' && (() => {
+        // Letterboxed 3:4 preview; shade the parts outside the square crop
+        const areaH = Math.min(win.height, (win.width * 4) / 3);
+        const top = (win.height - areaH) / 2;
+        const bar = (areaH - win.width) / 2;
+        return (
+          <>
+            <View pointerEvents="none" style={[styles.cropBar, { top, height: bar }]} />
+            <View pointerEvents="none" style={[styles.cropBar, { top: top + areaH - bar, height: bar }]} />
+          </>
+        );
+      })()}
       {focus && <FocusRing key={focus.key} x={focus.x} y={focus.y} />}
 
       {/* Top bar */}
@@ -546,6 +577,17 @@ function CameraScreen() {
                 size={22}
                 color={showLook || filter !== 'natural' || smoothing > 0.01 ? '#ffd76a' : '#fff'}
               />
+            </Pressable>
+          )}
+          {isPhotoShot && (
+            <Pressable
+              hitSlop={8}
+              onPress={() => {
+                Haptics.selectionAsync();
+                setAspect((a) => ASPECTS[(ASPECTS.indexOf(a) + 1) % ASPECTS.length]);
+              }}
+            >
+              <Text style={styles.aspectChip}>{aspect === 'full' ? 'FULL' : aspect}</Text>
             </Pressable>
           )}
           {facing === 'front' && mode !== 'dual' && (
@@ -690,6 +732,7 @@ function CameraScreen() {
           setManual(AUTO_MANUAL);
           setBrightness(0);
           setShadows(0);
+          setAspect('4:3');
           flashToast('Settings reset');
         }}
       />
@@ -719,5 +762,7 @@ const styles = StyleSheet.create({
   bottom: { position: 'absolute', left: 0, right: 0, bottom: 0, gap: 12 },
   shutterRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 18 },
   dock: { marginHorizontal: 14, paddingTop: 12, paddingBottom: 18, gap: 18 },
+  cropBar: { position: 'absolute', left: 0, right: 0, backgroundColor: 'rgba(0,0,0,0.55)' },
+  aspectChip: { color: '#fff', fontSize: 12, fontWeight: '800', borderWidth: 1.5, borderColor: '#fff', borderRadius: 6, paddingHorizontal: 5, paddingVertical: 1 },
   zoomRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 22 },
 });

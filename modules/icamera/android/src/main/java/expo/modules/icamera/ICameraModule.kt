@@ -90,6 +90,8 @@ class ICameraModule : Module() {
       Prop("hdrVideo") { view: ICameraView, v: Boolean -> view.setHdrVideo(v) }
       Prop("stabilization") { view: ICameraView, v: String -> view.setStabilization(v) }
       Prop("nightExtension") { view: ICameraView, v: Boolean -> view.setNightExtension(v) }
+      Prop("aspect") { view: ICameraView, v: String -> view.setAspect(v) }
+      Prop("previewFit") { view: ICameraView, v: Boolean -> view.setPreviewFit(v) }
       Prop("dualPip") { view: ICameraView, v: Map<String, Any?> ->
         view.setDualPip(
           (v["x"] as? Number)?.toFloat() ?: 0.78f,

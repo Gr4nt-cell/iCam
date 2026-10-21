@@ -85,13 +85,24 @@ export type ICameraProps = ViewProps & {
   nightExtension?: boolean;
   /** Dual mode: centre (0..1, y down) and width share of the small window */
   dualPip?: { x: number; y: number; size: number };
+  /** Sensor output shape for photo modes */
+  aspect?: '4:3' | '16:9';
+  /** Letterbox the preview (what you see = what you get) instead of filling the screen */
+  previewFit?: boolean;
   onReady?: (e: NativeEvent<ReadyEvent>) => void;
   onError?: (e: NativeEvent<{ message: string }>) => void;
   onRecordingFinished?: (
     e: NativeEvent<{ path: string | null; durationMs: number; slowMotion: boolean; error: string | null }>,
   ) => void;
   onPhotosCaptured?: (
-    e: NativeEvent<{ paths: string[]; evs?: number[]; shortIndex?: number; error?: string; nightExtension: boolean }>,
+    e: NativeEvent<{
+      paths: string[];
+      evs?: number[];
+      meta?: { orientation: number; width: number; height: number }[];
+      shortIndex?: number;
+      error?: string;
+      nightExtension: boolean;
+    }>,
   ) => void;
 };
 

@@ -33,6 +33,10 @@ export type ProcessOptions = {
   evs?: number[];
   /** Detected faces (normalized boxes on the upright photo) for face-priority exposure */
   faces?: { x: number; y: number; w: number; h: number }[];
+  /** Per-frame EXIF info from the camera (orientation / stored size) */
+  meta?: PhotoMeta[];
+  /** Output width/height ratio in portrait (3/4, 9/16, 1, or the screen's) */
+  aspect?: number;
 };
 
 export type ProcessResult = { uri: string; frames: number; width: number; height: number };
@@ -77,23 +81,62 @@ function applyOrientation(c: SkCanvas, o: number, w: number, h: number) {
 }
 
 /** Decodes a JPEG, bakes in its EXIF rotation and scales it to ≤ MAX_EDGE. */
-export async function loadUpright(path: string): Promise<SkImage> {
+export type PhotoMeta = { orientation: number; width: number; height: number };
+
+/** Learned at runtime: does Skia's decoder already apply EXIF orientation? (null = not known yet) */
+let skiaAppliesExif: boolean | null = null;
+
+/**
+ * Decodes a JPEG, makes it upright (rotation + selfie mirroring from EXIF) and scales to ≤ MAX_EDGE.
+ * Whether the decoder already rotated is detected from the image size, so this is correct either way.
+ */
+export async function loadUpright(path: string, meta?: PhotoMeta): Promise<SkImage> {
   const uri = path.startsWith('file://') ? path : `file://${path}`;
   const bytes = await new File(uri).bytes();
-  // Skia's decoder already applies the EXIF orientation, so the image is upright here
   const img = Skia.Image.MakeImageFromEncoded(Skia.Data.fromBytes(bytes));
   if (!img) throw new Error('Could not decode photo');
 
   const w = img.width();
   const h = img.height();
+  const o = meta?.orientation ?? 1;
+  if (meta && o >= 5 && o <= 8 && meta.width !== meta.height && meta.width > 0) {
+    skiaAppliesExif = w === meta.height && h === meta.width;
+  }
+  const apply = o > 1 && o <= 8 && skiaAppliesExif !== true;
+  const swap = apply && o >= 5;
+
   const s = Math.min(1, MAX_EDGE / Math.max(w, h));
-  const ow = Math.round(w * s);
-  const oh = Math.round(h * s);
+  const ow = Math.round((swap ? h : w) * s);
+  const oh = Math.round((swap ? w : h) * s);
   const surf = surface(ow, oh);
+  const c = surf.getCanvas();
+  c.save();
+  c.scale(s, s);
+  if (apply) applyOrientation(c, o, w, h);
+  c.drawImageRectOptions(img, Skia.XYWHRect(0, 0, w, h), Skia.XYWHRect(0, 0, w, h), FilterMode.Linear, MipmapMode.None);
+  c.restore();
+  return snapshot(surf);
+}
+
+/** Centre-crops to a width/height ratio (e.g. 1 for square, 9/16 for 16:9 portrait). */
+export function cropToAspect(img: SkImage, ratio?: number): SkImage {
+  if (!ratio) return img;
+  const W = img.width();
+  const H = img.height();
+  // keep the photo's own orientation (portrait/landscape)
+  const r = W > H ? 1 / ratio : ratio;
+  let cw = W;
+  let ch = Math.round(W / r);
+  if (ch > H) {
+    ch = H;
+    cw = Math.round(H * r);
+  }
+  if (Math.abs(cw - W) < 4 && Math.abs(ch - H) < 4) return img;
+  const surf = surface(cw, ch);
   surf.getCanvas().drawImageRectOptions(
     img,
-    Skia.XYWHRect(0, 0, w, h),
-    Skia.XYWHRect(0, 0, ow, oh),
+    Skia.XYWHRect((W - cw) / 2, (H - ch) / 2, cw, ch),
+    Skia.XYWHRect(0, 0, cw, ch),
     FilterMode.Linear,
     MipmapMode.None,
   );
@@ -331,8 +374,14 @@ export function finishLook(img: SkImage, smoothing = 0, filter: FilterKey = 'nat
 }
 
 /** Applies smoothing/filter to an already-processed photo file (used for Pro-mode shots). */
-export async function processSingle(path: string, smoothing: number, filter: FilterKey): Promise<string> {
-  const img = finishLook(await loadUpright(path), smoothing, filter);
+export async function processSingle(
+  path: string,
+  smoothing: number,
+  filter: FilterKey,
+  aspect?: number,
+  meta?: PhotoMeta,
+): Promise<string> {
+  const img = cropToAspect(finishLook(await loadUpright(path, meta), smoothing, filter), aspect);
   const file = new File(Paths.cache, `iCam_${Date.now()}.jpg`);
   file.create({ overwrite: true });
   file.write(img.encodeToBytes(ImageFormat.JPEG, 95));
@@ -370,8 +419,8 @@ function autoLevels(img: SkImage): SkImage {
 
 export async function processBurst(paths: string[], opts: ProcessOptions): Promise<ProcessResult> {
   const frames: SkImage[] = [];
-  for (const p of paths) {
-    frames.push(await loadUpright(p));
+  for (let i = 0; i < paths.length; i++) {
+    frames.push(await loadUpright(paths[i], opts.meta?.[i]));
     await yieldFrame();
   }
   const W = frames[0].width();
@@ -420,6 +469,7 @@ export async function processBurst(paths: string[], opts: ProcessOptions): Promi
   await yieldFrame();
   out = autoLevels(out);
   out = finishLook(out, opts.smoothing ?? 0, opts.filter ?? 'natural');
+  out = cropToAspect(out, opts.aspect);
   const bytes = out.encodeToBytes(ImageFormat.JPEG, 95);
 
   const file = new File(Paths.cache, `iCam_${Date.now()}.jpg`);
