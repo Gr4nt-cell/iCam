@@ -65,7 +65,7 @@ class ICameraModule : Module() {
     }
 
     View(ICameraView::class) {
-      Events("onReady", "onError", "onRecordingFinished", "onPhotosCaptured", "onRearAction", "onRearStatus")
+      Events("onReady", "onError", "onRecordingFinished", "onPhotosCaptured")
 
       Prop("mode") { view: ICameraView, v: String -> view.setMode(v) }
       Prop("facing") { view: ICameraView, v: String -> view.setFacing(v) }
@@ -87,8 +87,13 @@ class ICameraModule : Module() {
       Prop("hdrVideo") { view: ICameraView, v: Boolean -> view.setHdrVideo(v) }
       Prop("stabilization") { view: ICameraView, v: String -> view.setStabilization(v) }
       Prop("nightExtension") { view: ICameraView, v: Boolean -> view.setNightExtension(v) }
-      Prop("rearScreen") { view: ICameraView, v: Boolean -> view.setRearScreen(v) }
-      Prop("rearUi") { view: ICameraView, v: Map<String, Any?> -> view.setRearUi(v) }
+      Prop("dualPip") { view: ICameraView, v: Map<String, Any?> ->
+        view.setDualPip(
+          (v["x"] as? Number)?.toFloat() ?: 0.78f,
+          (v["y"] as? Number)?.toFloat() ?: 0.2f,
+          (v["size"] as? Number)?.toFloat() ?: 0.34f,
+        )
+      }
 
       AsyncFunction("capture") { view: ICameraView, count: Int, evShift: Double ->
         view.captureBurst(count, evShift)
@@ -131,7 +136,6 @@ class ICameraModule : Module() {
       "exposureMaxNs" to (back?.get("exposureMaxNs") ?: 0.0),
       "minFocusDistance" to (back?.get("minFocusDistance") ?: 0.0),
       "cameras" to cameras,
-      "rearDisplays" to try { RearDisplays.describe(ctx) } catch (e: Throwable) { emptyList<Map<String, Any?>>() },
     )
   }
 

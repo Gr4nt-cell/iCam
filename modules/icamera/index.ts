@@ -47,8 +47,6 @@ export type Capabilities = {
   exposureMaxNs: number;
   minFocusDistance: number;
   cameras: CameraProfile[];
-  /** Extra displays apps may draw on (e.g. a phone's back screen) */
-  rearDisplays: { id: number; name: string; width: number; height: number; presentation: boolean }[];
 };
 
 type NativeEvent<T> = { nativeEvent: T };
@@ -85,11 +83,8 @@ export type ICameraProps = ViewProps & {
   hdrVideo?: boolean;
   stabilization?: 'off' | 'standard' | 'cinematic';
   nightExtension?: boolean;
-  /** Show the viewfinder + controls on the phone's back screen */
-  rearScreen?: boolean;
-  rearUi?: { mode: 'photo' | 'video'; zoom: string; recording: boolean; seconds: number; countdown: number };
-  onRearAction?: (e: NativeEvent<{ action: 'shutter' | 'mode' | 'zoom' | 'exit' }>) => void;
-  onRearStatus?: (e: NativeEvent<{ active: boolean; reason?: string | null; display?: string }>) => void;
+  /** Dual mode: centre (0..1, y down) and width share of the small window */
+  dualPip?: { x: number; y: number; size: number };
   onReady?: (e: NativeEvent<ReadyEvent>) => void;
   onError?: (e: NativeEvent<{ message: string }>) => void;
   onRecordingFinished?: (

@@ -12,10 +12,10 @@ import {
   type SkSurface,
 } from '@shopify/react-native-skia';
 import { File, Paths } from 'expo-file-system';
-import { estimateShift, type LumaPlane } from './align';
+import { estimateShift, tileResiduals, type LumaPlane } from './align';
 import { readExifOrientation } from './exif';
 import { filterByKey, type FilterKey } from './filters';
-import { FILTER_SKSL, mergeSkSL, SMOOTH_SKSL, TONE_SKSL } from './shaders';
+import { DENOISE_SKSL, FILTER_SKSL, mergeSkSL, SMOOTH_SKSL, TONE_SKSL } from './shaders';
 
 /** Long edge we process at (≈12.5 MP at 4:3) – keeps GPU memory and time bounded. */
 const MAX_EDGE = 4096;
@@ -143,43 +143,72 @@ function lumaPlane(img: SkImage, tw: number): LumaPlane | null {
   return { data, w: tw, h: th };
 }
 
-/** Coarse-to-fine global alignment of each frame to frames[0]. Offsets are in full-res pixels. */
-function align(frames: SkImage[]): [number, number][] {
+type Alignment = { global: [number, number]; map: SkImage };
+
+const GRID_W = 8;
+
+/** Encodes per-tile residuals (full-res px, 0.5 px steps) into a tiny RGBA image the merge shader samples. */
+function offsetMap(dx: Int8Array, dy: Int8Array, gw: number, gh: number, scale: number): SkImage {
+  const px = new Uint8Array(gw * gh * 4);
+  for (let i = 0; i < gw * gh; i++) {
+    px[i * 4] = Math.max(0, Math.min(255, Math.round(128 + dx[i] * scale * 2)));
+    px[i * 4 + 1] = Math.max(0, Math.min(255, Math.round(128 + dy[i] * scale * 2)));
+    px[i * 4 + 2] = 128;
+    px[i * 4 + 3] = 255;
+  }
+  const img = Skia.Image.MakeImage(
+    { width: gw, height: gh, colorType: ColorType.RGBA_8888, alphaType: AlphaType.Unpremul },
+    Skia.Data.fromBytes(px),
+    gw * 4,
+  );
+  if (!img) throw new Error('Could not build alignment map');
+  return img;
+}
+
+/**
+ * HDR+-style alignment of each frame to frames[0]: coarse global search (64 px), refined global
+ * shift (256 px), then per-tile residuals on an 8 × n grid so local motion / slight rotation aligns too.
+ */
+function align(frames: SkImage[]): Alignment[] {
   const W = frames[0].width();
   const refC = lumaPlane(frames[0], 64);
   const refF = lumaPlane(frames[0], 256);
-  const out: [number, number][] = [];
+  const gh = Math.max(4, Math.round((GRID_W * frames[0].height()) / W));
+  const scale = W / 256;
+  const zero = new Int8Array(GRID_W * gh);
+  const out: Alignment[] = [];
   for (let k = 1; k < frames.length; k++) {
-    if (!refC || !refF) {
-      out.push([0, 0]);
-      continue;
-    }
-    const cC = lumaPlane(frames[k], 64);
-    const cF = lumaPlane(frames[k], 256);
-    if (!cC || !cF) {
-      out.push([0, 0]);
+    const cC = refC && lumaPlane(frames[k], 64);
+    const cF = refF && lumaPlane(frames[k], 256);
+    if (!refC || !refF || !cC || !cF) {
+      out.push({ global: [0, 0], map: offsetMap(zero, zero, GRID_W, gh, scale) });
       continue;
     }
     const [cx, cy] = estimateShift(refC, cC, 4);
     const [fx, fy] = estimateShift(refF, cF, 2, cx * 4, cy * 4);
-    const scale = W / 256;
-    out.push([fx * scale, fy * scale]);
+    const { dx, dy } = tileResiduals(refF, cF, fx, fy, GRID_W, gh, 2);
+    out.push({ global: [fx * scale, fy * scale], map: offsetMap(dx, dy, GRID_W, gh, scale) });
   }
   return out;
 }
 
-function merge(frames: SkImage[], offsets: [number, number][], sigma: number): SkImage {
+function merge(frames: SkImage[], al: Alignment[], sigma: number): SkImage {
   const n = frames.length;
   const fx = effect(`merge${n}`, mergeSkSL(n));
-  const children = frames.map((f) =>
-    f.makeShaderOptions(TileMode.Clamp, TileMode.Clamp, FilterMode.Linear, MipmapMode.None),
-  );
-  const uniforms: number[] = [];
-  offsets.forEach(([x, y]) => uniforms.push(x, y));
-  uniforms.push(sigma);
-
   const W = frames[0].width();
   const H = frames[0].height();
+  const clampLinear = (img: SkImage, m?: ReturnType<typeof Skia.Matrix>) =>
+    img.makeShaderOptions(TileMode.Clamp, TileMode.Clamp, FilterMode.Linear, MipmapMode.None, m);
+  const children = frames.map((f) => clampLinear(f));
+  al.forEach((a) => {
+    const m = Skia.Matrix();
+    m.scale(W / a.map.width(), H / a.map.height());
+    children.push(clampLinear(a.map, m));
+  });
+  const uniforms: number[] = [];
+  al.forEach((a) => uniforms.push(a.global[0], a.global[1]));
+  uniforms.push(sigma);
+
   const surf = surface(W, H);
   const paint = Skia.Paint();
   paint.setShader(fx.makeShaderWithChildren(uniforms, children));
@@ -191,44 +220,54 @@ function toneMap(img: SkImage, opts: ProcessOptions): SkImage {
   const W = img.width();
   const H = img.height();
 
-  // Base layer for local tone mapping: 1/16 scale, blurred, bilinearly upsampled in the shader
-  const f = 16;
-  const bw = Math.max(4, Math.round(W / f));
-  const bh = Math.max(4, Math.round(H / f));
-  const base = resized(img, bw, bh, 4);
+  // Two illumination layers for local tone mapping: fine (1/16) and coarse (1/64)
+  const fw = Math.max(4, Math.round(W / 16));
+  const fh = Math.max(4, Math.round(H / 16));
+  const baseF = resized(img, fw, fh, 3);
+  const cw = Math.max(2, Math.round(W / 64));
+  const chh = Math.max(2, Math.round(H / 64));
+  const baseC = resized(baseF, cw, chh, 2.5);
 
-  // Auto exposure from the log-average luminance (the burst is shot underexposed)
-  const px = rgba(base);
+  // Auto exposure from the log-average luminance (the burst is shot under-exposed)
+  const px = rgba(baseF);
   let logSum = 0;
   let count = 0;
+  let hiCount = 0;
   if (px) {
     for (let j = 0; j < px.length; j += 4) {
       const r = Math.pow(px[j] / 255, 2.2);
       const g = Math.pow(px[j + 1] / 255, 2.2);
       const b = Math.pow(px[j + 2] / 255, 2.2);
-      logSum += Math.log(0.0005 + 0.2126 * r + 0.7152 * g + 0.0722 * b);
+      const l = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+      logSum += Math.log(0.0005 + l);
+      if (l > 0.6) hiCount++;
       count++;
     }
   }
   const logAvg = count ? Math.exp(logSum / count) : 0.18;
-  const key = opts.night ? 0.11 : 0.14;
+  const brightShare = count ? hiCount / count : 0;
+  const key = opts.night ? 0.11 : 0.145;
   const maxGain = opts.night ? 8 : 3;
   const gain = Math.min(maxGain, Math.max(0.8, key / logAvg)) * Math.pow(2, opts.brightness * 0.7);
 
+  // High-contrast scenes (lots of bright sky / windows) get more range compression
   const params = opts.night
-    ? { shadows: 0.9, compress: 0.45, sat: 1.1, sharp: 0.2, warmth: -0.01 }
-    : { shadows: 0.6, compress: 0.35, sat: 1.08, sharp: 0.35, warmth: -0.015 };
+    ? { shadows: 0.9, compress: 0.45, sat: 1.1, sharp: 0.25, warmth: -0.01, clarity: 1.08 }
+    : { shadows: 0.6, compress: 0.32 + Math.min(0.15, brightShare * 0.6), sat: 1.08, sharp: 0.45, warmth: -0.015, clarity: 1.15 };
   const shadows = params.shadows + opts.shadows * 0.6;
 
-  const fx = effect('tone', TONE_SKSL);
-  const m = Skia.Matrix();
-  m.scale(W / bw, H / bh);
+  const fx = effect('tone2', TONE_SKSL);
+  const mF = Skia.Matrix();
+  mF.scale(W / fw, H / fh);
+  const mC = Skia.Matrix();
+  mC.scale(W / cw, H / chh);
   const children = [
     img.makeShaderOptions(TileMode.Clamp, TileMode.Clamp, FilterMode.Linear, MipmapMode.None),
-    base.makeShaderOptions(TileMode.Clamp, TileMode.Clamp, FilterMode.Linear, MipmapMode.None, m),
+    baseF.makeShaderOptions(TileMode.Clamp, TileMode.Clamp, FilterMode.Linear, MipmapMode.None, mF),
+    baseC.makeShaderOptions(TileMode.Clamp, TileMode.Clamp, FilterMode.Linear, MipmapMode.None, mC),
   ];
   const shader = fx.makeShaderWithChildren(
-    [gain, shadows, params.compress, params.sat, params.sharp, params.warmth],
+    [gain, shadows, params.compress, params.sat, params.sharp, params.warmth, params.clarity],
     children,
   );
   const surf = surface(W, H);
@@ -289,10 +328,19 @@ export async function processBurst(paths: string[], opts: ProcessOptions): Promi
 
   let merged = usable[0];
   if (usable.length > 1) {
-    const offsets = align(usable);
+    const al = align(usable);
     await yieldFrame();
-    merged = merge(usable, offsets, opts.night ? 0.015 : 0.006);
+    merged = merge(usable, al, opts.night ? 0.012 : 0.005);
   }
+  await yieldFrame();
+  // Clean remaining noise before tone mapping lifts the shadows (stronger with fewer frames / at night)
+  const radius = Math.max(3, Math.min(W, H) / 500);
+  const fewFrames = usable.length < 3 ? 0.15 : 0;
+  merged = shade(merged, 'denoise', DENOISE_SKSL, [
+    opts.night ? 0.95 : 0.8,
+    (opts.night ? 0.35 : 0.12) + fewFrames,
+    radius,
+  ]);
   await yieldFrame();
   let out = toneMap(merged, opts);
   await yieldFrame();

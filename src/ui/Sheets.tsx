@@ -97,12 +97,6 @@ export function SettingsSheet(p: SettingsProps) {
                   <Text style={s.hwLine}>Slow motion (high-speed): {p.capabilities.slowMotion ? 'yes' : 'no'}</Text>
                   <Text style={s.hwLine}>Dual front + back recording: {p.capabilities.concurrent ? 'yes' : 'no'}</Text>
                   <Text style={s.hwLine}>Phone maker Night mode: {p.capabilities.nightExtension ? 'yes' : 'no'}</Text>
-                  <Text style={s.hwLine}>
-                    Back screen for apps:{' '}
-                    {p.capabilities.rearDisplays?.length
-                      ? p.capabilities.rearDisplays.map((d) => `${d.name} ${d.width}×${d.height}`).join(', ')
-                      : 'none available'}
-                  </Text>
                 </View>
               ) : (
                 <Text style={s.rowHint}>Reading camera hardware…</Text>

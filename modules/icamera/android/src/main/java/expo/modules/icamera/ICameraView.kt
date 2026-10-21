@@ -65,8 +65,6 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
   private val onError by EventDispatcher()
   private val onRecordingFinished by EventDispatcher()
   private val onPhotosCaptured by EventDispatcher()
-  private val onRearAction by EventDispatcher()
-  private val onRearStatus by EventDispatcher()
 
   private val previewView = PreviewView(context).apply {
     implementationMode = PreviewView.ImplementationMode.COMPATIBLE
@@ -107,9 +105,10 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
   private var nightExtension = true
 
   private var currentPreview: Preview? = null
-  private var rear: RearScreenPresentation? = null
-  private var rearRequested = false
-  private var rearState: Map<String, Any?> = emptyMap()
+  // Dual-camera picture-in-picture: centre of the small window (0..1, y down) and its width share
+  private var pipX = 0.78f
+  private var pipY = 0.2f
+  private var pipSize = 0.34f
 
   private var rebindQueued = false
 
@@ -120,8 +119,6 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
   private fun emitError(m: Map<String, Any?>) = onError(clean(m))
   private fun emitRecordingFinished(m: Map<String, Any?>) = onRecordingFinished(clean(m))
   private fun emitPhotosCaptured(m: Map<String, Any?>) = onPhotosCaptured(clean(m))
-  private fun emitRearAction(m: Map<String, Any?>) = onRearAction(clean(m))
-  private fun emitRearStatus(m: Map<String, Any?>) = onRearStatus(clean(m))
 
   private var burstEvOffset = 0.0
 
@@ -146,54 +143,11 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
   fun setStabilization(v: String) = rebindOnChange(stabilization, v) { stabilization = it }
   fun setNightExtension(v: Boolean) = rebindOnChange(nightExtension, v) { nightExtension = it }
   fun setAudio(v: Boolean) { audio = v }
-  fun setRearScreen(v: Boolean) {
-    if (v == rearRequested) return
-    rearRequested = v
-    if (v) post { showRear() } else hideRear()
-  }
-  fun setRearUi(v: Map<String, Any?>) { rearState = v; rear?.update(v) }
-
-  /* ---------------- back screen ---------------- */
-
-  private fun activeSurfaceProvider(): Preview.SurfaceProvider =
-    rear?.previewView?.surfaceProvider ?: previewView.surfaceProvider
-
-  private fun showRear() {
-    if (rear != null || !rearRequested) return
-    val displays = RearDisplays.list(context)
-    if (displays.isEmpty()) {
-      rearRequested = false
-      emitRearStatus(mapOf("active" to false, "reason" to "This phone doesn't make its back screen available to apps"))
-      return
-    }
-    val activity = appContext.currentActivity ?: return
-    try {
-      val p = RearScreenPresentation(activity, displays.first()) { action -> emitRearAction(mapOf("action" to action)) }
-      p.setOnDismissListener {
-        if (rear === p) {
-          rear = null
-          rearRequested = false
-          currentPreview?.setSurfaceProvider(previewView.surfaceProvider)
-          emitRearStatus(mapOf("active" to false, "reason" to null))
-        }
-      }
-      p.show()
-      rear = p
-      p.update(rearState)
-      currentPreview?.setSurfaceProvider(p.previewView.surfaceProvider)
-      emitRearStatus(mapOf("active" to true, "display" to displays.first().name))
-    } catch (e: Throwable) {
-      rear = null
-      rearRequested = false
-      emitRearStatus(mapOf("active" to false, "reason" to "The back screen refused the camera view (${e.javaClass.simpleName})"))
-    }
-  }
-
-  private fun hideRear() {
-    val p = rear ?: return
-    rear = null
-    try { p.dismiss() } catch (_: Throwable) {}
-    currentPreview?.setSurfaceProvider(previewView.surfaceProvider)
+  fun setDualPip(x: Float, y: Float, size: Float) {
+    val nx = x.coerceIn(0f, 1f); val ny = y.coerceIn(0f, 1f); val ns = size.coerceIn(0.2f, 0.6f)
+    if (nx == pipX && ny == pipY && ns == pipSize) return
+    pipX = nx; pipY = ny; pipSize = ns
+    if (mode == "dual" && recording == null) scheduleRebind(60)
   }
   fun setZoom(v: Float) { zoom = v; camera?.cameraControl?.setZoomRatio(v) }
   fun setEvBias(v: Double) { ev = v; applyControls() }
@@ -225,7 +179,6 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
     super.onDetachedFromWindow()
     recording?.stop()
     recording = null
-    hideRear()
     provider?.unbindAll()
     camera = null
   }
@@ -298,7 +251,7 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
     val b = Preview.Builder()
     if (stabilized) b.setPreviewStabilizationEnabled(true)
     return b.build().also {
-      it.setSurfaceProvider(activeSurfaceProvider())
+      it.setSurfaceProvider(previewView.surfaceProvider)
       currentPreview = it
     }
   }
@@ -415,6 +368,15 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
 
     val vc = VideoCapture.withOutput(buildRecorder(Quality.FHD, 20_000_000))
     val group = UseCaseGroup.Builder().addUseCase(newPreview()).addUseCase(vc).build()
+
+    // Picture-in-picture box in normalized device coordinates (origin centre, +y up).
+    // Size it to the inset camera's own 3:4 portrait shape so faces aren't stretched.
+    val viewAspect = if (height > 0) width.toFloat() / height else 9f / 16f
+    val sx = pipSize
+    val sy = (sx * viewAspect * (4f / 3f)).coerceAtMost(0.9f)
+    val cx = (pipX * 2f - 1f).coerceIn(-1f + sx, 1f - sx)
+    val cy = (1f - pipY * 2f).coerceIn(-1f + sy, 1f - sy)
+
     val primary = ConcurrentCamera.SingleCameraConfig(
       main.cameraSelector,
       group,
@@ -424,14 +386,17 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
     val secondary = ConcurrentCamera.SingleCameraConfig(
       pip.cameraSelector,
       group,
-      CompositionSettings.Builder()
-        .setAlpha(1f)
-        .setOffset(2 / 3f - 0.1f, 2 / 3f - 0.1f)
-        .setScale(1 / 3f, 1 / 3f)
-        .build(),
+      CompositionSettings.Builder().setAlpha(1f).setOffset(cx, cy).setScale(sx, sy).build(),
       owner,
     )
-    camera = p.bindToLifecycle(listOf(primary, secondary)).cameras.firstOrNull()
+    val cc = p.bindToLifecycle(listOf(primary, secondary))
+    camera = cc.cameras.firstOrNull { it.cameraInfo.lensFacing == main.lensFacing } ?: cc.cameras.firstOrNull()
+    // Selfie lenses are very wide: zoom in a little so the face fills and centres in its window
+    cc.cameras.firstOrNull { it.cameraInfo.lensFacing == CameraSelector.LENS_FACING_FRONT }?.let { front ->
+      val z = front.cameraInfo.zoomState.value
+      val target = 1.3f.coerceIn(z?.minZoomRatio ?: 1f, z?.maxZoomRatio ?: 1f)
+      front.cameraControl.setZoomRatio(target)
+    }
     videoCapture = vc
   }
 
