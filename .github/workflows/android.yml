@@ -92,15 +92,14 @@ jobs:
 
       - name: Launch test on emulator
         continue-on-error: true
-        timeout-minutes: 20
-        uses: reactivecircus/android-emulator-runner@v2
-        with:
-          api-level: 34
-          arch: x86_64
-          target: google_apis
-          disable-animations: true
-          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim -camera-back emulated -camera-front emulated
-          script: bash .github/scripts/smoke.sh
+        timeout-minutes: 25
+        run: |
+          set -o pipefail
+          bash .github/scripts/emulator.sh 2>&1 | tee emu.log || {
+            msg=$(tail -30 emu.log | sed -e 's/%/%25/g' | awk '{printf "%s%%0A", $0}')
+            echo "::warning title=Emulator setup failed::${msg}"
+            exit 1
+          }
 
       # Turn the relevant error lines into annotations so they're readable from the run page / API
       - name: Report errors
