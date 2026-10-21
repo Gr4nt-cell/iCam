@@ -68,7 +68,7 @@ class ICameraModule : Module() {
     }
 
     View(ICameraView::class) {
-      Events("onReady", "onError", "onRecordingFinished", "onPhotosCaptured")
+      Events("onReady", "onError", "onRecordingFinished", "onPhotosCaptured", "onDualChange")
 
       Prop("mode") { view: ICameraView, v: String -> view.setMode(v) }
       Prop("facing") { view: ICameraView, v: String -> view.setFacing(v) }
@@ -102,6 +102,9 @@ class ICameraModule : Module() {
 
       AsyncFunction("capture") { view: ICameraView, count: Int, evShift: Double, shortEv: Double ->
         view.captureBurst(count, evShift, shortEv)
+      }.runOnQueue(expo.modules.kotlin.functions.Queues.MAIN)
+      AsyncFunction("movePip") { view: ICameraView, x: Double, y: Double ->
+        view.movePip(x.toFloat(), y.toFloat())
       }.runOnQueue(expo.modules.kotlin.functions.Queues.MAIN)
       AsyncFunction("startRecording") { view: ICameraView -> view.startRecording() }
         .runOnQueue(expo.modules.kotlin.functions.Queues.MAIN)

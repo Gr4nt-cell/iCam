@@ -12,7 +12,7 @@ import {
   type SkSurface,
 } from '@shopify/react-native-skia';
 import { File, Paths } from 'expo-file-system';
-import { estimateShift, tileResiduals, type LumaPlane } from './align';
+import { estimateNoise, estimateShift, refineSubpixel, tileResiduals, type LumaPlane } from './align';
 import { filterByKey, type FilterKey } from './filters';
 import { DENOISE_SKSL, FILTER_SKSL, FUSE_SKSL, LEVELS_SKSL, mergeSkSL, SMOOTH_SKSL, TONE_SKSL } from './shaders';
 
@@ -186,13 +186,17 @@ function lumaPlane(img: SkImage, tw: number): LumaPlane | null {
 type Alignment = { global: [number, number]; map: SkImage };
 
 const GRID_W = 8;
+/** Offset-map encoding: 1 unit = 1/MAP_RES px (must match the shaders' decode) */
+const MAP_RES = 4;
+/** Finest alignment level width; ≈ 1/4 of a 12 MP frame */
+const FINE_W = 1024;
 
-/** Encodes per-tile residuals (full-res px, 0.5 px steps) into a tiny RGBA image the merge shader samples. */
-function offsetMap(dx: Int8Array, dy: Int8Array, gw: number, gh: number, scale: number): SkImage {
+/** Encodes per-tile residuals (full-res px) into a tiny RGBA image the merge shader samples. */
+function offsetMap(dx: Float32Array, dy: Float32Array, gw: number, gh: number): SkImage {
   const px = new Uint8Array(gw * gh * 4);
   for (let i = 0; i < gw * gh; i++) {
-    px[i * 4] = Math.max(0, Math.min(255, Math.round(128 + dx[i] * scale * 2)));
-    px[i * 4 + 1] = Math.max(0, Math.min(255, Math.round(128 + dy[i] * scale * 2)));
+    px[i * 4] = Math.max(0, Math.min(255, Math.round(128 + dx[i] * MAP_RES)));
+    px[i * 4 + 1] = Math.max(0, Math.min(255, Math.round(128 + dy[i] * MAP_RES)));
     px[i * 4 + 2] = 128;
     px[i * 4 + 3] = 255;
   }
@@ -205,29 +209,70 @@ function offsetMap(dx: Int8Array, dy: Int8Array, gw: number, gh: number, scale: 
   return img;
 }
 
+/** Last measured per-frame noise (σ at full resolution, 0..1) — drives merge and denoise strength. */
+let lastNoise = 0.012;
+
 /**
- * HDR+-style alignment of each frame to frames[0]: coarse global search (64 px), refined global
- * shift (256 px), then per-tile residuals on an 8 × n grid so local motion / slight rotation aligns too.
+ * Pixel HDR+-style pyramid alignment of each frame to frames[0]:
+ *   64 px (±4) → 256 px (±2) → 1024 px (±2) global search, sub-pixel parabola refinement,
+ *   then per-tile residuals on the 1024 px level so local motion / slight rotation aligns too.
+ * Precision ≈ 1 px at full resolution (was ~16 px with the old 256 px top level).
  */
+/** Scale `cur` to the same mean brightness as `ref` (needed to align a darker bracket frame). */
+function matchMean(ref: LumaPlane, cur: LumaPlane): LumaPlane {
+  let a = 0;
+  let b = 0;
+  for (let i = 0; i < ref.data.length; i += 7) { a += ref.data[i]; b += cur.data[i]; }
+  if (b <= 0) return cur;
+  const k = a / b;
+  if (Math.abs(k - 1) < 0.15) return cur;
+  const data = new Float32Array(cur.data.length);
+  for (let i = 0; i < data.length; i++) data[i] = Math.min(1, cur.data[i] * k);
+  return { data, w: cur.w, h: cur.h };
+}
+
 function align(frames: SkImage[]): Alignment[] {
   const W = frames[0].width();
+  const fineW = Math.min(FINE_W, W);
   const refC = lumaPlane(frames[0], 64);
-  const refF = lumaPlane(frames[0], 256);
+  const refM = lumaPlane(frames[0], 256);
+  const refF = lumaPlane(frames[0], fineW);
   const gh = Math.max(4, Math.round((GRID_W * frames[0].height()) / W));
-  const scale = W / 256;
-  const zero = new Int8Array(GRID_W * gh);
+  const scale = W / fineW;
+  const zero = new Float32Array(GRID_W * gh);
   const out: Alignment[] = [];
+  const noises: number[] = [];
   for (let k = 1; k < frames.length; k++) {
-    const cC = refC && lumaPlane(frames[k], 64);
-    const cF = refF && lumaPlane(frames[k], 256);
-    if (!refC || !refF || !cC || !cF) {
-      out.push({ global: [0, 0], map: offsetMap(zero, zero, GRID_W, gh, scale) });
+    const rawC = refC && lumaPlane(frames[k], 64);
+    const rawM = refM && lumaPlane(frames[k], 256);
+    const rawF = refF && lumaPlane(frames[k], fineW);
+    const cC = refC && rawC ? matchMean(refC, rawC) : null;
+    const cM = refM && rawM ? matchMean(refM, rawM) : null;
+    const cF = refF && rawF ? matchMean(refF, rawF) : null;
+    if (!refC || !refM || !refF || !cC || !cM || !cF) {
+      out.push({ global: [0, 0], map: offsetMap(zero, zero, GRID_W, gh) });
       continue;
     }
     const [cx, cy] = estimateShift(refC, cC, 4);
-    const [fx, fy] = estimateShift(refF, cF, 2, cx * 4, cy * 4);
-    const { dx, dy } = tileResiduals(refF, cF, fx, fy, GRID_W, gh, 2);
-    out.push({ global: [fx * scale, fy * scale], map: offsetMap(dx, dy, GRID_W, gh, scale) });
+    const [mx, my] = estimateShift(refM, cM, 2, cx * 4, cy * 4);
+    const fr = fineW / 256;
+    const [fx, fy] = estimateShift(refF, cF, 2, Math.round(mx * fr), Math.round(my * fr));
+    const [sx, sy] = refineSubpixel(refF, cF, fx, fy);
+    noises.push(estimateNoise(refF, cF, sx, sy));
+    const t = tileResiduals(refF, cF, fx, fy, GRID_W, gh, 2);
+    const dx = new Float32Array(t.dx.length);
+    const dy = new Float32Array(t.dy.length);
+    // residual relative to the sub-pixel global shift, in full-res px
+    for (let i = 0; i < dx.length; i++) {
+      dx[i] = t.dx[i] === 0 && t.dy[i] === 0 ? 0 : (fx + t.dx[i] - sx) * scale;
+      dy[i] = t.dx[i] === 0 && t.dy[i] === 0 ? 0 : (fy + t.dy[i] - sy) * scale;
+    }
+    out.push({ global: [sx * scale, sy * scale], map: offsetMap(dx, dy, GRID_W, gh) });
+  }
+  if (noises.length) {
+    noises.sort((a, b) => a - b);
+    // the 1024 px level averages ~scale² pixels, so full-res σ is ~scale× larger
+    lastNoise = Math.max(0.004, Math.min(0.08, noises[Math.floor(noises.length / 2)] * scale));
   }
   return out;
 }
@@ -433,7 +478,8 @@ export async function processBurst(paths: string[], opts: ProcessOptions): Promi
   if (usable.length > 1) {
     const al = align(usable);
     await yieldFrame();
-    merged = merge(usable, al, opts.night ? 0.012 : 0.005);
+    // σ² for box-filtered (×4 averaged) differences of two frames, with headroom for slight misalignment
+    merged = merge(usable, al, Math.max(0.0006, 6 * lastNoise * lastNoise) * (opts.night ? 1.6 : 1));
   }
   await yieldFrame();
 
@@ -442,7 +488,9 @@ export async function processBurst(paths: string[], opts: ProcessOptions): Promi
     const evBase = opts.evs[0];
     const evShort = opts.evs[si];
     const boost = Math.pow(2, Math.max(0.5, evBase - evShort));
+    const keepNoise = lastNoise;
     const [al] = align([merged, shortFrame]);
+    lastNoise = keepNoise;
     const fx = effect('fuse', FUSE_SKSL);
     const m = Skia.Matrix();
     m.scale(W / al.map.width(), H / al.map.height());
@@ -458,11 +506,14 @@ export async function processBurst(paths: string[], opts: ProcessOptions): Promi
 
   // Clean remaining noise before tone mapping lifts the shadows (stronger with fewer frames / at night)
   const radius = Math.max(3, Math.min(W, H) / 500);
-  const fewFrames = usable.length < 3 ? 0.15 : 0;
+  // Residual noise after merging N frames ≈ σ/√N; denoise only as much as is left
+  const residual = lastNoise / Math.sqrt(Math.max(1, usable.length));
+  const lumaStrength = Math.min(0.75, Math.max(0.08, residual * 30)) + (opts.night ? 0.1 : 0);
   merged = shade(merged, 'denoise', DENOISE_SKSL, [
-    opts.night ? 0.95 : 0.8,
-    (opts.night ? 0.35 : 0.12) + fewFrames,
+    opts.night ? 0.95 : 0.85,
+    lumaStrength,
     radius,
+    Math.max(0.0004, 9 * residual * residual),
   ]);
   await yieldFrame();
   let out = toneMap(merged, opts);

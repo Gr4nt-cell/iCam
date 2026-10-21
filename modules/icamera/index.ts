@@ -111,6 +111,7 @@ export type ICameraHandle = {
   startRecording: () => Promise<void>;
   stopRecording: () => Promise<void>;
   focus: (x: number, y: number) => Promise<void>;
+  movePip: (x: number, y: number) => Promise<void>;
 };
 
 const NativeModule = requireOptionalNativeModule<{

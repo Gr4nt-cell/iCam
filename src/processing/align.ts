@@ -104,3 +104,58 @@ export function tileResiduals(
   }
   return { dx, dy };
 }
+
+function sadAt(ref: LumaPlane, cur: LumaPlane, sx: number, sy: number, margin: number, step: number) {
+  const { w, h } = ref;
+  let sad = 0;
+  let n = 0;
+  for (let y = margin; y < h - margin; y += step) {
+    const rr = y * w;
+    const cr = (y + sy) * w + sx;
+    for (let x = margin; x < w - margin; x += step) {
+      sad += Math.abs(ref.data[rr + x] - cur.data[cr + x]);
+      n++;
+    }
+  }
+  return sad / Math.max(1, n);
+}
+
+/**
+ * Sub-pixel refinement of an integer shift by fitting a parabola to the matching cost of the
+ * neighbouring shifts (Pixel HDR+ does the same on its alignment pyramid).
+ */
+export function refineSubpixel(ref: LumaPlane, cur: LumaPlane, bx: number, by: number): [number, number] {
+  const margin = Math.max(Math.abs(bx), Math.abs(by)) + 3;
+  if (margin * 2 >= Math.min(ref.w, ref.h)) return [bx, by];
+  const step = 2;
+  const c = sadAt(ref, cur, bx, by, margin, step);
+  const fit = (m: number, p: number) => {
+    const d = m - 2 * c + p;
+    if (d <= 1e-9) return 0;
+    return Math.max(-0.5, Math.min(0.5, (m - p) / (2 * d)));
+  };
+  const dx = fit(sadAt(ref, cur, bx - 1, by, margin, step), sadAt(ref, cur, bx + 1, by, margin, step));
+  const dy = fit(sadAt(ref, cur, bx, by - 1, margin, step), sadAt(ref, cur, bx, by + 1, margin, step));
+  return [bx + dx, by + dy];
+}
+
+/**
+ * Robust noise estimate (σ, 0..1 luma units) from the difference between the reference and an
+ * aligned frame: median absolute deviation over textured-or-not pixels; motion is mostly outliers.
+ */
+export function estimateNoise(ref: LumaPlane, cur: LumaPlane, sx: number, sy: number): number {
+  const { w, h } = ref;
+  const ix = Math.round(sx);
+  const iy = Math.round(sy);
+  const margin = Math.max(Math.abs(ix), Math.abs(iy)) + 2;
+  const diffs: number[] = [];
+  for (let y = margin; y < h - margin; y += 3) {
+    for (let x = margin; x < w - margin; x += 3) {
+      diffs.push(Math.abs(ref.data[y * w + x] - cur.data[(y + iy) * w + x + ix]));
+    }
+  }
+  if (!diffs.length) return 0.01;
+  diffs.sort((a, b) => a - b);
+  // difference of two noisy frames has σ·√2; MAD → σ via 1.4826
+  return (diffs[Math.floor(diffs.length / 2)] * 1.4826) / Math.SQRT2;
+}

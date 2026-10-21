@@ -16,11 +16,14 @@ export function DualPipFrame({
   pip,
   locked,
   onMove,
+  onLiveMove,
   onSwap,
 }: {
   pip: Pip;
   locked: boolean;
   onMove: (x: number, y: number) => void;
+  /** Called on every finger movement so the camera's inset follows the finger */
+  onLiveMove?: (x: number, y: number) => void;
   onSwap: () => void;
 }) {
   const { width: W, height: H } = useWindowDimensions();
@@ -31,8 +34,8 @@ export function DualPipFrame({
 
   const drag = useRef(new Animated.ValueXY()).current;
   const [dragging, setDragging] = useState(false);
-  const live = useRef({ cx, cy, fw, fh, W, H, locked, onMove, onSwap });
-  live.current = { cx, cy, fw, fh, W, H, locked, onMove, onSwap };
+  const live = useRef({ cx, cy, fw, fh, W, H, locked, onMove, onSwap, onLiveMove });
+  live.current = { cx, cy, fw, fh, W, H, locked, onMove, onSwap, onLiveMove };
 
   const pan = useMemo(
     () =>
@@ -45,8 +48,13 @@ export function DualPipFrame({
           Haptics.selectionAsync();
         },
         onPanResponderMove: (_, g) => {
-          if (live.current.locked) return;
+          const L = live.current;
+          if (L.locked) return;
           drag.setValue({ x: g.dx, y: g.dy });
+          L.onLiveMove?.(
+            clamp(L.cx + g.dx, L.fw / 2, L.W - L.fw / 2) / L.W,
+            clamp(L.cy + g.dy, L.fh / 2, L.H - L.fh / 2) / L.H,
+          );
         },
         onPanResponderRelease: (_, g) => {
           const L = live.current;
@@ -81,7 +89,7 @@ export function DualPipFrame({
           left: cx - fw / 2,
           top: cy - fh / 2,
           transform: drag.getTranslateTransform(),
-          backgroundColor: dragging ? 'rgba(255,255,255,0.10)' : 'transparent',
+          backgroundColor: 'transparent',
         },
       ]}
     >
@@ -97,11 +105,6 @@ const styles = StyleSheet.create({
   frame: {
     position: 'absolute',
     borderRadius: 18,
-    borderWidth: 1.5,
-    borderTopColor: 'rgba(255,255,255,0.75)',
-    borderLeftColor: 'rgba(255,255,255,0.5)',
-    borderRightColor: 'rgba(255,255,255,0.4)',
-    borderBottomColor: 'rgba(255,255,255,0.3)',
   },
   badge: {
     position: 'absolute',

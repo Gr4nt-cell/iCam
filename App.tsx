@@ -620,6 +620,9 @@ function CameraScreen() {
           pip={pip}
           locked={recording}
           onMove={(x, y) => setPip((p) => ({ ...p, x, y }))}
+          onLiveMove={(x, y) => {
+            cam.current?.movePip(x, y).catch(() => {});
+          }}
           onSwap={() => {
             if (recording) return;
             Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);

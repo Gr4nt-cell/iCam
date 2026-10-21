@@ -7,7 +7,9 @@ import android.content.pm.PackageManager
 import android.hardware.camera2.CaptureRequest
 import android.hardware.camera2.params.RggbChannelVector
 import android.util.Range
+import android.view.View
 import android.view.ViewGroup
+import android.view.MotionEvent
 import androidx.camera.camera2.interop.Camera2CameraControl
 import androidx.camera.camera2.interop.Camera2CameraInfo
 import androidx.camera.camera2.interop.CaptureRequestOptions
@@ -66,6 +68,7 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
   private val onError by EventDispatcher()
   private val onRecordingFinished by EventDispatcher()
   private val onPhotosCaptured by EventDispatcher()
+  private val onDualChange by EventDispatcher()
 
   private val previewView = PreviewView(context).apply {
     implementationMode = PreviewView.ImplementationMode.COMPATIBLE
@@ -123,11 +126,44 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
   private fun emitError(m: Map<String, Any?>) = onError(clean(m))
   private fun emitRecordingFinished(m: Map<String, Any?>) = onRecordingFinished(clean(m))
   private fun emitPhotosCaptured(m: Map<String, Any?>) = onPhotosCaptured(clean(m))
+  private fun emitDualChange(m: Map<String, Any?>) = onDualChange(clean(m))
 
   private var burstEvOffset = 0.0
 
+  // Dual mode: a real, draggable inset preview (tap = swap). Recording switches to the
+  // camera-composited stream so the saved video matches what's on screen.
+  private val pipPreview = PreviewView(context).apply {
+    implementationMode = PreviewView.ImplementationMode.COMPATIBLE
+    scaleType = PreviewView.ScaleType.FILL_CENTER
+  }
+  private fun dp(v: Float) = v * resources.displayMetrics.density
+  private val pipContainer = android.widget.FrameLayout(context).apply {
+    visibility = View.GONE
+    clipToOutline = true
+    outlineProvider = object : android.view.ViewOutlineProvider() {
+      override fun getOutline(v: View, o: android.graphics.Outline) {
+        o.setRoundRect(0, 0, v.width, v.height, dp(18f))
+      }
+    }
+    foreground = android.graphics.drawable.GradientDrawable().apply {
+      cornerRadius = dp(18f)
+      setColor(android.graphics.Color.TRANSPARENT)
+      setStroke(dp(1.5f).toInt(), android.graphics.Color.argb(210, 255, 255, 255))
+    }
+    elevation = dp(8f)
+    addView(pipPreview, android.widget.FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+  }
+  private val root = android.widget.FrameLayout(context)
+  private var dualComposed = false
+  private var pendingDualRecord = false
+
   init {
-    addView(previewView)
+    addView(root, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+    root.addView(previewView)
+    root.addView(
+      pipContainer,
+      android.widget.FrameLayout.LayoutParams(1, 1, android.view.Gravity.TOP or android.view.Gravity.START),
+    )
   }
 
   /* ---------------- props ---------------- */
@@ -161,11 +197,84 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
       )
       .build()
   fun setDualPip(x: Float, y: Float, size: Float) {
-    val nx = x.coerceIn(0f, 1f); val ny = y.coerceIn(0f, 1f); val ns = size.coerceIn(0.2f, 0.6f)
-    if (nx == pipX && ny == pipY && ns == pipSize) return
-    pipX = nx; pipY = ny; pipSize = ns
-    if (mode == "dual" && recording == null) scheduleRebind(60)
+    pipX = x.coerceIn(0f, 1f); pipY = y.coerceIn(0f, 1f); pipSize = size.coerceIn(0.2f, 0.6f)
+    layoutPip()
   }
+
+  /** Called continuously while the user drags the inset (no rebind, instant). */
+  fun movePip(x: Float, y: Float) {
+    pipX = x.coerceIn(0f, 1f); pipY = y.coerceIn(0f, 1f)
+    layoutPip()
+  }
+
+  private fun layoutPip() {
+    if (width == 0 || height == 0) return
+    val w = (pipSize * width).toInt()
+    val h = (w * 4f / 3f).toInt()
+    val lp = pipContainer.layoutParams as android.widget.FrameLayout.LayoutParams
+    if (lp.width != w || lp.height != h) {
+      lp.width = w; lp.height = h
+      pipContainer.layoutParams = lp
+      pipContainer.measure(
+        MeasureSpec.makeMeasureSpec(w, MeasureSpec.EXACTLY),
+        MeasureSpec.makeMeasureSpec(h, MeasureSpec.EXACTLY),
+      )
+      pipContainer.layout(0, 0, w, h)
+      pipPreview.measure(
+        MeasureSpec.makeMeasureSpec(w, MeasureSpec.EXACTLY),
+        MeasureSpec.makeMeasureSpec(h, MeasureSpec.EXACTLY),
+      )
+      pipPreview.layout(0, 0, w, h)
+      pipContainer.invalidateOutline()
+    }
+    pipContainer.translationX = (pipX * width - w / 2f).coerceIn(0f, (width - w).toFloat())
+    pipContainer.translationY = (pipY * height - h / 2f).coerceIn(0f, (height - h).toFloat())
+  }
+
+  override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
+    super.onSizeChanged(w, h, oldw, oldh)
+    post { layoutPip() }
+  }
+
+  private fun installPipTouch() {
+    var downX = 0f; var downY = 0f; var startTx = 0f; var startTy = 0f; var moved = false
+    pipContainer.setOnTouchListener { v, e ->
+      when (e.actionMasked) {
+        MotionEvent.ACTION_DOWN -> {
+          downX = e.rawX; downY = e.rawY
+          startTx = v.translationX; startTy = v.translationY
+          moved = false
+          v.parent?.requestDisallowInterceptTouchEvent(true)
+          v.animate().scaleX(1.04f).scaleY(1.04f).setDuration(120).start()
+        }
+        MotionEvent.ACTION_MOVE -> {
+          val dx = e.rawX - downX
+          val dy = e.rawY - downY
+          if (!moved && Math.abs(dx) + Math.abs(dy) > dp(8f)) moved = true
+          if (moved && recording == null) {
+            v.translationX = (startTx + dx).coerceIn(0f, (width - v.width).toFloat())
+            v.translationY = (startTy + dy).coerceIn(0f, (height - v.height).toFloat())
+          }
+        }
+        MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+          v.animate().scaleX(1f).scaleY(1f).setDuration(120).start()
+          if (!moved && e.actionMasked == MotionEvent.ACTION_UP) {
+            if (recording == null) {
+              dualPrimary = if (dualPrimary == "front") "back" else "front"
+              emitDualChange(mapOf("x" to pipX.toDouble(), "y" to pipY.toDouble(), "size" to pipSize.toDouble(), "primary" to dualPrimary))
+              scheduleRebind()
+            }
+          } else if (moved) {
+            pipX = (v.translationX + v.width / 2f) / width
+            pipY = (v.translationY + v.height / 2f) / height
+            emitDualChange(mapOf("x" to pipX.toDouble(), "y" to pipY.toDouble(), "size" to pipSize.toDouble(), "primary" to dualPrimary))
+          }
+        }
+      }
+      true
+    }
+  }
+
   fun setZoom(v: Float) { zoom = v; camera?.cameraControl?.setZoomRatio(v) }
   fun setEvBias(v: Double) { ev = v; applyControls() }
   fun setIso(v: Int) { iso = v; applyControls() }
@@ -234,6 +343,8 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
         camera = null; imageCapture = null; videoCapture = null
         usingNightExtension = false; slowFps = 0
         if (!active) return@withProvider
+        if (mode != "dual") { dualComposed = false; pendingDualRecord = false }
+        pipContainer.visibility = View.GONE
         when (mode) {
           "dual" -> bindDual(p, owner)
           "slowmo" -> bindSlowMo(p, owner)
@@ -242,6 +353,10 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
           else -> bindPhoto(p, owner)
         }
         camera?.cameraControl?.setZoomRatio(zoom)
+        if (pendingDualRecord && mode == "dual" && dualComposed) {
+          pendingDualRecord = false
+          postDelayed({ startRecording() }, 250)
+        }
         setTorch(torch)
         applyControls()
         val z = camera?.cameraInfo?.zoomState?.value
@@ -406,6 +521,28 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
     val front = pair.first { it.lensFacing == CameraSelector.LENS_FACING_FRONT }
     val main = if (dualPrimary == "front") front else back
     val pip = if (dualPrimary == "front") back else front
+
+    if (!dualComposed) {
+      // Preview: two independent streams, the inset is a real view you can drag smoothly
+      val mainPrev = newPreview()
+      val pipPrev = Preview.Builder().build().also { it.setSurfaceProvider(pipPreview.surfaceProvider) }
+      val primaryCfg = ConcurrentCamera.SingleCameraConfig(
+        main.cameraSelector, UseCaseGroup.Builder().addUseCase(mainPrev).build(), owner,
+      )
+      val secondaryCfg = ConcurrentCamera.SingleCameraConfig(
+        pip.cameraSelector, UseCaseGroup.Builder().addUseCase(pipPrev).build(), owner,
+      )
+      val cc = p.bindToLifecycle(listOf(primaryCfg, secondaryCfg))
+      camera = cc.cameras.firstOrNull { it.cameraInfo.lensFacing == main.lensFacing } ?: cc.cameras.firstOrNull()
+      cc.cameras.firstOrNull { it.cameraInfo.lensFacing == CameraSelector.LENS_FACING_FRONT }?.let { fr ->
+        val z = fr.cameraInfo.zoomState.value
+        fr.cameraControl.setZoomRatio(1.3f.coerceIn(z?.minZoomRatio ?: 1f, z?.maxZoomRatio ?: 1f))
+      }
+      videoCapture = null
+      pipContainer.visibility = View.VISIBLE
+      layoutPip()
+      return
+    }
 
     val vc = VideoCapture.withOutput(buildRecorder(Quality.FHD, 20_000_000))
     val group = UseCaseGroup.Builder().addUseCase(newPreview()).addUseCase(vc).build()
@@ -632,6 +769,12 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
 
   @SuppressLint("MissingPermission")
   fun startRecording() {
+    if (mode == "dual" && !dualComposed) {
+      dualComposed = true
+      pendingDualRecord = true
+      scheduleRebind()
+      return
+    }
     val vc = videoCapture ?: run { emitError("Video isn't available in this mode"); return }
     if (recording != null) return
     val file = File(context.cacheDir, "iCam_${mode}_${System.currentTimeMillis()}.mp4")
@@ -651,6 +794,10 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
             "error" to if (event.hasError()) "Recorder error ${event.error}" else null,
           ),
         )
+        if (mode == "dual" && dualComposed) {
+          dualComposed = false
+          scheduleRebind(150)
+        }
       }
     }
   }

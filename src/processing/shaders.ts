@@ -36,7 +36,7 @@ export function mergeSkSL(n: number): string {
   s += '  float3 acc = r;\n  float w = 1.0;\n';
   for (let k = 1; k < n; k++) {
     s += '  {\n';
-    s += `    float2 res = (m${k}.eval(p).rg * 255.0 - 128.0) * 0.5;\n`;
+    s += `    float2 res = (m${k}.eval(p).rg * 255.0 - 128.0) * 0.25;\n`;
     s += `    float2 q = p + o${k} + res;\n`;
     s += `    float3 c = f${k}.eval(q).rgb;\n`;
     s += `    float3 dd = ${BOX(`f${k}`, 'q')} - rb;\n`;
@@ -51,13 +51,14 @@ export function mergeSkSL(n: number): string {
 /**
  * Edge-aware denoise after merging: chroma (colour blotches) is averaged strongly across pixels of
  * similar brightness, luma only lightly, so texture and edges survive.
- * Uniform order: chroma, luma, radius
+ * Uniform order: chroma, luma, radius, thresh (luma similarity, scaled to measured noise)
  */
 export const DENOISE_SKSL = `
 uniform shader img;
 uniform float chroma;
 uniform float luma;
 uniform float radius;
+uniform float thresh;
 
 half4 main(float2 p) {
   float3 W = float3(0.299, 0.587, 0.114);
@@ -78,7 +79,7 @@ half4 main(float2 p) {
     float kc = exp(-dy * dy / 0.004);
     accC += (s - ys) * kc;
     wc += kc;
-    float kl = exp(-dy * dy / 0.0012);
+    float kl = exp(-dy * dy / thresh);
     accY += ys * kl;
     wy += kl;
   }
@@ -246,7 +247,7 @@ float3 toLin(float3 c) { return pow(max(c, float3(0.0)), float3(2.2)); }
 
 half4 main(float2 p) {
   float3 m = merged.eval(p).rgb;
-  float2 res = (map.eval(p).rg * 255.0 - 128.0) * 0.5;
+  float2 res = (map.eval(p).rg * 255.0 - 128.0) * 0.25;
   float3 s = shortF.eval(p + offset + res).rgb;
   float3 ml = toLin(m);
   float3 sl = toLin(s) * boost;
