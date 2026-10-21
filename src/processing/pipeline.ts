@@ -437,11 +437,14 @@ export async function processSingle(
   filter: FilterKey,
   aspect?: number,
   meta?: PhotoMeta,
+  portrait?: { maskPath: string; strength: number },
 ): Promise<string> {
-  const img = cropToAspect(finishLook(await loadUpright(path, meta), smoothing, filter), aspect);
+  let img = await loadUpright(path, meta);
+  if (portrait) img = await applyPortrait(img, portrait.maskPath, portrait.strength);
+  img = cropToAspect(finishLook(img, smoothing, filter), aspect);
   const file = new File(Paths.cache, `iCam_${Date.now()}.jpg`);
   file.create({ overwrite: true });
-  file.write(img.encodeToBytes(ImageFormat.JPEG, 95));
+  file.write(img.encodeToBytes(ImageFormat.JPEG, 97));
   return file.uri;
 }
 

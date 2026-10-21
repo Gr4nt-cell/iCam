@@ -85,7 +85,8 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
   private var videoCapture: VideoCapture<Recorder>? = null
   private var recording: Recording? = null
   private var slowFps = 0
-  private var usingNightExtension = false
+  private var usingNightExtension = false // true whenever a vendor extension handles processing
+  private var activeExtension: String? = null
 
   // Props
   private var mode = "photo"
@@ -351,7 +352,7 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
       try {
         p.unbindAll()
         camera = null; imageCapture = null; videoCapture = null
-        usingNightExtension = false; slowFps = 0
+        usingNightExtension = false; activeExtension = null; slowFps = 0
         if (!active) return@withProvider
         if (mode != "dual") { dualComposed = false; pendingDualRecord = false }
         pipContainer.visibility = View.GONE
@@ -374,7 +375,8 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
           mapOf(
             "mode" to mode,
             "slowMotionFps" to slowFps,
-            "nightExtension" to usingNightExtension,
+            "nightExtension" to (activeExtension == "night"),
+            "extension" to activeExtension,
             "zoomMin" to (z?.minZoomRatio ?: 1f).toDouble(),
             "zoomMax" to (z?.maxZoomRatio ?: 1f).toDouble(),
             "hasFlash" to (camera?.cameraInfo?.hasFlashUnit() ?: false),
@@ -422,16 +424,47 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
       .setFlashMode(flashMode())
       .build()
 
+  /**
+   * Photo modes use the phone maker's own processing through CameraX Extensions:
+   * Photo → vendor HDR (or Auto), Portrait → vendor Bokeh (real depth), Night → vendor Night.
+   * One full-quality frame; no multi-frame merging in the app.
+   */
   private fun bindPhoto(p: ProcessCameraProvider, owner: LifecycleOwner) {
-    var sel = selector(facing)
+    val base = selector(facing)
+    var sel = base
     val ext = extensions
-    if (mode == "night" && nightExtension && ext != null && ext.isExtensionAvailable(sel, ExtensionMode.NIGHT)) {
-      sel = ext.getExtensionEnabledCameraSelector(sel, ExtensionMode.NIGHT)
-      usingNightExtension = true
+    val wanted: List<Pair<Int, String>> = when (mode) {
+      "night" -> if (nightExtension) listOf(ExtensionMode.NIGHT to "night") else emptyList()
+      "portrait" -> listOf(ExtensionMode.BOKEH to "bokeh")
+      "photo" -> listOf(ExtensionMode.HDR to "hdr", ExtensionMode.AUTO to "auto")
+      else -> emptyList()
     }
-    val ic = newImageCapture()
-    val ois = !usingNightExtension && oisSupported(p.getCameraInfo(selector(facing)))
-    camera = p.bindToLifecycle(owner, sel, newPreview(false, ois, true), ic)
+    if (ext != null) {
+      for ((m, name) in wanted) {
+        if (try { ext.isExtensionAvailable(base, m) } catch (e: Throwable) { false }) {
+          sel = ext.getExtensionEnabledCameraSelector(base, m)
+          activeExtension = name
+          usingNightExtension = true
+          break
+        }
+      }
+    }
+    val ic = ImageCapture.Builder()
+      .setResolutionSelector(resolutionSelector())
+      .setCaptureMode(ImageCapture.CAPTURE_MODE_MAXIMIZE_QUALITY)
+      .setJpegQuality(100)
+      .setFlashMode(flashMode())
+      .build()
+    val ois = activeExtension == null && oisSupported(p.getCameraInfo(base))
+    camera = try {
+      p.bindToLifecycle(owner, sel, newPreview(false, ois, true), ic)
+    } catch (e: Throwable) {
+      // Extension refused this configuration: fall back to the plain camera
+      p.unbindAll()
+      activeExtension = null
+      usingNightExtension = false
+      p.bindToLifecycle(owner, base, newPreview(false, false, true), ic)
+    }
     imageCapture = ic
   }
 

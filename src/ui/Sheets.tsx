@@ -36,15 +36,8 @@ export function SettingsSheet(p: SettingsProps) {
             <Text style={s.title}>Settings</Text>
 
             <Section title="Photo processing">
-              <Row label="HDR+ burst frames" hint="More frames = less noise, slower capture">
-                <Segmented
-                  options={['1', '2', '3', '4', '5', '6']}
-                  value={String(p.photo.frames)}
-                  onChange={(v) => p.onPhoto({ ...p.photo, frames: Number(v) as PhotoSettings['frames'] })}
-                />
-              </Row>
-              <Row label="Highlight recovery" hint="Adds a darker frame so bright windows, sky and lamps keep detail">
-                <Toggle value={p.photo.highlightBracket} onChange={(v) => p.onPhoto({ ...p.photo, highlightBracket: v })} />
+              <Row label="Processing" hint="Single full-quality shot processed by your phone's own image engine (HDR, depth Portrait, Night) where available — no multi-frame merging" >
+                <View />
               </Row>
               {p.capabilities?.nightExtension ? (
                 <Row label="Phone's Night mode" hint="Use the phone maker's night processing in Night Sight">

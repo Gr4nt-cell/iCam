@@ -24,7 +24,7 @@ import {
   type VideoSettings,
 } from './src/camera/hardware';
 import { filterByKey, type FilterKey } from './src/processing/filters';
-import { processBurst, processSingle, type PhotoMeta } from './src/processing/pipeline';
+import { processSingle, type PhotoMeta } from './src/processing/pipeline';
 import {
   FocusRing,
   IconButton,
@@ -307,17 +307,14 @@ function CameraScreen() {
     if (busy || !ready) return;
     const night = mode === 'night';
     const pro = mode === 'pro';
-    const vendorNight = night && ready.nightExtension;
-    const frames = pro || vendorNight || flash !== 'off' ? 1 : night ? 4 : photo.frames;
-    const evShift = night ? 0 : -1; // HDR+ under-exposes the burst to protect highlights
+    const ext: string | null = (ready as any).extension ?? null;
 
     setBusy(true);
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     let paths: string[] = [];
     try {
-      // Photo mode adds one darker frame (-2 EV below the burst) for highlight recovery
-      const bracket = !night && frames > 1 && photo.highlightBracket ? -2 : 0;
-      const res = await captureBurst(frames, frames > 1 ? evShift : 0, bracket);
+      // One full-quality frame; the phone's own image processor (vendor HDR / Bokeh / Night) does the heavy lifting
+      const res = await captureBurst(1, 0, 0);
       paths = res.paths;
       if (!paths.length) throw new Error(res.error ?? 'No photo captured');
 
@@ -326,40 +323,24 @@ function CameraScreen() {
       setProcessing(true);
       await sleep(16);
 
-      let uri: string;
-      let info: string;
       const look = [filter !== 'natural' && filterByKey(filter).label, smoothing > 0.01 && 'smoothed']
         .filter(Boolean)
         .join(' · ');
-      if (pro || vendorNight) {
-        // Already processed by the camera (manual or vendor night) – only apply the look
-        uri = await processSingle(paths[0], smoothing, filter, aspectRatio, res.meta?.[0]);
-        info = pro ? 'Pro' : 'Night Sight (phone)';
-      } else {
-        setToast(night ? `Night Sight · merging ${paths.length} frames` : `HDR+ · merging ${paths.length} frame${paths.length > 1 ? 's' : ''}`);
-        const faces = await detectFaces(paths[0]);
-        let portrait: { maskPath: string; strength: number } | undefined;
-        if (mode === 'portrait') {
-          const mask = await segmentPerson(paths[0]);
-          if (mask && mask.coverage > 0.02) portrait = { maskPath: mask.maskPath, strength: bokeh };
-          else flashToast('No person found — saved without background blur', 3000);
-        }
-        const out = await processBurst(paths, {
-          portrait,
-          night,
-          brightness,
-          shadows,
-          smoothing,
-          filter,
-          evs: res.evs,
-          shortIndex: res.shortIndex ?? -1,
-          faces,
-          meta: res.meta,
-          aspect: aspectRatio,
-        });
-        uri = out.uri;
-        info = `${night ? 'Night Sight' : portrait ? 'Portrait' : 'HDR+'} · ${out.frames} frame${out.frames > 1 ? 's' : ''}${faces.length ? ` · ${faces.length} face${faces.length > 1 ? 's' : ''}` : ''}`;
+      let portrait: { maskPath: string; strength: number } | undefined;
+      if (mode === 'portrait' && ext !== 'bokeh') {
+        // No hardware depth bokeh on this phone: blur the background from a person/subject mask
+        const mask = await segmentPerson(paths[0]);
+        if (mask && mask.coverage > 0.02) portrait = { maskPath: mask.maskPath, strength: bokeh };
+        else flashToast('No subject found — saved without background blur', 3000);
       }
+      const uri = await processSingle(paths[0], smoothing, filter, aspectRatio, res.meta?.[0], portrait);
+      const info = pro
+        ? 'Pro'
+        : night
+          ? ext === 'night' ? 'Night (phone)' : 'Night'
+          : mode === 'portrait'
+            ? ext === 'bokeh' ? 'Portrait (depth)' : portrait ? 'Portrait (subject mask)' : 'Portrait'
+            : ext === 'hdr' ? 'Photo (phone HDR)' : ext === 'auto' ? 'Photo (phone Auto)' : 'Photo';
       const assetId = await saveToGallery(uri);
       setLast({ uri, original, isVideo: false, info: look ? `${info} · ${look}` : info, assetId });
       flashToast('Saved');
@@ -370,7 +351,7 @@ function CameraScreen() {
       setProcessing(false);
       setBusy(false);
     }
-  }, [busy, ready, mode, flash, photo.frames, photo.highlightBracket, brightness, shadows, smoothing, filter, aspectRatio, bokeh, captureBurst, saveToGallery, flashToast]);
+  }, [busy, ready, mode, smoothing, filter, aspectRatio, bokeh, captureBurst, saveToGallery, flashToast]);
 
   /* ---------- capture: video ---------- */
   const toggleRecording = useCallback(async () => {
@@ -508,9 +489,9 @@ function CameraScreen() {
         ? 'NIGHT · PHONE'
         : 'NIGHT'
       : mode === 'photo'
-        ? 'HDR+'
+        ? (ready as any)?.extension === 'hdr' ? 'HDR' : (ready as any)?.extension === 'auto' ? 'AUTO' : 'PHOTO'
         : mode === 'portrait'
-          ? 'PORTRAIT'
+          ? ((ready as any)?.extension === 'bokeh' ? 'PORTRAIT · DEPTH' : 'PORTRAIT')
           : mode === 'pvideo'
             ? 'PORTRAIT VIDEO'
         : mode === 'pro'

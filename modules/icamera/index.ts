@@ -57,6 +57,8 @@ export type ReadyEvent = {
   mode: CamMode;
   slowMotionFps: number;
   nightExtension: boolean;
+  /** Phone-maker processing active for this mode (absent when none) */
+  extension?: 'hdr' | 'auto' | 'bokeh' | 'night';
   zoomMin: number;
   zoomMax: number;
   hasFlash: boolean;

@@ -252,8 +252,8 @@ class PortraitProcessor : SurfaceProcessor {
 
   /** Renders the raw frame (buffer space) into a small FBO and reads it back for ML Kit. */
   private fun captureForSegmentation() {
-    val w = 256
-    val h = maxOf(32, (256f * inH / inW).toInt())
+    val w = 384
+    val h = maxOf(48, (384f * inH / inW).toInt())
     ensureFbo(w, h)
     GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, fbo)
     GLES20.glViewport(0, 0, w, h)
@@ -485,10 +485,28 @@ class PortraitProcessor : SurfaceProcessor {
       }
       float person(vec2 t) { return smoothstep(0.3, 0.7, texture2D(sMask, maskUV(t)).r); }
 
+      // Colour-guided refinement: the low-res mask is re-weighted by how similar neighbouring
+      // pixels are to this one, so the edge snaps to the real outline (hair, shoulders)
+      float personRefined(vec2 t, vec3 c) {
+        float acc = 0.0;
+        float wsum = 0.0;
+        for (int y = -2; y <= 2; y++) {
+          for (int x = -2; x <= 2; x++) {
+            vec2 q = t + vec2(float(x), float(y)) * uTexel * 3.0;
+            vec3 s = texture2D(sTex, q).rgb;
+            vec3 d = s - c;
+            float wk = exp(-dot(d, d) * 40.0);
+            acc += person(q) * wk;
+            wsum += wk;
+          }
+        }
+        return clamp(acc / max(wsum, 0.0001), 0.0, 1.0);
+      }
+
       void main() {
         vec4 c = texture2D(sTex, vTex);
         if (uRot < 0 || uStrength <= 0.01) { gl_FragColor = vec4(c.rgb, 1.0); return; }
-        float mc = person(vTex);
+        float mc = smoothstep(0.15, 0.85, personRefined(vTex, c.rgb));
         if (mc > 0.985) { gl_FragColor = vec4(c.rgb, 1.0); return; }
         vec3 acc = vec3(0.0);
         float w = 0.0;
