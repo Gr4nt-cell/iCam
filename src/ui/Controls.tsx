@@ -140,7 +140,7 @@ export function Shutter({
       disabled={busy && !recording}
     >
       <Animated.View style={[styles.shutterOuter, { transform: [{ scale }] }]}>
-        <Glass radius={42} style={StyleSheet.absoluteFill} tint="rgba(255,255,255,0.10)" />
+        <Glass radius={42} style={StyleSheet.absoluteFill} tint="rgba(255,255,255,0.04)" />
         {isVideo ? (
           <View style={[styles.recDot, recording && styles.recSquare]} />
         ) : (
@@ -161,7 +161,7 @@ export function Thumb({ uri, processing, onPress }: { uri?: string; processing: 
       <Glass radius={28} style={styles.thumb}>
         {uri ? <Image source={{ uri }} style={styles.thumbImg} /> : null}
         {processing && (
-          <View style={[StyleSheet.absoluteFill, styles.center, { backgroundColor: 'rgba(0,0,0,0.35)' }]}>
+          <View style={[StyleSheet.absoluteFill, styles.center, { backgroundColor: 'rgba(0,0,0,0.14)' }]}>
             <ActivityIndicator color="#fff" />
           </View>
         )}
@@ -329,7 +329,7 @@ export const styles = StyleSheet.create({
   sliderCard: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 14, height: 52, gap: 12, alignSelf: 'center', width: 300 },
   sliderTabs: { flexDirection: 'row', gap: 12 },
   sliderTrackWrap: { flex: 1, height: 44, justifyContent: 'center' },
-  sliderTrack: { height: 4, borderRadius: 2, backgroundColor: 'rgba(255,255,255,0.45)' },
+  sliderTrack: { height: 4, borderRadius: 2, backgroundColor: 'rgba(255,255,255,0.18)' },
   sliderCenterTick: { position: 'absolute', left: '50%', width: 2, height: 12, marginLeft: -1, backgroundColor: 'rgba(255,255,255,0.7)' },
   sliderKnob: { position: 'absolute', width: 22, height: 22, borderRadius: 11, backgroundColor: '#ffd76a', borderWidth: 2, borderColor: '#fff' },
   focusRing: { position: 'absolute', width: 72, height: 72, borderRadius: 36, borderWidth: 2, borderColor: 'rgba(255,255,255,0.95)' },
