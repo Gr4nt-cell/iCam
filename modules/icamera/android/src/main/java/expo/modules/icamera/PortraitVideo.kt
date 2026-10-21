@@ -57,6 +57,12 @@ class PortraitProcessor : SurfaceProcessor {
 
   @Volatile var strength = 0.6f
 
+  /** Called (on the GL thread) when the blur is switched off because the GPU is too slow. */
+  var onWeakGpu: ((String) -> Unit)? = null
+  @Volatile private var blurDisabled = false
+  private var slowFrames = 0
+  private var renderer = ""
+
   private val streamSeg: Segmenter by lazy {
     Segmentation.getClient(
       SelfieSegmenterOptions.Builder().setDetectorMode(SelfieSegmenterOptions.STREAM_MODE).build(),
@@ -171,7 +177,8 @@ class PortraitProcessor : SurfaceProcessor {
     s.getTransformMatrix(stM)
     frame++
 
-    if (frame % 3L == 0L && !segBusy) captureForSegmentation()
+    val t0 = System.nanoTime()
+    if (!blurDisabled && frame % 3L == 0L && !segBusy) captureForSegmentation()
     uploadMask()
 
     for ((out, p) in outputs) {
@@ -183,6 +190,29 @@ class PortraitProcessor : SurfaceProcessor {
       EGLExt.eglPresentationTimeANDROID(display, es, s.timestamp)
       EGL14.eglSwapBuffers(display, es)
     }
+
+    // Runtime check: if blurring keeps us under ~22 fps for ~2 s, switch it off
+    if (!blurDisabled && maskReady && frame > 30) {
+      val ms = (System.nanoTime() - t0) / 1_000_000.0
+      slowFrames = if (ms > 45.0) slowFrames + 1 else maxOf(0, slowFrames - 1)
+      if (slowFrames > 45) disableBlur("Background blur was too slow on this phone and has been turned off")
+    }
+  }
+
+  private fun disableBlur(reason: String) {
+    if (blurDisabled) return
+    blurDisabled = true
+    onWeakGpu?.invoke(reason)
+  }
+
+  private fun isKnownWeakGpu(r: String): Boolean {
+    val g = r.lowercase()
+    return listOf(
+      "mali-4", "mali-t6", "mali-t7", "mali-g31", "mali-g51", "mali-g52 mc1",
+      "adreno (tm) 3", "adreno (tm) 4", "adreno (tm) 50", "adreno (tm) 51",
+      "powervr sgx", "powervr rogue ge", "powervr rogue gm", "powervr ge8",
+      "videocore", "vivante",
+    ).any { g.contains(it) }
   }
 
   private fun drawBlur(texMatrix: FloatArray) {
@@ -198,7 +228,7 @@ class PortraitProcessor : SurfaceProcessor {
     val radius = (minOf(inW, inH) / 28f) * (0.35f + strength * 1.2f)
     GLES20.glUniform1f(GLES20.glGetUniformLocation(blurProg, "uRadius"), radius)
     GLES20.glUniform1i(GLES20.glGetUniformLocation(blurProg, "uRot"), if (maskReady && rot >= 0) rot else -1)
-    GLES20.glUniform1f(GLES20.glGetUniformLocation(blurProg, "uStrength"), strength)
+    GLES20.glUniform1f(GLES20.glGetUniformLocation(blurProg, "uStrength"), if (blurDisabled) 0f else strength)
     GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
   }
 
@@ -340,6 +370,9 @@ class PortraitProcessor : SurfaceProcessor {
     )
     pbuffer = EGL14.eglCreatePbufferSurface(display, config, intArrayOf(EGL14.EGL_WIDTH, 1, EGL14.EGL_HEIGHT, 1, EGL14.EGL_NONE), 0)
     EGL14.eglMakeCurrent(display, pbuffer, pbuffer, context)
+
+    renderer = GLES20.glGetString(GLES20.GL_RENDERER) ?: ""
+    if (isKnownWeakGpu(renderer)) disableBlur("This phone's GPU ($renderer) is too slow for live background blur")
 
     blurProg = program(VERTEX, BLUR_FRAGMENT)
     copyProg = program(VERTEX, COPY_FRAGMENT)

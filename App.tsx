@@ -38,7 +38,7 @@ import {
   type ShutterKind,
   Slider,
 } from './src/ui/Controls';
-import { clearSettings, loadSettings, saveSettings } from './src/settings';
+import { clearSettings, loadDeviceFlags, loadSettings, saveDeviceFlags, saveSettings } from './src/settings';
 import { DualPipFrame } from './src/ui/DualPip';
 import { ErrorBoundary } from './src/ui/ErrorBoundary';
 import { Glass } from './src/ui/Glass';
@@ -135,6 +135,10 @@ function CameraScreen() {
   const [aspect, setAspect] = useState<Aspect>('4:3');
   const [bokeh, setBokeh] = useState(0.6);
   const [galleryPref, setGalleryPref] = useState<GalleryPref>('viewer');
+  const [weakGpu, setWeakGpu] = useState(false);
+  useEffect(() => {
+    loadDeviceFlags().then((f) => setWeakGpu(!!f.weakGpu));
+  }, []);
   const win = useWindowDimensions();
   const [remember, setRemember] = useState(false);
   const [settingsLoaded, setSettingsLoaded] = useState(false);
@@ -200,6 +204,11 @@ function CameraScreen() {
     return () => clearTimeout(t);
   }, [settingsLoaded, remember, mode, photo, video, mirrorSelfie, filter, smoothing, pip, manual, brightness, shadows, aspect, bokeh, galleryPref]);
 
+  // If the phone turns out too weak for live blur, fall back to normal Video once not recording
+  useEffect(() => {
+    if (weakGpu && mode === 'pvideo' && !recording) setMode('video');
+  }, [weakGpu, mode, recording]);
+
   useEffect(() => {
     const sub = AppState.addEventListener('change', (s) => setAppActive(s === 'active'));
     return () => sub.remove();
@@ -228,9 +237,11 @@ function CameraScreen() {
       MODES.filter((m) => {
         if (m.key === 'slowmo') return !!caps?.slowMotion;
         if (m.key === 'dual') return !!caps?.concurrent;
+        // Live background blur needs a capable GPU: hidden on weak phones (or after it proved too slow)
+        if (m.key === 'pvideo') return caps ? caps.portraitVideo !== false && !weakGpu : false;
         return true;
       }),
-    [caps],
+    [caps, weakGpu],
   );
 
   const stops = useMemo(() => lensStops(zoomRange.min, zoomRange.max), [zoomRange]);
@@ -546,6 +557,13 @@ function CameraScreen() {
           aspect={aspect === '16:9' || aspect === 'full' ? '16:9' : '4:3'}
           previewFit={isPhotoShot && aspect !== 'full'}
           bokeh={bokeh}
+          onPortraitStatus={(e) => {
+            if (e.nativeEvent.blur === false) {
+              setWeakGpu(true);
+              saveDeviceFlags({ weakGpu: true });
+              flashToast(e.nativeEvent.reason ?? 'Background blur turned off on this phone', 4500);
+            }
+          }}
           onReady={(e) => {
             const r = e.nativeEvent;
             setReady(r);
@@ -695,7 +713,7 @@ function CameraScreen() {
             onBlur={setBokeh}
           />
         )}
-        {mode === 'pvideo' && (
+        {mode === 'pvideo' && !weakGpu && (
           <Glass radius={22} style={styles.blurRow}>
             <MaterialCommunityIcons name="blur" size={20} color="#fff" />
             <Text style={styles.blurLabel}>Blur</Text>

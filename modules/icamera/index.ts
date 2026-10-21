@@ -47,6 +47,8 @@ export type Capabilities = {
   exposureMaxNs: number;
   minFocusDistance: number;
   cameras: CameraProfile[];
+  /** Whether this phone is strong enough for live Portrait video blur */
+  portraitVideo: boolean;
 };
 
 type NativeEvent<T> = { nativeEvent: T };
@@ -91,6 +93,7 @@ export type ICameraProps = ViewProps & {
   previewFit?: boolean;
   /** Portrait video background blur strength 0..1 */
   bokeh?: number;
+  onPortraitStatus?: (e: NativeEvent<{ blur: boolean; reason?: string }>) => void;
   onReady?: (e: NativeEvent<ReadyEvent>) => void;
   onError?: (e: NativeEvent<{ message: string }>) => void;
   onRecordingFinished?: (

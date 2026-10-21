@@ -69,6 +69,7 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
   private val onRecordingFinished by EventDispatcher()
   private val onPhotosCaptured by EventDispatcher()
   private val onDualChange by EventDispatcher()
+  private val onPortraitStatus by EventDispatcher()
 
   private val previewView = PreviewView(context).apply {
     implementationMode = PreviewView.ImplementationMode.COMPATIBLE
@@ -127,6 +128,7 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
   private fun emitRecordingFinished(m: Map<String, Any?>) = onRecordingFinished(clean(m))
   private fun emitPhotosCaptured(m: Map<String, Any?>) = onPhotosCaptured(clean(m))
   private fun emitDualChange(m: Map<String, Any?>) = onDualChange(clean(m))
+  private fun emitPortraitStatus(m: Map<String, Any?>) = onPortraitStatus(clean(m))
 
   private var burstEvOffset = 0.0
 
@@ -477,6 +479,7 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
       try {
         val proc = portraitProcessor ?: PortraitProcessor().also { portraitProcessor = it }
         proc.strength = bokeh
+        proc.onWeakGpu = { reason -> post { emitPortraitStatus(mapOf("blur" to false, "reason" to reason)) } }
         val group = UseCaseGroup.Builder()
           .addUseCase(newPreview(previewStab, ois))
           .addUseCase(vc)

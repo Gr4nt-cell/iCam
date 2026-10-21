@@ -92,7 +92,7 @@ class ICameraModule : Module() {
     }
 
     View(ICameraView::class) {
-      Events("onReady", "onError", "onRecordingFinished", "onPhotosCaptured", "onDualChange")
+      Events("onReady", "onError", "onRecordingFinished", "onPhotosCaptured", "onDualChange", "onPortraitStatus")
 
       Prop("mode") { view: ICameraView, v: String -> view.setMode(v) }
       Prop("facing") { view: ICameraView, v: String -> view.setFacing(v) }
@@ -169,6 +169,7 @@ class ICameraModule : Module() {
       "exposureMaxNs" to (back?.get("exposureMaxNs") ?: 0.0),
       "minFocusDistance" to (back?.get("minFocusDistance") ?: 0.0),
       "cameras" to cameras,
+      "portraitVideo" to portraitVideoCapable(ctx),
     )
   }
 
@@ -240,6 +241,17 @@ class ICameraModule : Module() {
       "sensorOrientation" to (ch(CameraCharacteristics.SENSOR_ORIENTATION) ?: 0),
     )
   }
+
+  /** Hardware gate for live background blur: enough RAM, 64-bit, not a low-RAM device, 6+ cores. */
+  private fun portraitVideoCapable(ctx: Context): Boolean = try {
+    val am = ctx.getSystemService(Context.ACTIVITY_SERVICE) as android.app.ActivityManager
+    val mi = android.app.ActivityManager.MemoryInfo().also { am.getMemoryInfo(it) }
+    val gb = mi.totalMem / (1024.0 * 1024 * 1024)
+    val is64 = android.os.Build.SUPPORTED_64_BIT_ABIS.isNotEmpty()
+    val cores = Runtime.getRuntime().availableProcessors()
+    val perfClass = if (android.os.Build.VERSION.SDK_INT >= 31) android.os.Build.VERSION.MEDIA_PERFORMANCE_CLASS else 0
+    !am.isLowRamDevice && is64 && cores >= 6 && (gb >= 5.5 || (perfClass >= 31 && gb >= 3.5))
+  } catch (e: Throwable) { true }
 
   private fun qualityName(q: Quality) = when (q) {
     Quality.UHD -> "4K"

@@ -31,3 +31,27 @@ export function clearSettings() {
     // ignore
   }
 }
+
+/** Per-device facts learned at runtime (kept even when "Remember settings" is off). */
+const DEVICE_FILE = 'icam-device.json';
+export type DeviceFlags = { weakGpu?: boolean };
+
+export async function loadDeviceFlags(): Promise<DeviceFlags> {
+  try {
+    const f = new File(Paths.document, DEVICE_FILE);
+    if (!f.exists) return {};
+    return JSON.parse(await f.text()) as DeviceFlags;
+  } catch {
+    return {};
+  }
+}
+
+export function saveDeviceFlags(flags: DeviceFlags) {
+  try {
+    const f = new File(Paths.document, DEVICE_FILE);
+    f.create({ overwrite: true });
+    f.write(JSON.stringify(flags));
+  } catch {
+    // best effort
+  }
+}
