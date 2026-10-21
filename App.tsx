@@ -301,7 +301,6 @@ function CameraScreen() {
     c.startRecording({
       fileType: 'mp4',
       videoCodec: video.hevc ? 'h265' : 'h264',
-      videoBitRate: 'extra-high',
       onRecordingFinished: async (v) => {
         setRecording(false);
         try {
@@ -548,6 +547,7 @@ function CameraScreen() {
           videoHdr={videoHdr}
           photoHdr={photoHdr}
           videoStabilizationMode={stabilization}
+          videoBitRate="extra-high"
           photoQualityBalance="speed"
           outputOrientation="device"
           androidPreviewViewType="texture-view"
