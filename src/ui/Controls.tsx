@@ -87,8 +87,9 @@ export function ModeCarousel({
       <ScrollView
         ref={scroller}
         horizontal
+        style={{ flexGrow: 0 }}
         showsHorizontalScrollIndicator={false}
-        contentContainerStyle={{ padding: 4 }}
+        contentContainerStyle={{ padding: 4, alignItems: 'center' }}
       >
       {modes.map((m) => {
         const active = m.key === mode;
@@ -313,7 +314,7 @@ export const styles = StyleSheet.create({
   zoomPillActive: { backgroundColor: 'rgba(255,255,255,0.92)' },
   zoomText: { color: '#fff', fontSize: 13, fontWeight: '600' },
   zoomTextActive: { color: '#111', fontWeight: '700' },
-  modeBar: { alignSelf: 'center', maxWidth: '94%' },
+  modeBar: { alignSelf: 'center', maxWidth: '94%', height: 44 },
   modeChip: { paddingHorizontal: 14, height: 36, borderRadius: 18, justifyContent: 'center' },
   modeChipActive: { backgroundColor: 'rgba(214,228,255,0.95)' },
   modeText: { color: 'rgba(255,255,255,0.85)', fontSize: 14, fontWeight: '600' },

@@ -57,6 +57,13 @@ jobs:
           npx tsc --noEmit 2>&1 | tee -a build.log
 
 
+      - name: Check native camera module is linked
+        run: |
+          npx expo-modules-autolinking search -p android 2>&1 | tee autolink.txt | grep -q icamera || {
+            echo "::error title=Autolinking::icamera module not found by autolinking"
+            exit 1
+          }
+
       - name: Generate native Android project
         run: |
           set -o pipefail
