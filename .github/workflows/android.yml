@@ -79,13 +79,15 @@ jobs:
       - name: Report what got linked
         if: always()
         run: |
-          a=$(grep -n -i -B2 -A8 "icamera" autolink.txt 2>/dev/null | head -30 | sed -e 's/%/%25/g' | awk '{printf "%s%%0A", $0}')
-          echo "::notice title=Autolinking search::${a}"
-          f=$(find android -name "ExpoModulesPackageList*" 2>/dev/null | head -3)
-          l=$(for x in $f; do echo "$x"; grep -n -i "camera\|Module()" "$x" | head -40; done | sed -e 's/%/%25/g' | awk '{printf "%s%%0A", $0}')
-          echo "::notice title=Linked Expo modules::${l}"
-          c=$(find android modules -path "*icamera*" -name "*.class" 2>/dev/null | head -5; find . -path ./node_modules -prune -o -path "*intermediates*" -name "*ICamera*" -print 2>/dev/null | head -5)
-          echo "::notice title=ICamera compiled classes::$(echo "$c" | awk '{printf "%s%%0A", $0}')"
+          enc() { sed -e 's/\x1b\[[0-9;]*m//g' -e 's/%/%25/g' | awk '{printf "%s%%0A", $0}'; }
+          r=$(npx expo-modules-autolinking resolve -p android --json 2>&1 | tr ',' '\n' | grep -i -A3 "icamera" | head -20)
+          echo "::notice title=Resolve (android)::$( (echo "${r:-icamera NOT in resolve output}") | enc)"
+          p=$(cd android && ./gradlew -q projects --no-daemon 2>&1 | grep -i -E "icamera|expo-modules-core" | head -10)
+          echo "::notice title=Gradle projects::$( (echo "${p:-no icamera gradle project}") | enc)"
+          l=$(grep -rn "ICameraModule" node_modules/expo/android/build/generated android/app/build/generated 2>/dev/null | head -5)
+          echo "::notice title=Module list::$( (echo "${l:-ICameraModule not in generated module list}") | enc)"
+          c=$(find modules node_modules/icamera -name "ICamera*.class" 2>/dev/null | head -3)
+          echo "::notice title=Compiled classes::$( (echo "${c:-no ICamera classes compiled}") | enc)"
 
       - name: Rename APK
         run: |
