@@ -13,10 +13,13 @@ adb shell uiautomator dump /sdcard/ui.xml >/dev/null 2>&1
 adb shell cat /sdcard/ui.xml 2>/dev/null | grep -o 'text="[^"]*"' | sed 's/text="//;s/"$//' | grep -v '^$' | head -40 > screen.txt
 PID=$(adb shell pidof com.gr4nt.icam | tr -d '\r')
 if [ -z "$PID" ]; then STATUS=crashed; else STATUS=running; fi
+PIDS=$(grep -oE "Start proc [0-9]+:com.gr4nt.icam" logcat.txt | grep -oE "[0-9]+" | tr '\n' '|' | sed 's/|$//')
 {
-  grep -A50 "FATAL EXCEPTION" logcat.txt | head -70
-  grep -E "ReactNativeJS|ReactNative.*(Error|Exception)|libc.*Fatal signal|DEBUG +: " logcat.txt | head -40
   if [ -s screen.txt ]; then echo "---- on screen ----"; cat screen.txt; fi
+  # only crashes from iCam itself (other emulator apps crash during boot)
+  grep -A40 -E "FATAL EXCEPTION" logcat.txt | grep -B2 -A38 "Process: com.gr4nt.icam" | head -60
+  grep -E "ReactNativeJS|ReactNative.*(Error|Exception)" logcat.txt | head -25
+  grep -E "Fatal signal.*com.gr4nt.icam|ICamera|CameraX.*(Error|Exception)" logcat.txt | head -15
 } > crash.txt
 echo "App status after 30s: $STATUS"
 if [ -s crash.txt ]; then
