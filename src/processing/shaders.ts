@@ -116,11 +116,17 @@ half4 main(float2 p) {
   float3 c = img.eval(p).rgb;
 
   // Edge-aware unsharp mask: sharpen real edges, leave flat (noisy) areas alone
-  float3 nb = (img.eval(p + float2(1.5, 0.0)).rgb + img.eval(p - float2(1.5, 0.0)).rgb +
-               img.eval(p + float2(0.0, 1.5)).rgb + img.eval(p - float2(0.0, 1.5)).rgb) * 0.25;
-  float3 hp = c - nb;
-  float edge = smoothstep(0.008, 0.045, abs(lum(hp)) + length(hp) * 0.3);
-  c = c + hp * sharp * edge;
+  // Two-scale edge-aware sharpening: fine (0.75 px) texture + medium (1.5 px) edges,
+  // skipped in flat areas so noise isn't amplified
+  float3 nbF = (img.eval(p + float2(0.75, 0.0)).rgb + img.eval(p - float2(0.75, 0.0)).rgb +
+                img.eval(p + float2(0.0, 0.75)).rgb + img.eval(p - float2(0.0, 0.75)).rgb) * 0.25;
+  float3 nbM = (img.eval(p + float2(1.5, 0.0)).rgb + img.eval(p - float2(1.5, 0.0)).rgb +
+                img.eval(p + float2(0.0, 1.5)).rgb + img.eval(p - float2(0.0, 1.5)).rgb) * 0.25;
+  float3 hpF = c - nbF;
+  float3 hpM = c - nbM;
+  float edge = smoothstep(0.006, 0.04, abs(lum(hpM)) + length(hpM) * 0.3);
+  float tex = smoothstep(0.004, 0.02, abs(lum(hpF)));
+  c = c + hpM * sharp * edge + hpF * sharp * 0.9 * tex;
 
   float3 lin = toLin(c) * gain;
   float L = lum(lin) + 0.0001;
@@ -133,7 +139,7 @@ half4 main(float2 p) {
   float lc = log2(Lc / 0.18);
   lc = lc > 0.0 ? lc * (1.0 - compress) : lc * (1.0 - compress * 0.4);
   float lm = log2(Lf / Lc) * clarity;
-  float ld = log2(L / Lf) * 1.08;
+  float ld = log2(L / Lf) * 1.18;
   float Lo = 0.18 * exp2(lc + lm + ld);
   Lo = max(Lo + shadows * 0.05 * exp(-Lo * 14.0), 0.0);
   float3 o = lin * (Lo / L);

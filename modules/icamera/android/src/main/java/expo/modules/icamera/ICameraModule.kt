@@ -27,6 +27,8 @@ class ICameraModule : Module() {
 
     // Record any uncaught Java/Kotlin crash so the next launch can show it on screen
     OnCreate {
+      // Start the subject-segmentation model download early (Portrait mode)
+      Thread { PersonSegmenter.warmUp() }.start()
       val ctx = appContext.reactContext?.applicationContext ?: return@OnCreate
       val crashFile = java.io.File(ctx.filesDir, "last_crash.txt")
       val previous = Thread.getDefaultUncaughtExceptionHandler()

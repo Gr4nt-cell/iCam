@@ -418,6 +418,7 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
     ImageCapture.Builder()
       .setResolutionSelector(resolutionSelector())
       .setCaptureMode(ImageCapture.CAPTURE_MODE_MINIMIZE_LATENCY)
+      .setJpegQuality(100)
       .setFlashMode(flashMode())
       .build()
 
@@ -447,15 +448,24 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
     val info = p.getCameraInfo(sel)
     val action = mode == "action"
     val portraitVideo = mode == "pvideo"
-    val uhd = !action && !portraitVideo && videoQuality == "uhd"
+    val selfieVideo = facing == "front"
+    val uhd = !action && !portraitVideo && !selfieVideo && videoQuality == "uhd"
     val targetFps = if (action) 60 else if (portraitVideo) 30 else fps
-    val recorder = buildRecorder(if (uhd) Quality.UHD else Quality.FHD, if (uhd) 60_000_000 else 24_000_000)
+    val recorder = if (selfieVideo) {
+      // Selfie video: 4:3 like selfie photos, so the framing (zoom) matches
+      Recorder.Builder()
+        .setQualitySelector(QualitySelector.from(Quality.FHD, FallbackStrategy.lowerQualityOrHigherThan(Quality.SD)))
+        .setAspectRatio(androidx.camera.core.AspectRatio.RATIO_4_3)
+        .setTargetVideoEncodingBitRate(20_000_000)
+        .build()
+    } else buildRecorder(if (uhd) Quality.UHD else Quality.FHD, if (uhd) 60_000_000 else 24_000_000)
 
     // Strongest stabilization available: preview stabilization (stabilizes preview + recording,
     // "cinematic"), else video EIS; plus optical stabilization when the lens has OIS.
     // Portrait video always uses the strongest (cinematic) stabilization for smooth footage
-    val wantStab = action || portraitVideo || stabilization != "off"
-    val previewStab = (action || portraitVideo || stabilization == "cinematic") &&
+    // Stabilization crops the frame; on the front camera that would zoom selfies in, so skip it there
+    val wantStab = !selfieVideo && (action || portraitVideo || stabilization != "off")
+    val previewStab = wantStab && (action || portraitVideo || stabilization == "cinematic") &&
       (try { Preview.getPreviewCapabilities(info).isStabilizationSupported } catch (e: Throwable) { false })
     val videoStabOk = try { Recorder.getVideoCapabilities(info).isStabilizationSupported } catch (e: Throwable) { false }
     val ois = wantStab && oisSupported(info)
@@ -486,6 +496,7 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
           .addEffect(PortraitVideoEffect(proc))
           .build()
         camera = p.bindToLifecycle(owner, sel, group)
+        proc.fixedRotation = ((camera?.cameraInfo?.sensorRotationDegrees ?: -90) / 90).let { if (it < 0) -1 else it % 4 }
         videoCapture = vc
         return
       } catch (e: Throwable) {

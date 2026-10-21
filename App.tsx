@@ -271,10 +271,10 @@ function CameraScreen() {
       setShowSliders(false);
       if (VIDEO_MODES.includes(m)) setShowLook(false);
       // Portrait video: flattering tighter framing (2× with a telephoto lens, else 1.5×)
-      if (m === 'pvideo') setZoom(clamp(zoomRange.max >= 5 ? 2 : 1.5, zoomRange.min, zoomRange.max));
+      if (m === 'pvideo' && facing === 'back') setZoom(clamp(zoomRange.max >= 5 ? 2 : 1.5, zoomRange.min, zoomRange.max));
       else if (mode === 'pvideo') setZoom(1);
     },
-    [recording, mode, zoomRange],
+    [recording, mode, zoomRange, facing],
   );
 
   const saveToGallery = useCallback(
@@ -412,13 +412,13 @@ function CameraScreen() {
  /* ---------- open the last capture: iCam viewer, gallery app, or "Open with" ---------- */
   const openLast = useCallback(async () => {
     if (!last) return;
-    if (galleryPref !== 'viewer' && last.assetId) {
-      const ok = await openMedia(last.assetId, last.isVideo, galleryPref === 'ask');
-      if (ok) return;
-      flashToast('No gallery app could open it — showing it here');
+    if (!last.assetId) {
+      flashToast('Still saving — try again in a moment');
+      return;
     }
-    setViewerOpen(true);
-  }, [last, galleryPref, flashToast]);
+    const ok = await openMedia(last.assetId, last.isVideo, false);
+    if (!ok) flashToast('No gallery app is available to open it');
+  }, [last, flashToast]);
 
   /* ---------- exposure +/- (1/3 EV steps, every mode) ---------- */
   const nudgeExposure = useCallback(
@@ -798,8 +798,6 @@ function CameraScreen() {
         mirrorSelfie={mirrorSelfie}
         onMirrorSelfie={setMirrorSelfie}
         capabilities={caps}
-        galleryPref={galleryPref}
-        onGalleryPref={(v) => setGalleryPref(v as GalleryPref)}
         remember={remember}
         onRemember={(v) => {
           setRemember(v);

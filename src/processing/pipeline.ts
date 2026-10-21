@@ -380,7 +380,7 @@ function toneMap(img: SkImage, opts: ProcessOptions): SkImage {
   const contrastyScene = Math.min(0.2, brightShare * 0.6) + Math.min(0.2, faceBoost * 0.1);
   const params = opts.night
     ? { shadows: 0.6, compress: 0.45, sat: 1.1, sharp: 0.25, warmth: -0.01, clarity: 1.08 }
-    : { shadows: 0.3, compress: 0.3 + contrastyScene, sat: 1.1, sharp: 0.45, warmth: -0.015, clarity: 1.18 };
+    : { shadows: 0.3, compress: 0.3 + contrastyScene, sat: 1.1, sharp: 0.55, warmth: -0.015, clarity: 1.2 };
   const shadows = params.shadows + opts.shadows * 0.6;
 
   const fx = effect('tone2', TONE_SKSL);
@@ -565,7 +565,7 @@ export async function processBurst(paths: string[], opts: ProcessOptions): Promi
   const radius = Math.max(3, Math.min(W, H) / 500);
   // Residual noise after merging N frames ≈ σ/√N; denoise only as much as is left
   const residual = lastNoise / Math.sqrt(Math.max(1, usable.length));
-  const lumaStrength = Math.min(0.75, Math.max(0.08, residual * 30)) + (opts.night ? 0.1 : 0);
+  const lumaStrength = Math.min(0.6, Math.max(0.04, residual * 20)) + (opts.night ? 0.1 : 0);
   merged = shade(merged, 'denoise', DENOISE_SKSL, [
     opts.night ? 0.95 : 0.85,
     lumaStrength,
@@ -582,7 +582,7 @@ export async function processBurst(paths: string[], opts: ProcessOptions): Promi
   }
   out = finishLook(out, opts.smoothing ?? 0, opts.filter ?? 'natural');
   out = cropToAspect(out, opts.aspect);
-  const bytes = out.encodeToBytes(ImageFormat.JPEG, 95);
+  const bytes = out.encodeToBytes(ImageFormat.JPEG, 97);
 
   const file = new File(Paths.cache, `iCam_${Date.now()}.jpg`);
   file.create({ overwrite: true });

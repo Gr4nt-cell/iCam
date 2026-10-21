@@ -57,6 +57,9 @@ class PortraitProcessor : SurfaceProcessor {
 
   @Volatile var strength = 0.6f
 
+  /** Clockwise quarter turns that make the camera buffer upright (from the sensor orientation). */
+  @Volatile var fixedRotation = -1
+
   /** Called (on the GL thread) when the blur is switched off because the GPU is too slow. */
   var onWeakGpu: ((String) -> Unit)? = null
   @Volatile private var blurDisabled = false
@@ -92,6 +95,7 @@ class PortraitProcessor : SurfaceProcessor {
   private var inH = 1080
   private val outputs = LinkedHashMap<SurfaceOutput, Pair<EGLSurface, Size>>()
   private val stM = FloatArray(16)
+  private val stInv = FloatArray(16)
   private val outM = FloatArray(16)
   private var frame = 0L
   private var released = false
@@ -175,6 +179,7 @@ class PortraitProcessor : SurfaceProcessor {
     EGL14.eglMakeCurrent(display, pbuffer, pbuffer, context)
     try { s.updateTexImage() } catch (e: Throwable) { return }
     s.getTransformMatrix(stM)
+    if (!android.opengl.Matrix.invertM(stInv, 0, stM, 0)) android.opengl.Matrix.setIdentityM(stInv, 0)
     frame++
 
     val t0 = System.nanoTime()
@@ -229,6 +234,7 @@ class PortraitProcessor : SurfaceProcessor {
     GLES20.glUniform1f(GLES20.glGetUniformLocation(blurProg, "uRadius"), radius)
     GLES20.glUniform1i(GLES20.glGetUniformLocation(blurProg, "uRot"), if (maskReady && rot >= 0) rot else -1)
     GLES20.glUniform1f(GLES20.glGetUniformLocation(blurProg, "uStrength"), if (blurDisabled) 0f else strength)
+    GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(blurProg, "uStInv"), 1, false, stInv, 0)
     GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
   }
 
@@ -268,7 +274,9 @@ class PortraitProcessor : SurfaceProcessor {
     bmp.recycle()
 
     segBusy = true
-    val checkRotation = rot < 0 || System.currentTimeMillis() - lastRotCheck > 4000
+    // Use the sensor orientation when known; only fall back to detecting it from the image
+    if (fixedRotation >= 0) rot = fixedRotation
+    val checkRotation = fixedRotation < 0 && (rot < 0 || System.currentTimeMillis() - lastRotCheck > 4000)
     segExecutor.execute {
       try {
         var useRot = rot
@@ -288,7 +296,7 @@ class PortraitProcessor : SurfaceProcessor {
         flipped.recycle()
         handler.post {
           val prev = mask
-          if (prev != null && prev.size == arr.size && useRot == rot) {
+          if (prev != null && prev.size == arr.size && (useRot == rot || fixedRotation >= 0)) {
             for (i in arr.indices) arr[i] = arr[i] * 0.65f + prev[i] * 0.35f // temporal smoothing
           }
           rot = useRot
@@ -464,9 +472,12 @@ class PortraitProcessor : SurfaceProcessor {
       uniform float uRadius;
       uniform int uRot;
       uniform float uStrength;
+      uniform mat4 uStInv;
 
+      // texture coords -> upright-image coords the mask was computed on
       vec2 maskUV(vec2 t) {
-        vec2 b = vec2(t.x, 1.0 - t.y);
+        vec2 uv = (uStInv * vec4(t, 0.0, 1.0)).xy;
+        vec2 b = vec2(uv.x, 1.0 - uv.y);
         if (uRot == 1) return vec2(1.0 - b.y, b.x);
         if (uRot == 2) return vec2(1.0 - b.x, 1.0 - b.y);
         if (uRot == 3) return vec2(b.y, 1.0 - b.x);

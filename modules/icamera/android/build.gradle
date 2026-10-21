@@ -28,4 +28,6 @@ dependencies {
   implementation "androidx.camera:camera-extensions:$camerax"
   // On-device person segmentation for Portrait mode
   implementation "com.google.mlkit:segmentation-selfie:16.0.0-beta6"
+  // Subject segmentation (people / pets / objects at any distance) via Google Play services
+  implementation "com.google.android.gms:play-services-mlkit-subject-segmentation:16.0.0-beta1"
 }

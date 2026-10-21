@@ -22,8 +22,6 @@ type SettingsProps = {
   capabilities: Capabilities | null;
   remember: boolean;
   onRemember: (v: boolean) => void;
-  galleryPref: string;
-  onGalleryPref: (v: string) => void;
   onResetDefaults: () => void;
 };
 
@@ -53,17 +51,6 @@ export function SettingsSheet(p: SettingsProps) {
                   <Toggle value={p.photo.vendorNight} onChange={(v) => p.onPhoto({ ...p.photo, vendorNight: v })} />
                 </Row>
               ) : null}
-            </Section>
-
-            <Section title="Gallery">
-              <Row label="Open photos in" hint="Gallery uses your default app (Android lets you pick “Always” once)">
-                <Segmented
-                  options={['viewer', 'gallery', 'ask']}
-                  labels={['iCam', 'Gallery', 'Ask']}
-                  value={p.galleryPref}
-                  onChange={p.onGalleryPref}
-                />
-              </Row>
             </Section>
 
             <Section title="Saved settings">
