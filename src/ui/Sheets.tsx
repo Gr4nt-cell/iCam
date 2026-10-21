@@ -4,6 +4,7 @@ import { Image, Modal, Pressable, ScrollView, StyleSheet, Switch, Text, View } f
 import type { Capabilities } from '../../modules/icamera';
 import type { PhotoSettings, VideoSettings } from '../camera/hardware';
 import { Glass } from './Glass';
+import { GlassSegmented } from './GlassSegmented';
 
 /* ---------------- Settings ---------------- */
 
@@ -96,6 +97,12 @@ export function SettingsSheet(p: SettingsProps) {
                   <Text style={s.hwLine}>Slow motion (high-speed): {p.capabilities.slowMotion ? 'yes' : 'no'}</Text>
                   <Text style={s.hwLine}>Dual front + back recording: {p.capabilities.concurrent ? 'yes' : 'no'}</Text>
                   <Text style={s.hwLine}>Phone maker Night mode: {p.capabilities.nightExtension ? 'yes' : 'no'}</Text>
+                  <Text style={s.hwLine}>
+                    Back screen for apps:{' '}
+                    {p.capabilities.rearDisplays?.length
+                      ? p.capabilities.rearDisplays.map((d) => `${d.name} ${d.width}×${d.height}`).join(', ')
+                      : 'none available'}
+                  </Text>
                 </View>
               ) : (
                 <Text style={s.rowHint}>Reading camera hardware…</Text>
@@ -192,14 +199,14 @@ function Segmented({
 }) {
   return (
     <View style={s.seg}>
-      {options.map((o, i) => {
-        const active = o === value;
-        return (
-          <Pressable key={o} onPress={() => onChange(o)} style={[s.segItem, active && s.segActive]}>
-            <Text style={[s.segText, active && s.segTextActive]}>{labels?.[i] ?? o}</Text>
-          </Pressable>
-        );
-      })}
+      <GlassSegmented
+        items={options.map((o, i) => ({ key: o, label: labels?.[i] ?? o }))}
+        value={value}
+        onChange={onChange}
+        height={30}
+        fontSize={13}
+        paddingH={10}
+      />
     </View>
   );
 }
@@ -292,7 +299,7 @@ const s = StyleSheet.create({
   row: { flexDirection: 'row', alignItems: 'center', minHeight: 44 },
   rowLabel: { color: '#fff', fontSize: 15, fontWeight: '600' },
   rowHint: { color: 'rgba(255,255,255,0.6)', fontSize: 12, marginTop: 2 },
-  seg: { flexDirection: 'row', backgroundColor: 'rgba(255,255,255,0.1)', borderRadius: 14, padding: 3 },
+  seg: { backgroundColor: 'rgba(255,255,255,0.06)', borderRadius: 19 },
   segItem: { paddingHorizontal: 10, paddingVertical: 6, borderRadius: 11 },
   segActive: { backgroundColor: 'rgba(214,228,255,0.95)' },
   segText: { color: '#fff', fontSize: 13, fontWeight: '600' },

@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: android-${{ github.ref }}
+  group: android-${{ github.sha }}
   cancel-in-progress: true
 
 jobs:

@@ -6,13 +6,13 @@ import {
   Image,
   PanResponder,
   Pressable,
-  ScrollView,
   StyleSheet,
   Text,
   View,
 } from 'react-native';
 import type { CaptureMode, Lens } from '../camera/hardware';
 import { Glass, GlassCircle } from './Glass';
+import { GlassSegmented } from './GlassSegmented';
 
 export const MODES: { key: CaptureMode; label: string }[] = [
   { key: 'night', label: 'Night Sight' },
@@ -40,25 +40,26 @@ export function ZoomPills({
   onSelect: (z: number) => void;
 }) {
   if (stops.length === 0) return null;
-  // The pill closest to (but not above) the current zoom shows the live value, like Pixel
+  // The pill on the nearest stop at or below the current zoom shows the live value, like Pixel
   let activeIdx = 0;
   stops.forEach((s, i) => {
     if (zoom >= s.zoom * 0.98) activeIdx = i;
   });
   return (
     <Glass radius={24} style={styles.zoomBar}>
-      {stops.map((s, i) => {
-        const active = i === activeIdx;
-        return (
-          <Pressable key={s.label} onPress={() => onSelect(s.zoom)} hitSlop={6}>
-            <View style={[styles.zoomPill, active && styles.zoomPillActive]}>
-              <Text style={[styles.zoomText, active && styles.zoomTextActive]}>
-                {active ? `${label}×` : s.label}
-              </Text>
-            </View>
-          </Pressable>
-        );
-      })}
+      <GlassSegmented
+        items={stops.map((s) => ({ key: s.label, label: s.label }))}
+        value={stops[activeIdx].label}
+        activeLabel={`${label}×`}
+        onChange={(k) => {
+          const st = stops.find((s) => s.label === k);
+          if (st) onSelect(st.zoom);
+        }}
+        height={38}
+        fontSize={13}
+        paddingH={8}
+        minItemWidth={38}
+      />
     </Glass>
   );
 }
@@ -76,40 +77,18 @@ export function ModeCarousel({
   onChange: (m: CaptureMode) => void;
   disabled?: boolean;
 }) {
-  const scroller = useRef<ScrollView>(null);
-  const xs = useRef<Record<string, number>>({});
-  useEffect(() => {
-    const x = xs.current[mode];
-    if (x != null) scroller.current?.scrollTo({ x: Math.max(0, x - 110), animated: true });
-  }, [mode]);
   return (
-    <Glass radius={22} style={styles.modeBar}>
-      <ScrollView
-        ref={scroller}
-        horizontal
-        style={{ flexGrow: 0 }}
-        showsHorizontalScrollIndicator={false}
-        contentContainerStyle={{ padding: 4, alignItems: 'center' }}
-      >
-      {modes.map((m) => {
-        const active = m.key === mode;
-        return (
-          <Pressable
-            key={m.key}
-            disabled={disabled}
-            onPress={() => onChange(m.key)}
-            hitSlop={4}
-            onLayout={(e) => {
-              xs.current[m.key] = e.nativeEvent.layout.x;
-            }}
-          >
-            <View style={[styles.modeChip, active && styles.modeChipActive]}>
-              <Text style={[styles.modeText, active && styles.modeTextActive]}>{m.label}</Text>
-            </View>
-          </Pressable>
-        );
-      })}
-      </ScrollView>
+    <Glass radius={24} style={styles.modeBar}>
+      <GlassSegmented
+        items={modes}
+        value={mode}
+        onChange={(k) => onChange(k as CaptureMode)}
+        scrollable
+        disabled={disabled}
+        height={36}
+        fontSize={14}
+        paddingH={13}
+      />
     </Glass>
   );
 }
@@ -212,16 +191,18 @@ export function ToneSliders({
   const set = tab === 'brightness' ? onBrightness : onShadows;
   return (
     <Glass radius={24} style={styles.sliderCard}>
-      <View style={styles.sliderTabs}>
-        <Pressable onPress={() => setTab('brightness')} hitSlop={6}>
-          <MaterialCommunityIcons name="brightness-6" size={22} color={tab === 'brightness' ? '#ffd76a' : '#fff'} />
-        </Pressable>
-        {showShadows && (
-          <Pressable onPress={() => setTab('shadows')} hitSlop={6}>
-            <MaterialCommunityIcons name="circle-half-full" size={22} color={tab === 'shadows' ? '#ffd76a' : '#fff'} />
-          </Pressable>
-        )}
-      </View>
+      <GlassSegmented
+        items={[
+          { key: 'brightness', label: '', icon: 'brightness-6' },
+          ...(showShadows ? [{ key: 'shadows', label: '', icon: 'circle-half-full' as const }] : []),
+        ]}
+        value={tab}
+        onChange={(k) => setTab(k as 'brightness' | 'shadows')}
+        height={34}
+        fontSize={18}
+        paddingH={6}
+        minItemWidth={34}
+      />
       <Slider value={value} onChange={set} />
     </Glass>
   );
@@ -309,12 +290,12 @@ export function Toast({ text }: { text: string | null }) {
 
 export const styles = StyleSheet.create({
   center: { alignItems: 'center', justifyContent: 'center' },
-  zoomBar: { flexDirection: 'row', padding: 4, gap: 4, alignSelf: 'center' },
+  zoomBar: { alignSelf: 'center' },
   zoomPill: { minWidth: 38, height: 38, borderRadius: 19, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 6 },
   zoomPillActive: { backgroundColor: 'rgba(255,255,255,0.92)' },
   zoomText: { color: '#fff', fontSize: 13, fontWeight: '600' },
   zoomTextActive: { color: '#111', fontWeight: '700' },
-  modeBar: { alignSelf: 'center', maxWidth: '94%', height: 44 },
+  modeBar: { alignSelf: 'center', maxWidth: '94%' },
   modeChip: { paddingHorizontal: 14, height: 36, borderRadius: 18, justifyContent: 'center' },
   modeChipActive: { backgroundColor: 'rgba(214,228,255,0.95)' },
   modeText: { color: 'rgba(255,255,255,0.85)', fontSize: 14, fontWeight: '600' },

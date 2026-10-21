@@ -20,7 +20,11 @@ export type Lens = { label: string; zoom: number };
 /** Zoom pills (Pixel style) from the camera's zoom-ratio range; < 1× means an ultra-wide lens is available. */
 export function lensStops(zoomMin: number, zoomMax: number): Lens[] {
   const stops: Lens[] = [];
-  if (zoomMin < 0.95) stops.push({ label: trim(zoomMin), zoom: zoomMin });
+  // Ultrawide stop at 0.7× (or the widest the lens allows, if it can't go that wide)
+  if (zoomMin < 0.95) {
+    const uw = Math.max(zoomMin, 0.7);
+    stops.push({ label: trim(uw), zoom: uw });
+  }
   stops.push({ label: '1', zoom: 1 });
   if (zoomMax >= 2) stops.push({ label: '2', zoom: 2 });
   if (zoomMax >= 5) stops.push({ label: '5', zoom: 5 });

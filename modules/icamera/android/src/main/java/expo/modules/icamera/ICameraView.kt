@@ -65,6 +65,8 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
   private val onError by EventDispatcher()
   private val onRecordingFinished by EventDispatcher()
   private val onPhotosCaptured by EventDispatcher()
+  private val onRearAction by EventDispatcher()
+  private val onRearStatus by EventDispatcher()
 
   private val previewView = PreviewView(context).apply {
     implementationMode = PreviewView.ImplementationMode.COMPATIBLE
@@ -104,6 +106,11 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
   private var stabilization = "cinematic"
   private var nightExtension = true
 
+  private var currentPreview: Preview? = null
+  private var rear: RearScreenPresentation? = null
+  private var rearRequested = false
+  private var rearState: Map<String, Any?> = emptyMap()
+
   private var rebindQueued = false
   private var burstEvOffset = 0.0
 
@@ -128,6 +135,55 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
   fun setStabilization(v: String) = rebindOnChange(stabilization, v) { stabilization = it }
   fun setNightExtension(v: Boolean) = rebindOnChange(nightExtension, v) { nightExtension = it }
   fun setAudio(v: Boolean) { audio = v }
+  fun setRearScreen(v: Boolean) {
+    if (v == rearRequested) return
+    rearRequested = v
+    if (v) post { showRear() } else hideRear()
+  }
+  fun setRearUi(v: Map<String, Any?>) { rearState = v; rear?.update(v) }
+
+  /* ---------------- back screen ---------------- */
+
+  private fun activeSurfaceProvider(): Preview.SurfaceProvider =
+    rear?.previewView?.surfaceProvider ?: previewView.surfaceProvider
+
+  private fun showRear() {
+    if (rear != null || !rearRequested) return
+    val displays = RearDisplays.list(context)
+    if (displays.isEmpty()) {
+      rearRequested = false
+      onRearStatus(mapOf("active" to false, "reason" to "This phone doesn't make its back screen available to apps"))
+      return
+    }
+    val activity = appContext.currentActivity ?: return
+    try {
+      val p = RearScreenPresentation(activity, displays.first()) { action -> onRearAction(mapOf("action" to action)) }
+      p.setOnDismissListener {
+        if (rear === p) {
+          rear = null
+          rearRequested = false
+          currentPreview?.setSurfaceProvider(previewView.surfaceProvider)
+          onRearStatus(mapOf("active" to false, "reason" to null))
+        }
+      }
+      p.show()
+      rear = p
+      p.update(rearState)
+      currentPreview?.setSurfaceProvider(p.previewView.surfaceProvider)
+      onRearStatus(mapOf("active" to true, "display" to displays.first().name))
+    } catch (e: Throwable) {
+      rear = null
+      rearRequested = false
+      onRearStatus(mapOf("active" to false, "reason" to "The back screen refused the camera view (${e.javaClass.simpleName})"))
+    }
+  }
+
+  private fun hideRear() {
+    val p = rear ?: return
+    rear = null
+    try { p.dismiss() } catch (_: Throwable) {}
+    currentPreview?.setSurfaceProvider(previewView.surfaceProvider)
+  }
   fun setZoom(v: Float) { zoom = v; camera?.cameraControl?.setZoomRatio(v) }
   fun setEvBias(v: Double) { ev = v; applyControls() }
   fun setIso(v: Int) { iso = v; applyControls() }
@@ -158,6 +214,7 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
     super.onDetachedFromWindow()
     recording?.stop()
     recording = null
+    hideRear()
     provider?.unbindAll()
     camera = null
   }
@@ -229,7 +286,10 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
   private fun newPreview(stabilized: Boolean = false): Preview {
     val b = Preview.Builder()
     if (stabilized) b.setPreviewStabilizationEnabled(true)
-    return b.build().also { it.setSurfaceProvider(previewView.surfaceProvider) }
+    return b.build().also {
+      it.setSurfaceProvider(activeSurfaceProvider())
+      currentPreview = it
+    }
   }
 
   private fun newImageCapture(): ImageCapture =

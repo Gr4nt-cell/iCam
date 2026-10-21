@@ -115,6 +115,8 @@ function CameraScreen() {
   const [dualPrimary, setDualPrimary] = useState<'back' | 'front'>('back');
   const [caps, setCaps] = useState<Capabilities | null>(null);
   const [ready, setReady] = useState<ReadyEvent | null>(null);
+  const [rearMode, setRearMode] = useState(false);
+  const [rearActive, setRearActive] = useState(false);
 
   const [busy, setBusy] = useState(false);
   const [processing, setProcessing] = useState(false);
@@ -294,6 +296,43 @@ function CameraScreen() {
     return shootPhoto();
   }, [isVideoMode, timer, toggleRecording, shootPhoto]);
 
+  /* ---------- back screen ---------- */
+  const enterRear = useCallback(() => {
+    if (recording) return;
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    // Back-screen selfies use the main (rear) cameras
+    setFacing('back');
+    if (mode !== 'photo' && mode !== 'video') setMode('photo');
+    setShowLook(false);
+    setRearMode(true);
+  }, [recording, mode]);
+
+  const rearShutter = useCallback(async () => {
+    if (isVideoMode) return toggleRecording();
+    // Short countdown so there's time to pose, like the rear viewfinder on Xiaomi phones
+    for (let t = 3; t > 0; t--) {
+      setCountdown(t);
+      Haptics.selectionAsync();
+      await sleep(1000);
+    }
+    setCountdown(0);
+    return shootPhoto();
+  }, [isVideoMode, toggleRecording, shootPhoto]);
+
+  const onRearAction = useCallback(
+    (action: string) => {
+      if (action === 'exit') return setRearMode(false);
+      if (action === 'shutter') return void rearShutter();
+      if (action === 'mode' && !recording) return setMode((m) => (m === 'video' ? 'photo' : 'video'));
+      if (action === 'zoom') {
+        const idx = stops.findIndex((s) => Math.abs(s.zoom - zoom) < 0.05);
+        const next = stops[(idx + 1) % stops.length];
+        if (next) setZoom(next.zoom);
+      }
+    },
+    [rearShutter, recording, stops, zoom],
+  );
+
   /* ---------- gestures: tap-to-focus, pinch-to-zoom, swipe modes ---------- */
   const live = useRef({ zoom, zoomRange, mode, recording, visibleModes });
   live.current = { zoom, zoomRange, mode, recording, visibleModes };
@@ -404,6 +443,23 @@ function CameraScreen() {
           hdrVideo={video.hdr}
           stabilization={video.stabilization}
           nightExtension={photo.vendorNight}
+          rearScreen={rearMode}
+          rearUi={{
+            mode: isVideoMode ? 'video' : 'photo',
+            zoom: trim(zoom),
+            recording,
+            seconds: recSeconds,
+            countdown,
+          }}
+          onRearAction={(e) => onRearAction(e.nativeEvent.action)}
+          onRearStatus={(e) => {
+            const { active, reason, display } = e.nativeEvent;
+            setRearActive(active);
+            if (!active) {
+              setRearMode(false);
+              if (reason) flashToast(reason, 4500);
+            } else flashToast(`Viewfinder on back screen${display ? ` (${display})` : ''}`);
+          }}
           onReady={(e) => {
             const r = e.nativeEvent;
             setReady(r);
@@ -491,8 +547,32 @@ function CameraScreen() {
             </Text>
           </Glass>
         ) : null}
-        <IconButton icon="cog-outline" onPress={() => setSettingsOpen(true)} />
+        <View style={{ flexDirection: 'row', gap: 10 }}>
+          {!recording && mode !== 'dual' && (
+            <IconButton icon={rearMode ? 'flip-to-front' : 'flip-to-back'} active={rearMode} onPress={() => (rearMode ? setRearMode(false) : enterRear())} />
+          )}
+          <IconButton icon="cog-outline" onPress={() => setSettingsOpen(true)} />
+        </View>
       </View>
+
+      {rearActive && (
+        <View style={[StyleSheet.absoluteFill, styles.center, { padding: 24 }]} pointerEvents="box-none">
+          <Glass radius={28} style={{ padding: 22, gap: 10, alignItems: 'center', maxWidth: 340 }} tint="rgba(20,20,24,0.55)">
+            <MaterialCommunityIcons name="flip-to-back" size={40} color="#fff" />
+            <Text style={{ color: '#fff', fontSize: 18, fontWeight: '700' }}>Using the back screen</Text>
+            <Text style={{ color: 'rgba(255,255,255,0.75)', textAlign: 'center' }}>
+              Turn your phone around and use the back screen as the viewfinder for selfies with the main cameras. Tap the
+              preview or shutter there to shoot.
+            </Text>
+            <Pressable
+              onPress={() => setRearMode(false)}
+              style={{ marginTop: 6, paddingHorizontal: 18, height: 42, borderRadius: 21, justifyContent: 'center', backgroundColor: 'rgba(255,255,255,0.16)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.45)' }}
+            >
+              <Text style={{ color: '#fff', fontWeight: '700' }}>Switch to main screen</Text>
+            </Pressable>
+          </Glass>
+        </View>
+      )}
 
       {countdown > 0 && (
         <View style={[StyleSheet.absoluteFill, styles.center]} pointerEvents="none">

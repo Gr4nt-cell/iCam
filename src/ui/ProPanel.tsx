@@ -5,6 +5,7 @@ import type { Capabilities, WhiteBalance } from '../../modules/icamera';
 import { FILTERS, type FilterKey } from '../processing/filters';
 import { Slider } from './Controls';
 import { Glass } from './Glass';
+import { GlassSegmented, type SegItem } from './GlassSegmented';
 
 export type ManualSettings = {
   iso: number; // 0 = auto
@@ -102,6 +103,49 @@ export function ProPanel({
   const setShutter = (shutterNs: number) =>
     onChange({ ...value, shutterNs, iso: shutterNs && !value.iso ? 200 : shutterNs ? value.iso : 0 });
 
+  const options = useMemo((): { items: SegItem[]; value: string; select: (k: string) => void } => {
+    if (tab === 'iso') {
+      return {
+        items: [{ key: '0', label: 'Auto' }, ...isoStops.map((i) => ({ key: String(i), label: String(i) }))],
+        value: String(value.iso),
+        select: (k) => setIso(Number(k)),
+      };
+    }
+    if (tab === 'shutter') {
+      const cur = shutterStops.find(([, ns]) => Math.abs(value.shutterNs - ns) < 1);
+      return {
+        items: [{ key: 'auto', label: 'Auto' }, ...shutterStops.map(([l]) => ({ key: l, label: l }))],
+        value: value.shutterNs ? cur?.[0] ?? 'auto' : 'auto',
+        select: (k) => setShutter(k === 'auto' ? 0 : shutterStops.find(([l]) => l === k)?.[1] ?? 0),
+      };
+    }
+    if (tab === 'wb') {
+      const kelvinItems = (caps?.manualWhiteBalance ?? true)
+        ? KELVIN_STOPS.map((k) => ({ key: `k${k}`, label: `${k}K` }))
+        : [];
+      return {
+        items: [...WB_PRESETS.map(([k, l, icon]) => ({ key: k, label: l, icon })), ...kelvinItems],
+        value: value.whiteBalance === 'kelvin' ? `k${value.kelvin}` : value.whiteBalance,
+        select: (k) =>
+          k.startsWith('k') && /^k\d+$/.test(k)
+            ? onChange({ ...value, whiteBalance: 'kelvin', kelvin: Number(k.slice(1)) })
+            : onChange({ ...value, whiteBalance: k as WhiteBalance }),
+      };
+    }
+    // focus
+    const cur = focusStops.find(([, d]) => Math.abs(value.focusDistance - d) < 0.001);
+    return {
+      items: [{ key: 'auto', label: 'Auto' }, { key: 'inf', label: '∞' }, ...focusStops.map(([l]) => ({ key: l, label: l }))],
+      value: value.focusDistance < 0 ? 'auto' : value.focusDistance === 0 ? 'inf' : cur?.[0] ?? 'auto',
+      select: (k) =>
+        onChange({
+          ...value,
+          focusDistance: k === 'auto' ? -1 : k === 'inf' ? 0 : focusStops.find(([l]) => l === k)?.[1] ?? -1,
+        }),
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab, value, isoStops, shutterStops, focusStops, caps]);
+
   const readout = [
     value.iso ? `ISO ${value.iso}` : 'ISO A',
     value.shutterNs ? shutterLabel(value.shutterNs) : 'S A',
@@ -127,18 +171,20 @@ export function ProPanel({
           {readout}
         </Text>
         <Pressable onPress={onToggleVideo} style={s.capToggle} hitSlop={6}>
-          <MaterialCommunityIcons name={video ? 'video' : 'camera'} size={16} color="#0b1f44" />
+          <MaterialCommunityIcons name={video ? 'video' : 'camera'} size={16} color="#fff" />
           <Text style={s.capToggleText}>{video ? 'Video' : 'Photo'}</Text>
         </Pressable>
       </View>
 
-      <View style={s.tabs}>
-        {tabs.map(([k, label]) => (
-          <Pressable key={k} onPress={() => setTab(k)} style={[s.tab, tab === k && s.tabActive]}>
-            <Text style={[s.tabText, tab === k && s.tabTextActive]}>{label}</Text>
-          </Pressable>
-        ))}
-      </View>
+      <GlassSegmented
+        items={tabs.map(([k, label]) => ({ key: k, label }))}
+        value={tab}
+        onChange={(k) => setTab(k as Tab)}
+        height={30}
+        fontSize={13}
+        paddingH={12}
+        style={{ alignSelf: 'center' }}
+      />
 
       {!manual && (tab === 'iso' || tab === 'shutter' || tab === 'focus') ? (
         <Text style={s.note}>This camera doesn't allow manual sensor control — EV and white balance still work.</Text>
@@ -151,60 +197,15 @@ export function ProPanel({
           <Text style={s.evLabel}>+2</Text>
         </View>
       ) : (
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.chips}>
-          {tab === 'iso' && (
-            <>
-              <Chip label="Auto" active={!value.iso} onPress={() => setIso(0)} />
-              {isoStops.map((i) => (
-                <Chip key={i} label={String(i)} active={value.iso === i} onPress={() => setIso(i)} />
-              ))}
-            </>
-          )}
-          {tab === 'shutter' && (
-            <>
-              <Chip label="Auto" active={!value.shutterNs} onPress={() => setShutter(0)} />
-              {shutterStops.map(([l, ns]) => (
-                <Chip key={l} label={l} active={Math.abs(value.shutterNs - ns) < 1} onPress={() => setShutter(ns)} />
-              ))}
-            </>
-          )}
-          {tab === 'wb' && (
-            <>
-              {WB_PRESETS.map(([k, l, icon]) => (
-                <Chip
-                  key={k}
-                  label={l}
-                  icon={icon}
-                  active={value.whiteBalance === k}
-                  onPress={() => onChange({ ...value, whiteBalance: k })}
-                />
-              ))}
-              {(caps?.manualWhiteBalance ?? true) &&
-                KELVIN_STOPS.map((k) => (
-                  <Chip
-                    key={k}
-                    label={`${k}K`}
-                    active={value.whiteBalance === 'kelvin' && value.kelvin === k}
-                    onPress={() => onChange({ ...value, whiteBalance: 'kelvin', kelvin: k })}
-                  />
-                ))}
-            </>
-          )}
-          {tab === 'focus' && (
-            <>
-              <Chip label="Auto" active={value.focusDistance < 0} onPress={() => onChange({ ...value, focusDistance: -1 })} />
-              <Chip label="∞" active={value.focusDistance === 0} onPress={() => onChange({ ...value, focusDistance: 0 })} />
-              {focusStops.map(([l, d]) => (
-                <Chip
-                  key={l}
-                  label={l}
-                  active={Math.abs(value.focusDistance - d) < 0.001}
-                  onPress={() => onChange({ ...value, focusDistance: d })}
-                />
-              ))}
-            </>
-          )}
-        </ScrollView>
+        <GlassSegmented
+          scrollable
+          height={32}
+          fontSize={13}
+          paddingH={12}
+          items={options.items}
+          value={options.value}
+          onChange={options.select}
+        />
       )}
       <Pressable onPress={() => onChange(AUTO_MANUAL)} style={s.reset} hitSlop={6}>
         <Text style={s.resetText}>Reset all to auto</Text>
@@ -247,11 +248,15 @@ export function LookPanel({
 }) {
   return (
     <Glass radius={26} style={s.card}>
-      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.chips}>
-        {FILTERS.map((f) => (
-          <Chip key={f.key} label={f.label} active={filter === f.key} onPress={() => onFilter(f.key)} />
-        ))}
-      </ScrollView>
+      <GlassSegmented
+        scrollable
+        height={32}
+        fontSize={13}
+        paddingH={12}
+        items={FILTERS.map((f) => ({ key: f.key, label: f.label }))}
+        value={filter}
+        onChange={(k) => onFilter(k as FilterKey)}
+      />
       <View style={s.evRow}>
         <MaterialCommunityIcons name="face-recognition" size={20} color="#fff" />
         <Text style={s.smoothLabel}>Smooth</Text>
@@ -268,8 +273,8 @@ const s = StyleSheet.create({
   card: { marginHorizontal: 12, paddingVertical: 10, gap: 8 },
   header: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 14, gap: 10 },
   readout: { flex: 1, color: '#fff', fontSize: 12, fontWeight: '700', letterSpacing: 0.3, fontVariant: ['tabular-nums'] },
-  capToggle: { flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: 'rgba(214,228,255,0.95)', borderRadius: 14, paddingHorizontal: 10, height: 28 },
-  capToggleText: { color: '#0b1f44', fontWeight: '700', fontSize: 12 },
+  capToggle: { flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: 'rgba(255,255,255,0.16)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.4)', borderRadius: 14, paddingHorizontal: 10, height: 28 },
+  capToggleText: { color: '#fff', fontWeight: '700', fontSize: 12 },
   tabs: { flexDirection: 'row', paddingHorizontal: 10, gap: 4 },
   tab: { flex: 1, height: 30, borderRadius: 15, alignItems: 'center', justifyContent: 'center' },
   tabActive: { backgroundColor: 'rgba(255,255,255,0.064)' },
