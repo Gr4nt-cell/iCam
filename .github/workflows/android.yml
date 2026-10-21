@@ -76,6 +76,17 @@ jobs:
           echo "org.gradle.jvmargs=-Xmx6g -XX:MaxMetaspaceSize=1g" >> gradle.properties
           ./gradlew assembleRelease --no-daemon -PreactNativeArchitectures=arm64-v8a,x86_64 2>&1 | tee -a ../build.log
 
+      - name: Report what got linked
+        if: always()
+        run: |
+          a=$(grep -n -i -B2 -A8 "icamera" autolink.txt 2>/dev/null | head -30 | sed -e 's/%/%25/g' | awk '{printf "%s%%0A", $0}')
+          echo "::notice title=Autolinking search::${a}"
+          f=$(find android -name "ExpoModulesPackageList*" 2>/dev/null | head -3)
+          l=$(for x in $f; do echo "$x"; grep -n -i "camera\|Module()" "$x" | head -40; done | sed -e 's/%/%25/g' | awk '{printf "%s%%0A", $0}')
+          echo "::notice title=Linked Expo modules::${l}"
+          c=$(find android modules -path "*icamera*" -name "*.class" 2>/dev/null | head -5; find . -path ./node_modules -prune -o -path "*intermediates*" -name "*ICamera*" -print 2>/dev/null | head -5)
+          echo "::notice title=ICamera compiled classes::$(echo "$c" | awk '{printf "%s%%0A", $0}')"
+
       - name: Rename APK
         run: |
           mkdir -p out
