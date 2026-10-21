@@ -125,9 +125,12 @@ half4 main(float2 p) {
   float L = lum(lin) + 0.0001;
   float Lf = lum(toLin(baseF.eval(p).rgb)) * gain + 0.0001;
   float Lc = lum(toLin(baseC.eval(p).rgb)) * gain + 0.0001;
+  // Halo control: near strong edges (window frame vs face) let the base follow the pixel
+  Lf = exp2(mix(log2(Lf), log2(L), smoothstep(1.2, 3.0, abs(log2(L / Lf))) * 0.6));
+  Lc = exp2(mix(log2(Lc), log2(Lf), smoothstep(1.2, 3.0, abs(log2(Lf / Lc))) * 0.6));
 
   float lc = log2(Lc / 0.18);
-  lc = lc > 0.0 ? lc * (1.0 - compress) : lc * (1.0 - compress * 0.6);
+  lc = lc > 0.0 ? lc * (1.0 - compress) : lc * (1.0 - compress * 0.4);
   float lm = log2(Lf / Lc) * clarity;
   float ld = log2(L / Lf) * 1.08;
   float Lo = 0.18 * exp2(lc + lm + ld);
@@ -154,7 +157,7 @@ half4 main(float2 p) {
   o *= float3(1.0 + warmth, 1.0, 1.0 - warmth);
 
   float3 g = toGamma(o);
-  g = mix(g, g * g * (3.0 - 2.0 * g), 0.14);
+  g = mix(g, g * g * (3.0 - 2.0 * g), 0.22);
   return half4(half3(g), 1.0);
 }
 `;
@@ -222,6 +225,51 @@ half4 main(float2 p) {
   c = c * (1.0 - fade) + fade;
   float2 uv = p / size - 0.5;
   c *= 1.0 - vignette * smoothstep(0.3, 0.85, length(uv) * 1.3);
+  return half4(half3(clamp(c, 0.0, 1.0)), 1.0);
+}
+`;
+
+/**
+ * Highlight recovery: where the merged frame is near clipping, blend in the darker bracket frame
+ * (scaled up by its exposure difference) so windows, sky and lamps keep detail.
+ * Output is linear * 0.5 re-encoded, giving one stop of headroom for the tone mapper.
+ * Children: merged, short, map (alignment residuals). Uniforms: offset(float2), boost
+ */
+export const FUSE_SKSL = `
+uniform shader merged;
+uniform shader shortF;
+uniform shader map;
+uniform float2 offset;
+uniform float boost;
+
+float3 toLin(float3 c) { return pow(max(c, float3(0.0)), float3(2.2)); }
+
+half4 main(float2 p) {
+  float3 m = merged.eval(p).rgb;
+  float2 res = (map.eval(p).rg * 255.0 - 128.0) * 0.5;
+  float3 s = shortF.eval(p + offset + res).rgb;
+  float3 ml = toLin(m);
+  float3 sl = toLin(s) * boost;
+  float hi = max(m.r, max(m.g, m.b));
+  float w = smoothstep(0.72, 0.97, hi);
+  // don't pull in the short frame where it disagrees strongly (motion)
+  float lm = dot(ml, float3(0.2126, 0.7152, 0.0722));
+  float ls = dot(sl, float3(0.2126, 0.7152, 0.0722));
+  w *= (ls > lm * 0.6) ? 1.0 : 0.3;
+  float3 o = mix(ml, sl, w) * 0.5;
+  return half4(half3(pow(clamp(o, 0.0, 1.0), float3(1.0 / 2.2))), 1.0);
+}
+`;
+
+/** Auto levels: black point, white point and a touch of midtone contrast (removes haze). Uniforms: black, white */
+export const LEVELS_SKSL = `
+uniform shader img;
+uniform float black;
+uniform float white;
+
+half4 main(float2 p) {
+  float3 c = img.eval(p).rgb;
+  c = (c - black) / max(white - black, 0.2);
   return half4(half3(clamp(c, 0.0, 1.0)), 1.0);
 }
 `;

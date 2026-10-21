@@ -90,11 +90,13 @@ export type ICameraProps = ViewProps & {
   onRecordingFinished?: (
     e: NativeEvent<{ path: string | null; durationMs: number; slowMotion: boolean; error: string | null }>,
   ) => void;
-  onPhotosCaptured?: (e: NativeEvent<{ paths: string[]; error: string | null; nightExtension: boolean }>) => void;
+  onPhotosCaptured?: (
+    e: NativeEvent<{ paths: string[]; evs?: number[]; shortIndex?: number; error?: string; nightExtension: boolean }>,
+  ) => void;
 };
 
 export type ICameraHandle = {
-  capture: (count: number, evShift: number) => Promise<void>;
+  capture: (count: number, evShift: number, shortEv: number) => Promise<void>;
   startRecording: () => Promise<void>;
   stopRecording: () => Promise<void>;
   focus: (x: number, y: number) => Promise<void>;
@@ -103,7 +105,19 @@ export type ICameraHandle = {
 const NativeModule = requireOptionalNativeModule<{
   getCapabilities: () => Promise<Capabilities>;
   takeLastCrash: () => string | null;
+  detectFaces: (path: string) => Promise<FaceBox[]>;
 }>('ICamera');
+
+export type FaceBox = { x: number; y: number; w: number; h: number; confidence: number };
+
+/** Faces in a photo (upright, normalized boxes) – used for face-priority exposure. */
+export async function detectFaces(path: string): Promise<FaceBox[]> {
+  try {
+    return (await NativeModule?.detectFaces(path)) ?? [];
+  } catch {
+    return [];
+  }
+}
 
 /** Crash report saved by the native handler on the previous run (cleared once read). */
 export function takeLastCrash(): string | null {

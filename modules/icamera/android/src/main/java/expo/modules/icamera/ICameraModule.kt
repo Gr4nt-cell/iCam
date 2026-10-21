@@ -44,6 +44,9 @@ class ICameraModule : Module() {
       }
     }
 
+    /** Finds faces in a photo (upright, normalized 0..1 boxes) for face-priority exposure. */
+    AsyncFunction("detectFaces") { path: String -> FaceFinder.find(path) }
+
     /** Returns (and clears) the crash recorded on the previous run, if any. */
     Function("takeLastCrash") {
       val ctx = appContext.reactContext?.applicationContext ?: return@Function null
@@ -95,8 +98,8 @@ class ICameraModule : Module() {
         )
       }
 
-      AsyncFunction("capture") { view: ICameraView, count: Int, evShift: Double ->
-        view.captureBurst(count, evShift)
+      AsyncFunction("capture") { view: ICameraView, count: Int, evShift: Double, shortEv: Double ->
+        view.captureBurst(count, evShift, shortEv)
       }.runOnQueue(expo.modules.kotlin.functions.Queues.MAIN)
       AsyncFunction("startRecording") { view: ICameraView -> view.startRecording() }
         .runOnQueue(expo.modules.kotlin.functions.Queues.MAIN)

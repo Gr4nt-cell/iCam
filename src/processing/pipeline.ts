@@ -13,9 +13,8 @@ import {
 } from '@shopify/react-native-skia';
 import { File, Paths } from 'expo-file-system';
 import { estimateShift, tileResiduals, type LumaPlane } from './align';
-import { readExifOrientation } from './exif';
 import { filterByKey, type FilterKey } from './filters';
-import { DENOISE_SKSL, FILTER_SKSL, mergeSkSL, SMOOTH_SKSL, TONE_SKSL } from './shaders';
+import { DENOISE_SKSL, FILTER_SKSL, FUSE_SKSL, LEVELS_SKSL, mergeSkSL, SMOOTH_SKSL, TONE_SKSL } from './shaders';
 
 /** Long edge we process at (≈12.5 MP at 4:3) – keeps GPU memory and time bounded. */
 const MAX_EDGE = 4096;
@@ -29,6 +28,11 @@ export type ProcessOptions = {
   /** Face smoothing strength 0…1 (0 = off) */
   smoothing?: number;
   filter?: FilterKey;
+  /** Index of the darker bracket frame in `paths` (-1 = none) and the EV each frame was shot at */
+  shortIndex?: number;
+  evs?: number[];
+  /** Detected faces (normalized boxes on the upright photo) for face-priority exposure */
+  faces?: { x: number; y: number; w: number; h: number }[];
 };
 
 export type ProcessResult = { uri: string; frames: number; width: number; height: number };
@@ -76,30 +80,23 @@ function applyOrientation(c: SkCanvas, o: number, w: number, h: number) {
 export async function loadUpright(path: string): Promise<SkImage> {
   const uri = path.startsWith('file://') ? path : `file://${path}`;
   const bytes = await new File(uri).bytes();
-  const orientation = readExifOrientation(bytes);
+  // Skia's decoder already applies the EXIF orientation, so the image is upright here
   const img = Skia.Image.MakeImageFromEncoded(Skia.Data.fromBytes(bytes));
   if (!img) throw new Error('Could not decode photo');
 
   const w = img.width();
   const h = img.height();
-  const swap = orientation >= 5;
   const s = Math.min(1, MAX_EDGE / Math.max(w, h));
-  const ow = Math.round((swap ? h : w) * s);
-  const oh = Math.round((swap ? w : h) * s);
-
+  const ow = Math.round(w * s);
+  const oh = Math.round(h * s);
   const surf = surface(ow, oh);
-  const c = surf.getCanvas();
-  c.save();
-  c.scale(s, s);
-  applyOrientation(c, orientation, w, h);
-  c.drawImageRectOptions(
+  surf.getCanvas().drawImageRectOptions(
     img,
     Skia.XYWHRect(0, 0, w, h),
-    Skia.XYWHRect(0, 0, w, h),
+    Skia.XYWHRect(0, 0, ow, oh),
     FilterMode.Linear,
     MipmapMode.None,
   );
-  c.restore();
   return snapshot(surf);
 }
 
@@ -247,13 +244,43 @@ function toneMap(img: SkImage, opts: ProcessOptions): SkImage {
   const logAvg = count ? Math.exp(logSum / count) : 0.18;
   const brightShare = count ? hiCount / count : 0;
   const key = opts.night ? 0.11 : 0.145;
-  const maxGain = opts.night ? 8 : 3;
-  const gain = Math.min(maxGain, Math.max(0.8, key / logAvg)) * Math.pow(2, opts.brightness * 0.7);
+  const maxGain = opts.night ? 10 : 6;
+  let gain = Math.min(maxGain, Math.max(0.6, key / logAvg));
 
-  // High-contrast scenes (lots of bright sky / windows) get more range compression
+  // Face-priority exposure: expose people properly even against a bright background
+  let faceBoost = 0;
+  if (px && opts.faces?.length) {
+    let fs = 0;
+    let fn = 0;
+    for (const f of opts.faces) {
+      const x0 = Math.floor(f.x * fw);
+      const x1 = Math.ceil((f.x + f.w) * fw);
+      const y0 = Math.floor(f.y * fh);
+      const y1 = Math.ceil((f.y + f.h) * fh);
+      for (let y = Math.max(0, y0); y < Math.min(fh, y1); y++) {
+        for (let x = Math.max(0, x0); x < Math.min(fw, x1); x++) {
+          const j = (y * fw + x) * 4;
+          fs += 0.2126 * Math.pow(px[j] / 255, 2.2) + 0.7152 * Math.pow(px[j + 1] / 255, 2.2) + 0.0722 * Math.pow(px[j + 2] / 255, 2.2);
+          fn++;
+        }
+      }
+    }
+    if (fn > 0) {
+      const faceL = fs / fn;
+      const faceGain = Math.min(maxGain, 0.2 / Math.max(faceL, 0.002));
+      if (faceGain > gain) {
+        faceBoost = Math.log2(faceGain / gain);
+        gain = gain * Math.pow(faceGain / gain, 0.85);
+      }
+    }
+  }
+  gain *= Math.pow(2, opts.brightness * 0.7);
+
+  // Backlit / high-contrast scenes get more range compression so the background isn't blown
+  const contrastyScene = Math.min(0.2, brightShare * 0.6) + Math.min(0.2, faceBoost * 0.1);
   const params = opts.night
-    ? { shadows: 0.9, compress: 0.45, sat: 1.1, sharp: 0.25, warmth: -0.01, clarity: 1.08 }
-    : { shadows: 0.6, compress: 0.32 + Math.min(0.15, brightShare * 0.6), sat: 1.08, sharp: 0.45, warmth: -0.015, clarity: 1.15 };
+    ? { shadows: 0.6, compress: 0.45, sat: 1.1, sharp: 0.25, warmth: -0.01, clarity: 1.08 }
+    : { shadows: 0.3, compress: 0.3 + contrastyScene, sat: 1.1, sharp: 0.45, warmth: -0.015, clarity: 1.18 };
   const shadows = params.shadows + opts.shadows * 0.6;
 
   const fx = effect('tone2', TONE_SKSL);
@@ -316,6 +343,31 @@ export async function processSingle(path: string, smoothing: number, filter: Fil
  * Full HDR+-style pipeline: decode → upright → align → robust merge → local tone map → JPEG.
  * Writes the result to the app cache and returns its file URI.
  */
+/** Auto levels from a small preview of the result: sets black/white points to remove haze. */
+function autoLevels(img: SkImage): SkImage {
+  const W = img.width();
+  const H = img.height();
+  const tw = 160;
+  const th = Math.max(8, Math.round((H * tw) / W));
+  const px = rgba(resized(img, tw, th));
+  if (!px) return img;
+  const hist = new Uint32Array(256);
+  for (let j = 0; j < px.length; j += 4) {
+    hist[Math.round(0.299 * px[j] + 0.587 * px[j + 1] + 0.114 * px[j + 2])]++;
+  }
+  const total = tw * th;
+  let acc = 0;
+  let lo = 0;
+  for (let i = 0; i < 256; i++) { acc += hist[i]; if (acc >= total * 0.004) { lo = i; break; } }
+  acc = 0;
+  let hi = 255;
+  for (let i = 255; i >= 0; i--) { acc += hist[i]; if (acc >= total * 0.002) { hi = i; break; } }
+  const black = Math.min(0.08, Math.max(0, lo / 255 - 0.01));
+  const white = Math.max(0.88, Math.min(1, hi / 255 + 0.01));
+  if (black < 0.005 && white > 0.995) return img;
+  return shade(img, 'levels', LEVELS_SKSL, [black, white]);
+}
+
 export async function processBurst(paths: string[], opts: ProcessOptions): Promise<ProcessResult> {
   const frames: SkImage[] = [];
   for (const p of paths) {
@@ -324,7 +376,9 @@ export async function processBurst(paths: string[], opts: ProcessOptions): Promi
   }
   const W = frames[0].width();
   const H = frames[0].height();
-  const usable = frames.filter((f) => f.width() === W && f.height() === H).slice(0, 4);
+  const si = opts.shortIndex ?? -1;
+  const shortFrame = si >= 0 && frames[si]?.width() === W && frames[si]?.height() === H ? frames[si] : null;
+  const usable = frames.filter((f, i) => i !== si && f.width() === W && f.height() === H).slice(0, 6);
 
   let merged = usable[0];
   if (usable.length > 1) {
@@ -333,6 +387,26 @@ export async function processBurst(paths: string[], opts: ProcessOptions): Promi
     merged = merge(usable, al, opts.night ? 0.012 : 0.005);
   }
   await yieldFrame();
+
+  // Highlight recovery from the darker bracket frame (gives the tone mapper one stop of headroom)
+  if (shortFrame && opts.evs && opts.evs.length > si) {
+    const evBase = opts.evs[0];
+    const evShort = opts.evs[si];
+    const boost = Math.pow(2, Math.max(0.5, evBase - evShort));
+    const [al] = align([merged, shortFrame]);
+    const fx = effect('fuse', FUSE_SKSL);
+    const m = Skia.Matrix();
+    m.scale(W / al.map.width(), H / al.map.height());
+    const lin = (img: SkImage, mat?: ReturnType<typeof Skia.Matrix>) =>
+      img.makeShaderOptions(TileMode.Clamp, TileMode.Clamp, FilterMode.Linear, MipmapMode.None, mat);
+    const surf = surface(W, H);
+    const paint = Skia.Paint();
+    paint.setShader(fx.makeShaderWithChildren([al.global[0], al.global[1], boost], [lin(merged), lin(shortFrame), lin(al.map, m)]));
+    surf.getCanvas().drawPaint(paint);
+    merged = snapshot(surf);
+    await yieldFrame();
+  }
+
   // Clean remaining noise before tone mapping lifts the shadows (stronger with fewer frames / at night)
   const radius = Math.max(3, Math.min(W, H) / 500);
   const fewFrames = usable.length < 3 ? 0.15 : 0;
@@ -344,11 +418,12 @@ export async function processBurst(paths: string[], opts: ProcessOptions): Promi
   await yieldFrame();
   let out = toneMap(merged, opts);
   await yieldFrame();
+  out = autoLevels(out);
   out = finishLook(out, opts.smoothing ?? 0, opts.filter ?? 'natural');
-  const bytes = out.encodeToBytes(ImageFormat.JPEG, 94);
+  const bytes = out.encodeToBytes(ImageFormat.JPEG, 95);
 
   const file = new File(Paths.cache, `iCam_${Date.now()}.jpg`);
   file.create({ overwrite: true });
   file.write(bytes);
-  return { uri: file.uri, frames: usable.length, width: W, height: H };
+  return { uri: file.uri, frames: usable.length + (shortFrame ? 1 : 0), width: W, height: H };
 }

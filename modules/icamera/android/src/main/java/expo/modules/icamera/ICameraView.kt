@@ -9,6 +9,7 @@ import android.hardware.camera2.params.RggbChannelVector
 import android.util.Range
 import android.view.ViewGroup
 import androidx.camera.camera2.interop.Camera2CameraControl
+import androidx.camera.camera2.interop.Camera2CameraInfo
 import androidx.camera.camera2.interop.CaptureRequestOptions
 import androidx.camera.camera2.interop.ExperimentalCamera2Interop
 import androidx.camera.core.Camera
@@ -247,9 +248,24 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
   private fun selector(f: String) =
     if (f == "front") CameraSelector.DEFAULT_FRONT_CAMERA else CameraSelector.DEFAULT_BACK_CAMERA
 
-  private fun newPreview(stabilized: Boolean = false): Preview {
+  /** Optical image stabilization, when the lens has it (combined with electronic stabilization for video). */
+  @OptIn(ExperimentalCamera2Interop::class)
+  @androidx.annotation.OptIn(markerClass = [ExperimentalCamera2Interop::class])
+  private fun oisSupported(info: androidx.camera.core.CameraInfo): Boolean = try {
+    Camera2CameraInfo.from(info)
+      .getCameraCharacteristic(android.hardware.camera2.CameraCharacteristics.LENS_INFO_AVAILABLE_OPTICAL_STABILIZATION)
+      ?.contains(CaptureRequest.LENS_OPTICAL_STABILIZATION_MODE_ON) == true
+  } catch (e: Throwable) { false }
+
+  @OptIn(ExperimentalCamera2Interop::class)
+  @androidx.annotation.OptIn(markerClass = [ExperimentalCamera2Interop::class])
+  private fun newPreview(stabilized: Boolean = false, ois: Boolean = false): Preview {
     val b = Preview.Builder()
     if (stabilized) b.setPreviewStabilizationEnabled(true)
+    if (ois) {
+      androidx.camera.camera2.interop.Camera2Interop.Extender(b)
+        .setCaptureRequestOption(CaptureRequest.LENS_OPTICAL_STABILIZATION_MODE, CaptureRequest.LENS_OPTICAL_STABILIZATION_MODE_ON)
+    }
     return b.build().also {
       it.setSurfaceProvider(previewView.surfaceProvider)
       currentPreview = it
@@ -270,7 +286,8 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
       usingNightExtension = true
     }
     val ic = newImageCapture()
-    camera = p.bindToLifecycle(owner, sel, newPreview(), ic)
+    val ois = !usingNightExtension && oisSupported(p.getCameraInfo(selector(facing)))
+    camera = p.bindToLifecycle(owner, sel, newPreview(false, ois), ic)
     imageCapture = ic
   }
 
@@ -290,11 +307,16 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
     val targetFps = if (action) 60 else fps
     val recorder = buildRecorder(if (uhd) Quality.UHD else Quality.FHD, if (uhd) 60_000_000 else 24_000_000)
 
+    // Strongest stabilization available: preview stabilization (stabilizes preview + recording,
+    // "cinematic"), else video EIS; plus optical stabilization when the lens has OIS.
+    val wantStab = action || stabilization != "off"
     val previewStab = (action || stabilization == "cinematic") &&
       (try { Preview.getPreviewCapabilities(info).isStabilizationSupported } catch (e: Throwable) { false })
+    val videoStabOk = try { Recorder.getVideoCapabilities(info).isStabilizationSupported } catch (e: Throwable) { false }
+    val ois = wantStab && oisSupported(info)
     val vb = VideoCapture.Builder(recorder)
       .setMirrorMode(if (mirror) MirrorMode.MIRROR_MODE_ON_FRONT_ONLY else MirrorMode.MIRROR_MODE_OFF)
-    if (!previewStab && stabilization != "off") vb.setVideoStabilizationEnabled(true)
+    if (wantStab && !previewStab && videoStabOk) vb.setVideoStabilizationEnabled(true)
 
     val ranges = info.supportedFrameRateRanges
     ranges.firstOrNull { it.lower == targetFps && it.upper == targetFps }
@@ -308,7 +330,7 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
     }
     val vc = vb.build()
     camera = try {
-      p.bindToLifecycle(owner, sel, newPreview(previewStab), vc)
+      p.bindToLifecycle(owner, sel, newPreview(previewStab, ois), vc)
     } catch (e: Throwable) {
       // Fall back to a plain configuration the device is guaranteed to support
       p.unbindAll()
@@ -371,11 +393,17 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
 
     // Picture-in-picture box in normalized device coordinates (origin centre, +y up).
     // Size it to the inset camera's own 3:4 portrait shape so faces aren't stretched.
-    val viewAspect = if (height > 0) width.toFloat() / height else 9f / 16f
-    val sx = pipSize
-    val sy = (sx * viewAspect * (4f / 3f)).coerceAtMost(0.9f)
-    val cx = (pipX * 2f - 1f).coerceIn(-1f + sx, 1f - sx)
-    val cy = (1f - pipY * 2f).coerceIn(-1f + sy, 1f - sy)
+    // The composited stream is 3:4 portrait; the full-screen preview centre-crops its sides.
+    // Convert screen-space position/size (what the user drags) into the stream's NDC.
+    val viewAspect = if (height > 0) width.toFloat() / height else 9f / 20f
+    val outAspect = 3f / 4f
+    val visX = (viewAspect / outAspect).coerceAtMost(1f) // share of stream width that is on screen
+    val visY = (outAspect / viewAspect).coerceAtMost(1f)
+    val sx = (pipSize * visX).coerceIn(0.1f, 0.8f)
+    // Inset keeps the selfie stream's own 3:4 shape: h_px/w_px = 4/3 → sy = sx * outAspect * 4/3
+    val sy = (sx * outAspect * (4f / 3f)).coerceAtMost(0.9f)
+    val cx = ((pipX * 2f - 1f) * visX).coerceIn(-visX + sx, visX - sx)
+    val cy = ((1f - pipY * 2f) * visY).coerceIn(-visY + sy, visY - sy)
 
     val primary = ConcurrentCamera.SingleCameraConfig(
       main.cameraSelector,
@@ -497,34 +525,55 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
    * Captures [count] frames back to back. A non-zero [evShift] temporarily biases exposure first
    * (HDR+ shoots under-exposed bursts). Emits onPhotosCaptured with every saved path.
    */
-  fun captureBurst(count: Int, evShift: Double) {
+  fun captureBurst(count: Int, evShift: Double, shortEv: Double) {
     val ic = imageCapture ?: run { emitError("Photos aren't available in this mode"); return }
     val n = count.coerceIn(1, 8)
+    val withShort = shortEv < 0 && n > 1 && !usingNightExtension && mode != "pro"
     val paths = ArrayList<String>()
+    val evs = ArrayList<Double>()
     val firstFlash = ic.flashMode
+
+    fun currentEv(): Double {
+      val st = camera?.cameraInfo?.exposureState ?: return 0.0
+      return st.exposureCompensationIndex * st.exposureCompensationStep.toDouble()
+    }
 
     fun finish(error: String?) {
       burstEvOffset = 0.0
       ic.flashMode = firstFlash
       applyControls()
-      emitPhotosCaptured(mapOf("paths" to paths, "error" to error, "nightExtension" to usingNightExtension))
+      emitPhotosCaptured(
+        mapOf("paths" to paths, "evs" to evs, "shortIndex" to if (withShort && paths.size == n + 1) n else -1,
+          "error" to error, "nightExtension" to usingNightExtension),
+      )
     }
 
     fun shoot(i: Int) {
       val file = File(context.cacheDir, "iCam_${System.currentTimeMillis()}_$i.jpg")
       val meta = ImageCapture.Metadata().apply { isReversedHorizontal = facing == "front" && mirror }
       if (i > 0) ic.flashMode = ImageCapture.FLASH_MODE_OFF
+      val ev = currentEv()
       ic.takePicture(
         ImageCapture.OutputFileOptions.Builder(file).setMetadata(meta).build(),
         executor,
         object : ImageCapture.OnImageSavedCallback {
           override fun onImageSaved(output: ImageCapture.OutputFileResults) {
             paths.add(file.absolutePath)
-            if (i + 1 < n) shoot(i + 1) else finish(null)
+            evs.add(ev)
+            when {
+              i + 1 < n -> shoot(i + 1)
+              i + 1 == n && withShort -> {
+                // One darker frame to recover bright windows / sky / lamps
+                burstEvOffset = evShift + shortEv
+                applyControls()
+                postDelayed({ shoot(i + 1) }, 300)
+              }
+              else -> finish(null)
+            }
           }
 
           override fun onError(exception: ImageCaptureException) {
-            finish(exception.message ?: "Capture failed")
+            finish(if (paths.isEmpty()) exception.message ?: "Capture failed" else null)
           }
         },
       )

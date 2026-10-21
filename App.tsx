@@ -7,6 +7,7 @@ import { AppState, PanResponder, PermissionsAndroid, Pressable, StyleSheet, Text
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
   cameraModuleAvailable,
+  detectFaces,
   getCapabilities,
   ICameraView,
   type Capabilities,
@@ -34,6 +35,7 @@ import {
   ZoomPills,
   type ShutterKind,
 } from './src/ui/Controls';
+import { clearSettings, loadSettings, saveSettings } from './src/settings';
 import { DualPipFrame } from './src/ui/DualPip';
 import { ErrorBoundary } from './src/ui/ErrorBoundary';
 import { Glass } from './src/ui/Glass';
@@ -42,7 +44,7 @@ import { PermissionGate, SettingsSheet, Viewer } from './src/ui/Sheets';
 
 type Flash = 'off' | 'auto' | 'on';
 type Last = { uri?: string; original?: string; isVideo: boolean; info?: string };
-type BurstResult = { paths: string[]; error: string | null; nightExtension: boolean };
+type BurstResult = { paths: string[]; evs?: number[]; shortIndex?: number; error?: string | null; nightExtension: boolean };
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
@@ -100,9 +102,9 @@ function CameraScreen() {
   const [zoomRange, setZoomRange] = useState({ min: 1, max: 8 });
   const [brightness, setBrightness] = useState(0);
   const [shadows, setShadows] = useState(0);
-  const [photo, setPhoto] = useState<PhotoSettings>({ frames: 4, vendorNight: true });
+  const [photo, setPhoto] = useState<PhotoSettings>({ frames: 4, vendorNight: true, highlightBracket: true });
   const [video, setVideo] = useState<VideoSettings>({
-    resolution: '4k',
+    resolution: '1080p',
     fps: 30,
     hdr: true,
     stabilization: 'cinematic',
@@ -117,6 +119,8 @@ function CameraScreen() {
   const [caps, setCaps] = useState<Capabilities | null>(null);
   const [ready, setReady] = useState<ReadyEvent | null>(null);
   const [pip, setPip] = useState({ x: 0.74, y: 0.22, size: 0.34 });
+  const [remember, setRemember] = useState(false);
+  const [settingsLoaded, setSettingsLoaded] = useState(false);
 
   const [busy, setBusy] = useState(false);
   const [processing, setProcessing] = useState(false);
@@ -130,6 +134,48 @@ function CameraScreen() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [viewerOpen, setViewerOpen] = useState(false);
   const [appActive, setAppActive] = useState(true);
+
+  /* ---------- remembered settings ---------- */
+  type Saved = {
+    remember: boolean;
+    mode: CaptureMode;
+    photo: PhotoSettings;
+    video: VideoSettings;
+    mirrorSelfie: boolean;
+    filter: FilterKey;
+    smoothing: number;
+    pip: typeof pip;
+    manual: ManualSettings;
+    brightness: number;
+    shadows: number;
+  };
+  useEffect(() => {
+    loadSettings<Saved>().then((v) => {
+      if (v?.remember) {
+        setRemember(true);
+        if (v.photo) setPhoto((p) => ({ ...p, ...v.photo }));
+        if (v.video) setVideo((x) => ({ ...x, ...v.video }));
+        if (v.mode) setMode(v.mode);
+        if (typeof v.mirrorSelfie === 'boolean') setMirrorSelfie(v.mirrorSelfie);
+        if (v.filter) setFilter(v.filter);
+        if (typeof v.smoothing === 'number') setSmoothing(v.smoothing);
+        if (v.pip) setPip(v.pip);
+        if (v.manual) setManual(v.manual);
+        if (typeof v.brightness === 'number') setBrightness(v.brightness);
+        if (typeof v.shadows === 'number') setShadows(v.shadows);
+      }
+      setSettingsLoaded(true);
+    });
+  }, []);
+  useEffect(() => {
+    if (!settingsLoaded) return;
+    if (!remember) return;
+    const t = setTimeout(
+      () => saveSettings({ remember, mode, photo, video, mirrorSelfie, filter, smoothing, pip, manual, brightness, shadows }),
+      400,
+    );
+    return () => clearTimeout(t);
+  }, [settingsLoaded, remember, mode, photo, video, mirrorSelfie, filter, smoothing, pip, manual, brightness, shadows]);
 
   useEffect(() => {
     const sub = AppState.addEventListener('change', (s) => setAppActive(s === 'active'));
@@ -159,7 +205,6 @@ function CameraScreen() {
   );
 
   const stops = useMemo(() => lensStops(zoomRange.min, zoomRange.max), [zoomRange]);
-  const previewFilter = isPhotoShot ? filterByKey(filter).preview : undefined;
 
   /* ---------- helpers ---------- */
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -197,12 +242,12 @@ function CameraScreen() {
   /* ---------- burst capture plumbing (native emits onPhotosCaptured) ---------- */
   const burstWaiter = useRef<((r: BurstResult) => void) | null>(null);
   const captureBurst = useCallback(
-    (count: number, evShift: number) =>
+    (count: number, evShift: number, shortEv: number) =>
       new Promise<BurstResult>((resolve, reject) => {
         const c = cam.current;
         if (!c) return reject(new Error('Camera not ready'));
         burstWaiter.current = resolve;
-        c.capture(count, evShift).catch((e) => {
+        c.capture(count, evShift, shortEv).catch((e) => {
           burstWaiter.current = null;
           reject(e);
         });
@@ -223,7 +268,9 @@ function CameraScreen() {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     let paths: string[] = [];
     try {
-      const res = await captureBurst(frames, frames > 1 ? evShift : 0);
+      // Photo mode adds one darker frame (-2 EV below the burst) for highlight recovery
+      const bracket = !night && frames > 1 && photo.highlightBracket ? -2 : 0;
+      const res = await captureBurst(frames, frames > 1 ? evShift : 0, bracket);
       paths = res.paths;
       if (!paths.length) throw new Error(res.error ?? 'No photo captured');
 
@@ -243,9 +290,19 @@ function CameraScreen() {
         info = pro ? 'Pro' : 'Night Sight (phone)';
       } else {
         setToast(night ? `Night Sight · merging ${paths.length} frames` : `HDR+ · merging ${paths.length} frame${paths.length > 1 ? 's' : ''}`);
-        const out = await processBurst(paths, { night, brightness, shadows, smoothing, filter });
+        const faces = await detectFaces(paths[0]);
+        const out = await processBurst(paths, {
+          night,
+          brightness,
+          shadows,
+          smoothing,
+          filter,
+          evs: res.evs,
+          shortIndex: res.shortIndex ?? -1,
+          faces,
+        });
         uri = out.uri;
-        info = `${night ? 'Night Sight' : 'HDR+'} · ${out.frames} frame${out.frames > 1 ? 's' : ''}`;
+        info = `${night ? 'Night Sight' : 'HDR+'} · ${out.frames} frame${out.frames > 1 ? 's' : ''}${faces.length ? ` · ${faces.length} face${faces.length > 1 ? 's' : ''}` : ''}`;
       }
       await saveToGallery(uri);
       setLast({ uri, original, isVideo: false, info: look ? `${info} · ${look}` : info });
@@ -257,7 +314,7 @@ function CameraScreen() {
       setProcessing(false);
       setBusy(false);
     }
-  }, [busy, ready, mode, flash, photo.frames, brightness, shadows, smoothing, filter, captureBurst, saveToGallery, flashToast]);
+  }, [busy, ready, mode, flash, photo.frames, photo.highlightBracket, brightness, shadows, smoothing, filter, captureBurst, saveToGallery, flashToast]);
 
   /* ---------- capture: video ---------- */
   const toggleRecording = useCallback(async () => {
@@ -295,6 +352,25 @@ function CameraScreen() {
     }
     return shootPhoto();
   }, [isVideoMode, timer, toggleRecording, shootPhoto]);
+
+  /* ---------- exposure +/- (1/3 EV steps, every mode) ---------- */
+  const nudgeExposure = useCallback(
+    (dir: 1 | -1) => {
+      Haptics.selectionAsync();
+      if (mode === 'pro') {
+        const ev = clamp(Math.round((manual.ev + dir / 3) * 3) / 3, -2, 2);
+        setManual({ ...manual, ev });
+        flashToast(`Exposure ${ev > 0 ? '+' : ''}${ev.toFixed(1)} EV`, 1200);
+      } else {
+        // brightness ±1 maps to ±2 EV, so 1/3 EV = 1/6 brightness
+        const b = clamp(Math.round((brightness + dir / 6) * 6) / 6, -1, 1);
+        setBrightness(b);
+        const ev = b * 2;
+        flashToast(`Exposure ${ev > 0 ? '+' : ''}${ev.toFixed(1)} EV`, 1200);
+      }
+    },
+    [mode, manual, brightness, flashToast],
+  );
 
   /* ---------- gestures: tap-to-focus, pinch-to-zoom, swipe modes ---------- */
   const live = useRef({ zoom, zoomRange, mode, recording, visibleModes });
@@ -385,7 +461,7 @@ function CameraScreen() {
       {cameraModuleAvailable ? (
         <ICameraView
           ref={cam}
-          style={[StyleSheet.absoluteFill, previewFilter ? { filter: previewFilter } : null]}
+          style={StyleSheet.absoluteFill}
           mode={mode}
           facing={facing}
           dualPrimary={dualPrimary}
@@ -546,15 +622,19 @@ function CameraScreen() {
             }}
           />
         )}
-        <ZoomPills
-          stops={stops}
-          zoom={zoom}
-          label={trim(zoom)}
-          onSelect={(z) => {
-            Haptics.selectionAsync();
-            setZoom(z);
-          }}
-        />
+        <View style={styles.zoomRow}>
+          <IconButton icon="minus" size={40} onPress={() => nudgeExposure(-1)} />
+          <ZoomPills
+            stops={stops}
+            zoom={zoom}
+            label={trim(zoom)}
+            onSelect={(z) => {
+              Haptics.selectionAsync();
+              setZoom(z);
+            }}
+          />
+          <IconButton icon="plus" size={40} onPress={() => nudgeExposure(1)} />
+        </View>
         <Glass radius={34} style={styles.dock}>
           <ModeCarousel mode={mode} modes={visibleModes} onChange={changeMode} disabled={recording} />
           <View style={styles.shutterRow}>
@@ -593,6 +673,25 @@ function CameraScreen() {
         mirrorSelfie={mirrorSelfie}
         onMirrorSelfie={setMirrorSelfie}
         capabilities={caps}
+        remember={remember}
+        onRemember={(v) => {
+          setRemember(v);
+          if (!v) clearSettings();
+        }}
+        onResetDefaults={() => {
+          clearSettings();
+          setRemember(false);
+          setPhoto({ frames: 4, vendorNight: true, highlightBracket: true });
+          setVideo({ resolution: '1080p', fps: 30, hdr: true, stabilization: 'cinematic' });
+          setMirrorSelfie(true);
+          setFilter('natural');
+          setSmoothing(0);
+          setPip({ x: 0.74, y: 0.22, size: 0.34 });
+          setManual(AUTO_MANUAL);
+          setBrightness(0);
+          setShadows(0);
+          flashToast('Settings reset');
+        }}
       />
       <Viewer
         visible={viewerOpen}
@@ -620,4 +719,5 @@ const styles = StyleSheet.create({
   bottom: { position: 'absolute', left: 0, right: 0, bottom: 0, gap: 12 },
   shutterRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 18 },
   dock: { marginHorizontal: 14, paddingTop: 12, paddingBottom: 18, gap: 18 },
+  zoomRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 22 },
 });

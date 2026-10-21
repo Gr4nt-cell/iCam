@@ -1,6 +1,6 @@
 import { MaterialCommunityIcons } from '@expo/vector-icons';
-import React, { useState } from 'react';
-import { Image, Modal, Pressable, ScrollView, StyleSheet, Switch, Text, View } from 'react-native';
+import React, { useMemo, useState } from 'react';
+import { Image, Modal, PanResponder, Pressable, ScrollView, StyleSheet, Switch, Text, useWindowDimensions, View } from 'react-native';
 import type { Capabilities } from '../../modules/icamera';
 import type { PhotoSettings, VideoSettings } from '../camera/hardware';
 import { Glass } from './Glass';
@@ -20,6 +20,9 @@ type SettingsProps = {
   mirrorSelfie: boolean;
   onMirrorSelfie: (v: boolean) => void;
   capabilities: Capabilities | null;
+  remember: boolean;
+  onRemember: (v: boolean) => void;
+  onResetDefaults: () => void;
 };
 
 export function SettingsSheet(p: SettingsProps) {
@@ -35,16 +38,28 @@ export function SettingsSheet(p: SettingsProps) {
             <Section title="Photo processing">
               <Row label="HDR+ burst frames" hint="More frames = less noise, slower capture">
                 <Segmented
-                  options={['1', '2', '3', '4']}
+                  options={['1', '2', '3', '4', '5', '6']}
                   value={String(p.photo.frames)}
                   onChange={(v) => p.onPhoto({ ...p.photo, frames: Number(v) as PhotoSettings['frames'] })}
                 />
+              </Row>
+              <Row label="Highlight recovery" hint="Adds a darker frame so bright windows, sky and lamps keep detail">
+                <Toggle value={p.photo.highlightBracket} onChange={(v) => p.onPhoto({ ...p.photo, highlightBracket: v })} />
               </Row>
               {p.capabilities?.nightExtension ? (
                 <Row label="Phone's Night mode" hint="Use the phone maker's night processing in Night Sight">
                   <Toggle value={p.photo.vendorNight} onChange={(v) => p.onPhoto({ ...p.photo, vendorNight: v })} />
                 </Row>
               ) : null}
+            </Section>
+
+            <Section title="Saved settings">
+              <Row label="Remember settings" hint="Keep your mode, photo/video options, filters and Pro values next time">
+                <Toggle value={p.remember} onChange={p.onRemember} />
+              </Row>
+              <Pressable onPress={p.onResetDefaults} style={s.resetBtn}>
+                <Text style={s.resetText}>Reset everything to defaults</Text>
+              </Pressable>
             </Section>
 
             <Section title="Selfie">
@@ -222,7 +237,21 @@ export function Viewer({
   isVideo: boolean;
   info?: string;
 }) {
-  const [showOriginal, setShowOriginal] = useState(false);
+  const { width: W } = useWindowDimensions();
+  const [split, setSplit] = useState(0.5);
+  const [compare, setCompare] = useState(true);
+  const canCompare = !!originalUri && originalUri !== uri;
+  const pan = useMemo(
+    () =>
+      PanResponder.create({
+        onStartShouldSetPanResponder: () => true,
+        onMoveShouldSetPanResponder: () => true,
+        onPanResponderGrant: (e) => setSplit(Math.max(0, Math.min(1, e.nativeEvent.pageX / W))),
+        onPanResponderMove: (e) => setSplit(Math.max(0, Math.min(1, e.nativeEvent.pageX / W))),
+      }),
+    [W],
+  );
+
   return (
     <Modal visible={visible} animationType="fade" onRequestClose={onClose} statusBarTranslucent>
       <View style={s.viewer}>
@@ -232,17 +261,25 @@ export function Viewer({
             <Text style={s.viewerText}>Video saved to your gallery</Text>
           </View>
         ) : (
-          <Pressable
-            style={StyleSheet.absoluteFill}
-            onPressIn={() => setShowOriginal(true)}
-            onPressOut={() => setShowOriginal(false)}
-          >
-            <Image
-              source={{ uri: showOriginal && originalUri ? originalUri : uri }}
-              style={StyleSheet.absoluteFill}
-              resizeMode="contain"
-            />
-          </Pressable>
+          <View style={StyleSheet.absoluteFill} {...(canCompare && compare ? pan.panHandlers : {})}>
+            {/* Original underneath, processed on top clipped to the left of the divider */}
+            {canCompare && compare ? (
+              <Image source={{ uri: originalUri }} style={StyleSheet.absoluteFill} resizeMode="contain" />
+            ) : null}
+            <View style={[StyleSheet.absoluteFill, { width: canCompare && compare ? W * split : W, overflow: 'hidden' }]}>
+              <Image source={{ uri }} style={{ width: W, height: '100%' }} resizeMode="contain" />
+            </View>
+            {canCompare && compare ? (
+              <>
+                <View pointerEvents="none" style={[s.divider, { left: W * split - 1 }]} />
+                <View pointerEvents="none" style={[s.dividerKnob, { left: W * split - 18 }]}>
+                  <MaterialCommunityIcons name="arrow-split-vertical" size={20} color="#fff" />
+                </View>
+                <Text pointerEvents="none" style={[s.tag, { left: 16 }]}>iCam</Text>
+                <Text pointerEvents="none" style={[s.tag, { right: 16 }]}>Original</Text>
+              </>
+            ) : null}
+          </View>
         )}
         <View style={s.viewerTop} pointerEvents="box-none">
           <Pressable onPress={onClose} hitSlop={10}>
@@ -250,16 +287,21 @@ export function Viewer({
               <MaterialCommunityIcons name="close" size={22} color="#fff" />
             </Glass>
           </Pressable>
+          {canCompare && !isVideo ? (
+            <Pressable onPress={() => setCompare((c) => !c)} hitSlop={10}>
+              <Glass radius={22} style={{ paddingHorizontal: 14, height: 44, alignItems: 'center', justifyContent: 'center' }}>
+                <Text style={s.viewerText}>{compare ? 'Hide compare' : 'Compare'}</Text>
+              </Glass>
+            </Pressable>
+          ) : null}
         </View>
-        {!isVideo && (
+        {!isVideo && info ? (
           <View style={s.viewerBottom} pointerEvents="none">
             <Glass radius={18} style={{ paddingHorizontal: 16, paddingVertical: 9 }}>
-              <Text style={s.viewerText}>
-                {showOriginal ? 'Original frame' : info ?? 'Processed'} · hold to compare
-              </Text>
+              <Text style={s.viewerText}>{info}{canCompare && compare ? ' · drag to compare' : ''}</Text>
             </Glass>
           </View>
-        )}
+        ) : null}
       </View>
     </Modal>
   );
@@ -302,9 +344,21 @@ const s = StyleSheet.create({
   hwTitle: { color: '#fff', fontSize: 14, fontWeight: '700', textTransform: 'capitalize' },
   hwLine: { color: 'rgba(255,255,255,0.72)', fontSize: 12 },
   viewer: { flex: 1, backgroundColor: '#000' },
-  viewerTop: { position: 'absolute', top: 48, left: 16 },
+  viewerTop: { position: 'absolute', top: 48, left: 16, right: 16, flexDirection: 'row', justifyContent: 'space-between' },
+  divider: { position: 'absolute', top: 0, bottom: 0, width: 2, backgroundColor: 'rgba(255,255,255,0.9)' },
+  dividerKnob: {
+    position: 'absolute', top: '50%', width: 36, height: 36, marginTop: -18, borderRadius: 18,
+    alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(255,255,255,0.22)',
+    borderWidth: 1, borderColor: 'rgba(255,255,255,0.7)',
+  },
+  tag: {
+    position: 'absolute', bottom: 110, color: '#fff', fontSize: 12, fontWeight: '700',
+    backgroundColor: 'rgba(0,0,0,0.35)', paddingHorizontal: 8, paddingVertical: 3, borderRadius: 8, overflow: 'hidden',
+  },
   viewerBottom: { position: 'absolute', bottom: 48, left: 0, right: 0, alignItems: 'center' },
   viewerText: { color: '#fff', fontSize: 13, fontWeight: '600' },
+  resetBtn: { alignSelf: 'flex-start', paddingVertical: 8 },
+  resetText: { color: '#ff9f8f', fontSize: 14, fontWeight: '600' },
   cta: { backgroundColor: '#8ab4f8', borderRadius: 22, height: 46, alignItems: 'center', justifyContent: 'center', marginTop: 6 },
   ctaText: { color: '#0b1f44', fontSize: 16, fontWeight: '700' },
 });

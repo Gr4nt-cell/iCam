@@ -10,9 +10,11 @@ export type VideoSettings = {
 };
 
 export type PhotoSettings = {
-  frames: 1 | 2 | 3 | 4;
+  frames: 1 | 2 | 3 | 4 | 5 | 6;
   /** Use the phone maker's Night extension in Night Sight when available */
   vendorNight: boolean;
+  /** Add a darker bracket frame to recover bright windows / sky (backlit scenes) */
+  highlightBracket: boolean;
 };
 
 export type Lens = { label: string; zoom: number };
