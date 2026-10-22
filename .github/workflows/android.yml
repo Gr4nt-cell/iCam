@@ -64,17 +64,38 @@ jobs:
             exit 1
           }
 
+      - name: Upload key (Play signing)
+        env:
+          KS_B64: ${{ secrets.ICAM_UPLOAD_KEYSTORE_BASE64 }}
+          KS_PASS: ${{ secrets.ICAM_UPLOAD_STORE_PASSWORD }}
+          KS_ALIAS: ${{ secrets.ICAM_UPLOAD_KEY_ALIAS }}
+          KS_KEY_PASS: ${{ secrets.ICAM_UPLOAD_KEY_PASSWORD }}
+        run: |
+          echo "ICAM_VERSION_CODE=$((100 + GITHUB_RUN_NUMBER))" >> "$GITHUB_ENV"
+          if [ -n "$KS_B64" ]; then
+            echo "$KS_B64" | base64 -d > "$RUNNER_TEMP/upload.jks"
+            {
+              echo "ICAM_UPLOAD_STORE_FILE=$RUNNER_TEMP/upload.jks"
+              echo "ICAM_UPLOAD_STORE_PASSWORD=$KS_PASS"
+              echo "ICAM_UPLOAD_KEY_ALIAS=$KS_ALIAS"
+              echo "ICAM_UPLOAD_KEY_PASSWORD=${KS_KEY_PASS:-$KS_PASS}"
+            } >> "$GITHUB_ENV"
+            echo "::notice title=Signing::Release APK/AAB signed with the Play upload key"
+          else
+            echo "::warning title=Signing::No upload key secrets set - AAB is debug-signed and Play will reject it. Add the ICAM_UPLOAD_* repository secrets."
+          fi
+
       - name: Generate native Android project
         run: |
           set -o pipefail
           npx expo prebuild --platform android --clean --no-install 2>&1 | tee -a build.log
 
-      - name: Build release APK (arm64 + x86_64)
+      - name: Build release APK + AAB
         working-directory: android
         run: |
           set -o pipefail
           echo "org.gradle.jvmargs=-Xmx6g -XX:MaxMetaspaceSize=1g" >> gradle.properties
-          ./gradlew assembleRelease --no-daemon -PreactNativeArchitectures=arm64-v8a,x86_64 2>&1 | tee -a ../build.log
+          ./gradlew assembleRelease bundleRelease --no-daemon -PreactNativeArchitectures=armeabi-v7a,arm64-v8a,x86_64 2>&1 | tee -a ../build.log
 
       - name: Report what got linked
         if: always()
@@ -91,15 +112,42 @@ jobs:
           c=$(find modules node_modules/icamera -name "ICamera*.class" 2>/dev/null | head -3)
           echo "::notice title=Compiled classes::$( (echo "${c:-no ICamera classes compiled}") | enc)"
 
-      - name: Rename APK
+      - name: Collect outputs
         run: |
-          mkdir -p out
-          cp android/app/build/outputs/apk/release/app-release.apk "out/iCam-${GITHUB_SHA::7}.apk"
+          mkdir -p out/apk out/aab
+          cp android/app/build/outputs/apk/release/app-release.apk "out/apk/iCam-${ICAM_VERSION_CODE}.apk"
+          cp android/app/build/outputs/bundle/release/app-release.aab "out/aab/iCam-${ICAM_VERSION_CODE}.aab"
+          # R8 deobfuscation map: upload it in Play Console (App bundle explorer → Downloads) for readable crash reports
+          cp android/app/build/outputs/mapping/release/mapping.txt "out/aab/mapping-${ICAM_VERSION_CODE}.txt" || true
+
+      - name: Play pre-checks
+        continue-on-error: true
+        run: |
+          set +e
+          BT=$(ls -d "${ANDROID_HOME:-$ANDROID_SDK_ROOT}"/build-tools/* | sort -V | tail -1)
+          APK=$(ls out/apk/*.apk)
+          man=$("$BT/aapt2" dump xmltree --file AndroidManifest.xml "$APK" 2>/dev/null)
+          orient=$(echo "$man" | grep -c "screenOrientation")
+          resize=$(echo "$man" | grep -A1 "resizeableActivity" | grep -c "0x0")
+          vc=$("$BT/aapt2" dump badging "$APK" 2>/dev/null | head -1)
+          sdk=$("$BT/aapt2" dump badging "$APK" 2>/dev/null | grep -E "targetSdkVersion|sdkVersion" | tr '\n' ' ')
+          maplines=$(wc -l < out/aab/mapping-*.txt 2>/dev/null || echo 0)
+          # share of app classes renamed by R8 (a, b, c... names)
+          total=$(grep -c " -> " out/aab/mapping-*.txt 2>/dev/null || echo 0)
+          renamed=$(grep -E "^[^ ].* -> [a-zA-Z0-9_.$]*\.?[a-z]{1,3}:$" out/aab/mapping-*.txt 2>/dev/null | wc -l)
+          signer=$(keytool -printcert -jarfile out/aab/*.aab 2>/dev/null | grep -m1 "Owner")
+          echo "::notice title=Play pre-checks::$vc | $sdk | screenOrientation attrs: $orient | resizeableActivity=false: $resize | R8 classes renamed: $renamed / $total | signer: ${signer:-unsigned?}"
 
       - uses: actions/upload-artifact@v4
         with:
           name: iCam-apk
-          path: out/*.apk
+          path: out/apk/*.apk
+          retention-days: 30
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: iCam-aab
+          path: out/aab/*
           retention-days: 30
 
       - name: Free disk space for the emulator

@@ -33,8 +33,11 @@ import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 
 /** CameraX effect that renders Portrait video (preview + recording) through [PortraitProcessor]. */
-class PortraitVideoEffect(processor: PortraitProcessor) : CameraEffect(
-  CameraEffect.PREVIEW or CameraEffect.VIDEO_CAPTURE,
+class PortraitVideoEffect(
+  processor: PortraitProcessor,
+  targets: Int = CameraEffect.PREVIEW or CameraEffect.VIDEO_CAPTURE,
+) : CameraEffect(
+  targets,
   processor.executor,
   processor,
   Consumer<Throwable> { },
@@ -96,6 +99,10 @@ class PortraitProcessor : SurfaceProcessor {
    * 1 = off; e.g. 1.12 = 12% crop margin.
    */
   @Volatile var stabCrop = 1f
+  /** Zoom past the hardware maximum (applied to every output). */
+  @Volatile var digitalZoom = 1f
+  /** Live filter [sat, contrast, warmth, fade, mono, vignette] or null. */
+  @Volatile var filter: FloatArray? = null
   private val MW = 160
   private val MH = 90
   private var motFbo = 0
@@ -477,7 +484,13 @@ class PortraitProcessor : SurfaceProcessor {
     GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, vtex[1 - cur])
     GLES20.glUniform1i(GLES20.glGetUniformLocation(outProg, "sCur"), 0)
     GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(outProg, "uStInv"), 1, false, stInv, 0)
-    GLES20.glUniform1f(GLES20.glGetUniformLocation(outProg, "uCrop"), maxOf(1f, stabCrop))
+    GLES20.glUniform1f(GLES20.glGetUniformLocation(outProg, "uCrop"), maxOf(1f, stabCrop) * maxOf(1f, digitalZoom))
+    val f = filter
+    GLES20.glUniform1f(GLES20.glGetUniformLocation(outProg, "uFilterOn"), if (f != null && f.size >= 6) 1f else 0f)
+    if (f != null && f.size >= 6) {
+      GLES20.glUniform4f(GLES20.glGetUniformLocation(outProg, "uF1"), f[0], f[1], f[2], f[3])
+      GLES20.glUniform2f(GLES20.glGetUniformLocation(outProg, "uF2"), f[4], f[5])
+    }
     GLES20.glUniform2f(GLES20.glGetUniformLocation(outProg, "uShift"), shiftX, shiftY)
     GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
   }
@@ -882,11 +895,27 @@ class PortraitProcessor : SurfaceProcessor {
       uniform mat4 uStInv;
       uniform float uCrop;
       uniform vec2 uShift;
+      uniform float uFilterOn;
+      uniform vec4 uF1; // sat, contrast, warmth, fade
+      uniform vec2 uF2; // mono, vignette
+      vec3 applyFilter(vec3 c, vec2 q) {
+        float l = dot(c, vec3(0.2126, 0.7152, 0.0722));
+        c = mix(vec3(l), c, uF1.x);
+        c = mix(c, vec3(l), uF2.x);
+        c *= vec3(1.0 + uF1.z, 1.0 + uF1.z * 0.2, 1.0 - uF1.z);
+        c = (c - 0.5) * uF1.y + 0.5;
+        c = c * (1.0 - uF1.w) + uF1.w;
+        c *= 1.0 - uF2.y * smoothstep(0.3, 0.85, length(q - 0.5) * 1.3);
+        return clamp(c, 0.0, 1.0);
+      }
       void main() {
         vec2 uv = (uStInv * vec4(vTex, 0.0, 1.0)).xy;
-        // stabilization: crop margin + shift back onto the smoothed camera path
+        vec2 q = uv;
+        // stabilization: crop margin + shift back onto the smoothed camera path (+ digital zoom)
         uv = 0.5 + (uv - 0.5) / uCrop + uShift;
-        gl_FragColor = vec4(texture2D(sCur, uv).rgb, 1.0);
+        vec3 col = texture2D(sCur, uv).rgb;
+        if (uFilterOn > 0.5) col = applyFilter(col, q);
+        gl_FragColor = vec4(col, 1.0);
       }
     """
 

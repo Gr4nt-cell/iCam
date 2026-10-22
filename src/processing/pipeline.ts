@@ -93,7 +93,13 @@ function applyOrientation(c: SkCanvas, o: number, w: number, h: number) {
 }
 
 /** Decodes a JPEG, bakes in its EXIF rotation and scales it to ≤ MAX_EDGE. */
-export type PhotoMeta = { orientation: number; width: number; height: number };
+export type PhotoMeta = {
+  orientation: number;
+  width: number;
+  height: number;
+  /** Front camera: 1 = the phone already mirrored the JPEG, 0 = true view, -1 = unknown */
+  jpegMirrored?: number;
+};
 
 /** Learned at runtime: does Skia's decoder already apply EXIF orientation? (null = not known yet) */
 let skiaAppliesExif: boolean | null = null;
@@ -441,7 +447,30 @@ export type SingleOptions = {
   mirror?: boolean;
   /** Detail/clarity strength: 1 = full (plain camera frame), ~0.4 when the phone already processed it, 0 = off */
   enhance?: number;
+  /** Zoom past the lens maximum: centre crop + upscale + detail reconstruction */
+  digitalZoom?: number;
 };
+
+/**
+ * Digital zoom: centre crop, high-quality bicubic (Catmull-Rom) upscale back to full size, then
+ * edge-aware detail reconstruction at the scale the detail was lost, plus extra grain control.
+ */
+function zoomCrop(img: SkImage, dz: number): SkImage {
+  const W = img.width();
+  const H = img.height();
+  const cw = W / dz;
+  const ch = H / dz;
+  const surf = surface(W, H);
+  surf
+    .getCanvas()
+    .drawImageRectCubic(img, Skia.XYWHRect((W - cw) / 2, (H - ch) / 2, cw, ch), Skia.XYWHRect(0, 0, W, H), 0, 0.5);
+  let out = snapshot(surf);
+  const px = Math.min(3, Math.max(1, dz * 0.35));
+  // clean upscaled noise first, then rebuild edges at the right scale
+  out = shade(out, 'denoise', DENOISE_SKSL, [0.9, Math.min(0.5, 0.15 + dz * 0.01), Math.max(3, px * 2), 0.002]);
+  out = enhance(out, dz > 10 ? 1.5 : 0.9, px);
+  return out;
+}
 
 /** Mirrors an image left↔right. */
 export function flipH(img: SkImage): SkImage {
@@ -457,7 +486,7 @@ export function flipH(img: SkImage): SkImage {
  * Single-frame finishing: noise-aware detail sharpening (fine texture without amplifying grain),
  * mid-tone clarity (local contrast) and gentle vibrance.
  */
-function enhance(img: SkImage, amount: number): SkImage {
+function enhance(img: SkImage, amount: number, radius?: number): SkImage {
   if (amount <= 0.01) return img;
   const W = img.width();
   const H = img.height();
@@ -470,7 +499,7 @@ function enhance(img: SkImage, amount: number): SkImage {
   const paint = Skia.Paint();
   const k = Math.min(1.5, amount);
   // Vibrance stays strong even when the phone already processed the photo (matches the video look)
-  paint.setShader(fx.makeShaderWithChildren([0.7 * k, 0.28 * k, 0.45, Math.max(1, Math.min(W, H) / 2000)], [opt(img), opt(base)]));
+  paint.setShader(fx.makeShaderWithChildren([0.7 * k, 0.28 * k, 0.45, radius ?? Math.max(1, Math.min(W, H) / 2000)], [opt(img), opt(base)]));
   surf.getCanvas().drawPaint(paint);
   return snapshot(surf);
 }
@@ -522,6 +551,14 @@ export async function processSingle(path: string, o: SingleOptions): Promise<str
   }
   if (o.portrait) img = await applyPortrait(img, o.portrait.maskPath, o.portrait.strength);
   img = finishLook(img, o.smoothing, o.filter);
+  if (o.digitalZoom && o.digitalZoom > 1.01) {
+    await yieldFrame();
+    try {
+      img = zoomCrop(img, o.digitalZoom);
+    } catch {
+      // keep the un-zoomed photo rather than failing
+    }
+  }
   if (o.mirror) img = flipH(img);
   img = cropToAspect(img, o.aspect);
   const file = new File(Paths.cache, `iCam_${Date.now()}.jpg`);

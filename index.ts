@@ -22,6 +22,12 @@ g.ErrorUtils?.setGlobalHandler?.((e: unknown, isFatal?: boolean) => {
   if (!isFatal && previous) previous(e, isFatal);
 });
 
+// Camera UI is portrait; locked at runtime (not in the manifest) so large-screen devices aren't restricted
+try {
+  const SO = require('expo-screen-orientation');
+  SO.lockAsync(SO.OrientationLock.PORTRAIT_UP).catch(() => {});
+} catch {}
+
 // Show a crash recorded on the previous run (native side writes it before the app closes)
 try {
   const crash = require('./modules/icamera').takeLastCrash();

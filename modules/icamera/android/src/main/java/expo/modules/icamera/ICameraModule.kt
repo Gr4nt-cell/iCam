@@ -118,6 +118,7 @@ class ICameraModule : Module() {
       Prop("nightExtension") { view: ICameraView, v: Boolean -> view.setNightExtension(v) }
       Prop("aspect") { view: ICameraView, v: String -> view.setAspect(v) }
       Prop("bokeh") { view: ICameraView, v: Double -> view.setBokeh(v.toFloat()) }
+      Prop("filterParams") { view: ICameraView, v: List<Double> -> view.setFilterParams(v.map { it.toFloat() }.toFloatArray()) }
       Prop("previewFit") { view: ICameraView, v: Boolean -> view.setPreviewFit(v) }
       Prop("dualPip") { view: ICameraView, v: Map<String, Any?> ->
         view.setDualPip(
@@ -172,7 +173,7 @@ class ICameraModule : Module() {
       "minFocusDistance" to (back?.get("minFocusDistance") ?: 0.0),
       "cameras" to cameras,
       "portraitVideo" to portraitVideoCapable(ctx),
-    )
+    ) + zoomProfile(ctx, back)
   }
 
   @OptIn(ExperimentalCamera2Interop::class, ExperimentalHighSpeedVideo::class, androidx.camera.core.ExperimentalSessionConfig::class)
@@ -242,6 +243,48 @@ class ICameraModule : Module() {
       "minFocusDistance" to (ch(CameraCharacteristics.LENS_INFO_MINIMUM_FOCUS_DISTANCE) ?: 0f).toDouble(),
       "sensorOrientation" to (ch(CameraCharacteristics.SENSOR_ORIENTATION) ?: 0),
     )
+  }
+
+  /**
+   * Telephoto detection from lens data: 35 mm-equivalent focal length of every rear camera
+   * (including the physical lenses behind a logical multi-camera). Max zoom scales with the
+   * telephoto's optical reach (e.g. 3× → 60×, 5× → 100×); phones without one stay at 2×.
+   */
+  private fun zoomProfile(ctx: Context, back: Map<String, Any?>?): Map<String, Any?> {
+    val hwMax = (back?.get("zoomMax") as? Double) ?: 1.0
+    return try {
+      val cm = ctx.getSystemService(Context.CAMERA_SERVICE) as android.hardware.camera2.CameraManager
+      fun eq(id: String): Double? {
+        val c = cm.getCameraCharacteristics(id)
+        if (c.get(CameraCharacteristics.LENS_FACING) != CameraMetadata.LENS_FACING_BACK) return null
+        val f = c.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS)?.minOrNull() ?: return null
+        val sz = c.get(CameraCharacteristics.SENSOR_INFO_PHYSICAL_SIZE) ?: return null
+        val diag = Math.hypot(sz.width.toDouble(), sz.height.toDouble())
+        return if (diag > 0) f * 43.27 / diag else null
+      }
+      val ids = cm.cameraIdList.toList()
+      val mainId = ids.firstOrNull { cm.getCameraCharacteristics(it).get(CameraCharacteristics.LENS_FACING) == CameraMetadata.LENS_FACING_BACK }
+      val main = mainId?.let { eq(it) }
+      val all = HashSet<String>(ids)
+      if (android.os.Build.VERSION.SDK_INT >= 28) ids.forEach { id ->
+        try { all.addAll(cm.getCameraCharacteristics(id).physicalCameraIds) } catch (_: Throwable) {}
+      }
+      val focals = all.mapNotNull { try { eq(it) } catch (_: Throwable) { null } }
+      // Main lens = the one closest to the default rear camera's focal length (26 mm-ish)
+      val mainEq = main ?: focals.minByOrNull { Math.abs(it - 26) }
+      val tele = focals.maxOrNull()
+      val ratio = if (mainEq != null && tele != null && mainEq > 0) tele / mainEq else 1.0
+      val telephoto = ratio >= 1.8
+      val maxZoom = if (telephoto) (ratio * 20).coerceIn(10.0, 100.0) else minOf(2.0, maxOf(hwMax, 2.0))
+      mapOf(
+        "telephoto" to telephoto,
+        "telephotoRatio" to Math.round(ratio * 10) / 10.0,
+        "maxZoom" to Math.round(maxZoom).toDouble(),
+        "mainFocalEq" to (mainEq ?: 0.0),
+      )
+    } catch (e: Throwable) {
+      mapOf("telephoto" to false, "telephotoRatio" to 1.0, "maxZoom" to 2.0, "mainFocalEq" to 0.0)
+    }
   }
 
   /** Hardware gate for live background blur: enough RAM, 64-bit, not a low-RAM device, 6+ cores. */

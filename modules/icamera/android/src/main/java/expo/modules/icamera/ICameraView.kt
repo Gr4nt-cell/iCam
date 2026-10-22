@@ -19,6 +19,7 @@ import androidx.camera.camera2.interop.Camera2CameraInfo
 import androidx.camera.camera2.interop.CaptureRequestOptions
 import androidx.camera.camera2.interop.ExperimentalCamera2Interop
 import androidx.camera.core.Camera
+import androidx.camera.core.CameraEffect
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.CompositionSettings
 import androidx.camera.core.ConcurrentCamera
@@ -74,6 +75,10 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
   private val onPhotosCaptured by EventDispatcher()
   private val onDualChange by EventDispatcher()
   private val onPortraitStatus by EventDispatcher()
+
+  companion object {
+    private val PHOTO_MODES = setOf("photo", "portrait", "night", "pro")
+  }
 
   private val previewView = PreviewView(context).apply {
     implementationMode = PreviewView.ImplementationMode.COMPATIBLE
@@ -197,6 +202,18 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
     bokeh = v.coerceIn(0f, 1f)
     portraitProcessor?.strength = bokeh
   }
+  /** Live filter: [sat, contrast, warmth, fade, mono, vignette]; empty / natural = none. */
+  private var filterParams = FloatArray(0)
+  private fun filterActive(f: FloatArray) = f.size >= 6 &&
+    (Math.abs(f[0] - 1f) > 0.001f || Math.abs(f[1] - 1f) > 0.001f || f[2] != 0f || f[3] != 0f || f[4] != 0f || f[5] != 0f)
+  fun setFilterParams(v: FloatArray) {
+    val wasActive = filterActive(filterParams)
+    filterParams = v
+    portraitProcessor?.filter = if (filterActive(v)) v else null
+    // Photo modes only route the preview through the GPU effect while a filter is on
+    if (wasActive != filterActive(v) && mode in PHOTO_MODES) scheduleRebind()
+  }
+
   fun setPreviewFit(v: Boolean) {
     previewFit = v
     previewView.scaleType = if (v) PreviewView.ScaleType.FIT_CENTER else PreviewView.ScaleType.FILL_CENTER
@@ -293,12 +310,35 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
   /** Horizon lock crops by this factor; the lens zooms out by the same amount so framing stays put. */
   private var horizonCrop = 1f
 
+  /** True while the GPU effect renders the preview (video modes, or a live filter in photo modes). */
+  private var effectPreview = false
+  /** Zoom beyond the lens/hardware maximum, done digitally (preview + recording; photos are cropped in JS). */
+  private var digitalZoom = 1f
+
   private fun applyZoom() {
     val cam = camera ?: return
-    if (horizonCrop > 1.01f) {
-      val zMin = cam.cameraInfo.zoomState.value?.minZoomRatio ?: 1f
-      cam.cameraControl.setZoomRatio(maxOf(zMin, zoom / horizonCrop))
-    } else cam.cameraControl.setZoomRatio(zoom)
+    val z = cam.cameraInfo.zoomState.value
+    val zMin = z?.minZoomRatio ?: 1f
+    val zMax = z?.maxZoomRatio ?: 1f
+    var hw = zoom.coerceIn(zMin, zMax)
+    if (horizonCrop > 1.01f) hw = maxOf(zMin, hw / horizonCrop)
+    cam.cameraControl.setZoomRatio(hw)
+    digitalZoom = if (mode == "dual" || mode == "slowmo") 1f else maxOf(1f, zoom / zMax)
+    portraitProcessor?.digitalZoom = if (effectPreview) digitalZoom else 1f
+    applyPreviewTransform()
+  }
+
+  /**
+   * Preview view transform: digital zoom (when the effect isn't doing it) and selfie mirroring that
+   * follows the toggle — with mirror off the preview shows the true (un-mirrored) view you'll save.
+   */
+  private fun applyPreviewTransform() {
+    val s = if (effectPreview) 1f else digitalZoom
+    val mainFront = if (mode == "dual") dualPrimary == "front" else facing == "front"
+    previewView.scaleX = if (mainFront && !mirror) -s else s
+    previewView.scaleY = s
+    val pipFront = mode == "dual" && dualPrimary != "front"
+    pipPreview.scaleX = if (pipFront && !mirror) -1f else 1f
   }
 
   /* ---- gravity sensor for horizon lock ---- */
@@ -476,6 +516,37 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
    */
   private fun bindPhoto(p: ProcessCameraProvider, owner: LifecycleOwner) {
     val base = selector(facing)
+    if (filterActive(filterParams)) {
+      // Live filter preview through the GPU effect (phone-maker extensions can't run effects)
+      try {
+        val ic = ImageCapture.Builder()
+          .setResolutionSelector(resolutionSelector())
+          .setCaptureMode(ImageCapture.CAPTURE_MODE_MAXIMIZE_QUALITY)
+          .setJpegQuality(100)
+          .setFlashMode(flashMode())
+          .build()
+        val proc = portraitProcessor ?: PortraitProcessor().also { portraitProcessor = it }
+        proc.blurEnabled = false
+        proc.enhance = true
+        proc.horizonLock = false
+        proc.stabCrop = 1f
+        proc.frontCamera = facing == "front"
+        proc.mirrorVideo = false
+        proc.filter = filterParams
+        val group = UseCaseGroup.Builder()
+          .addUseCase(newPreview(false, oisSupported(p.getCameraInfo(base)), true))
+          .addUseCase(ic)
+          .addEffect(PortraitVideoEffect(proc, CameraEffect.PREVIEW))
+          .build()
+        camera = p.bindToLifecycle(owner, base, group)
+        imageCapture = ic
+        effectPreview = true
+        return
+      } catch (e: Throwable) {
+        p.unbindAll()
+        effectPreview = false
+      }
+    }
     var sel = base
     val ext = extensions
     val wanted: List<Pair<Int, String>> = when (mode) {
@@ -583,6 +654,8 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
         proc.strength = bokeh
         proc.blurEnabled = portraitVideo
         proc.enhance = true
+        proc.filter = if (filterActive(filterParams)) filterParams else null
+        effectPreview = true
         proc.horizonLock = horizon
         proc.frontCamera = selfieVideo
         proc.mirrorVideo = false
@@ -870,6 +943,11 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
       )
     }
 
+    // Snapshot of what the preview shows (mirrored for selfies), to check whether this phone's
+    // camera already mirrors its front-camera JPEGs
+    val previewShot: android.graphics.Bitmap? = if (facing == "front") try { previewView.bitmap } catch (e: Throwable) { null } else null
+    val fitMode = previewFit
+
     fun shoot(i: Int) {
       val file = File(context.cacheDir, "iCam_${System.currentTimeMillis()}_$i.jpg")
       // Mirroring is applied when the photo is processed (works the same with every capture path)
@@ -883,7 +961,7 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
           override fun onImageSaved(output: ImageCapture.OutputFileResults) {
             paths.add(file.absolutePath)
             evs.add(ev)
-            metas.add(photoMeta(file))
+            metas.add(photoMeta(file, if (i == 0) previewShot else null, fitMode))
             when {
               i + 1 < n -> postDelayed({ shoot(i + 1) }, 40)
               i + 1 == n && withShort -> {
@@ -921,14 +999,19 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
   }
 
   /** EXIF orientation + raw (stored) pixel size, so JS can rotate/mirror correctly. */
-  private fun photoMeta(file: File): Map<String, Any> {
+  private fun photoMeta(file: File, preview: android.graphics.Bitmap? = null, fit: Boolean = false): Map<String, Any> {
     val o = try {
       android.media.ExifInterface(file.absolutePath)
         .getAttributeInt(android.media.ExifInterface.TAG_ORIENTATION, android.media.ExifInterface.ORIENTATION_NORMAL)
     } catch (e: Throwable) { 1 }
     val b = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
     android.graphics.BitmapFactory.decodeFile(file.absolutePath, b)
-    return mapOf("orientation" to o, "width" to b.outWidth, "height" to b.outHeight)
+    val m = mutableMapOf<String, Any>("orientation" to o, "width" to b.outWidth, "height" to b.outHeight)
+    if (preview != null) {
+      // -1 unknown, 0 = JPEG is the true view (normal), 1 = the phone already mirrored it
+      m["jpegMirrored"] = try { MirrorCheck.jpegMirrored(file, o, b.outWidth, b.outHeight, preview, fit) } catch (e: Throwable) { -1 }
+    }
+    return m
   }
 
   @SuppressLint("MissingPermission")

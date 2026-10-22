@@ -10,6 +10,7 @@ import {
   Text,
   View,
 } from 'react-native';
+import * as Haptics from 'expo-haptics';
 import type { CaptureMode, Lens } from '../camera/hardware';
 import { Glass, GlassCircle } from './Glass';
 import { GlassSegmented } from './GlassSegmented';
@@ -29,39 +30,168 @@ export type ShutterKind = 'photo' | 'night' | 'video';
 
 /* ---------------- Zoom pills ---------------- */
 
+const PX_PER_LOG = 120; // dial pixels per e-fold of zoom
+
 export function ZoomPills({
   stops,
   zoom,
   label,
   onSelect,
+  min = 1,
+  max = 1,
+  dialEnabled = false,
+  onDial,
 }: {
   stops: Lens[];
   zoom: number;
   label: string;
   onSelect: (z: number) => void;
+  min?: number;
+  max?: number;
+  /** Long-press opens the zoom dial (telephoto phones) */
+  dialEnabled?: boolean;
+  onDial?: (z: number) => void;
 }) {
+  const [dial, setDial] = useState(false);
+  const g = useRef({ timer: null as ReturnType<typeof setTimeout> | null, closeTimer: null as ReturnType<typeof setTimeout> | null, x0: 0, y0: 0, z0: 1, active: false, lastDial: 0 });
+  const liveZoom = useRef(zoom);
+  liveZoom.current = zoom;
+  const lim = useRef({ min, max, onDial });
+  lim.current = { min, max, onDial };
+
+  useEffect(() => () => {
+    if (g.current.timer) clearTimeout(g.current.timer);
+    if (g.current.closeTimer) clearTimeout(g.current.closeTimer);
+  }, []);
+
   if (stops.length === 0) return null;
   // The pill on the nearest stop at or below the current zoom shows the live value, like Pixel
   let activeIdx = 0;
   stops.forEach((s, i) => {
     if (zoom >= s.zoom * 0.98) activeIdx = i;
   });
+
+  const openDial = (x: number) => {
+    g.current.active = true;
+    g.current.x0 = x;
+    g.current.z0 = liveZoom.current;
+    if (g.current.closeTimer) clearTimeout(g.current.closeTimer);
+    setDial(true);
+  };
+
   return (
-    <Glass radius={24} style={styles.zoomBar}>
-      <GlassSegmented
-        items={stops.map((s) => ({ key: s.label, label: s.label }))}
-        value={stops[activeIdx].label}
-        activeLabel={`${label}×`}
-        onChange={(k) => {
-          const st = stops.find((s) => s.label === k);
-          if (st) onSelect(st.zoom);
-        }}
-        height={38}
-        fontSize={13}
-        paddingH={8}
-        minItemWidth={38}
-      />
-    </Glass>
+    <View
+      onTouchStart={(e) => {
+        const { pageX, pageY } = e.nativeEvent;
+        g.current.x0 = pageX;
+        g.current.y0 = pageY;
+        if (!dialEnabled) return;
+        if (dial) {
+          // dial already showing: drag straight away
+          openDial(pageX);
+          return;
+        }
+        if (g.current.timer) clearTimeout(g.current.timer);
+        g.current.timer = setTimeout(() => {
+          g.current.timer = null;
+          Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+          openDial(g.current.x0);
+        }, 380);
+      }}
+      onTouchMove={(e) => {
+        const { pageX, pageY } = e.nativeEvent;
+        if (g.current.active) {
+          const L = lim.current;
+          const z = Math.min(L.max, Math.max(L.min, g.current.z0 * Math.exp(-(pageX - g.current.x0) / PX_PER_LOG)));
+          L.onDial?.(z);
+          return;
+        }
+        if (g.current.timer && Math.hypot(pageX - g.current.x0, pageY - g.current.y0) > 8) {
+          clearTimeout(g.current.timer);
+          g.current.timer = null;
+        }
+      }}
+      onTouchEnd={() => {
+        if (g.current.timer) { clearTimeout(g.current.timer); g.current.timer = null; }
+        if (g.current.active) {
+          g.current.active = false;
+          g.current.lastDial = Date.now();
+          if (g.current.closeTimer) clearTimeout(g.current.closeTimer);
+          g.current.closeTimer = setTimeout(() => setDial(false), 1600);
+        }
+      }}
+      onTouchCancel={() => {
+        if (g.current.timer) { clearTimeout(g.current.timer); g.current.timer = null; }
+        g.current.active = false;
+      }}
+    >
+      <View style={{ opacity: dial ? 0 : 1 }}>
+        <Glass radius={24} style={styles.zoomBar}>
+          <GlassSegmented
+            items={stops.map((s) => ({ key: s.label, label: s.label }))}
+            value={stops[activeIdx].label}
+            activeLabel={`${label}×`}
+            onChange={(k) => {
+              // ignore the pills while / right after the dial was used
+              if (dial || g.current.active || Date.now() - g.current.lastDial < 400) return;
+              const st = stops.find((s) => s.label === k);
+              if (st) onSelect(st.zoom);
+            }}
+            height={38}
+            fontSize={13}
+            paddingH={8}
+            minItemWidth={38}
+          />
+        </Glass>
+      </View>
+      {dial && <ZoomDial zoom={zoom} min={min} max={max} stops={stops} />}
+    </View>
+  );
+}
+
+/** iOS-style zoom ruler: log-scale ticks scroll under a fixed centre marker. */
+function ZoomDial({ zoom, min, max, stops }: { zoom: number; min: number; max: number; stops: Lens[] }) {
+  const W = 300;
+  const ticks: { v: number; major: boolean }[] = [];
+  const push = (v: number, major: boolean) => {
+    if (v >= min - 1e-6 && v <= max + 1e-6) ticks.push({ v, major });
+  };
+  for (let v = 0.5; v < 1; v += 0.1) push(Math.round(v * 10) / 10, false);
+  for (let v = 1; v < 10; v += 0.5) push(v, Number.isInteger(v));
+  for (let v = 10; v < 100; v += 5) push(v, v % 10 === 0);
+  push(100, true);
+  const labels = Array.from(new Set([...stops.map((s) => s.zoom), 10, 25, 50, 100, max])).filter((v) => v >= min && v <= max);
+  const lz = Math.log(zoom);
+  const xOf = (v: number) => W / 2 + (Math.log(v) - lz) * PX_PER_LOG;
+  return (
+    <View pointerEvents="none" style={[StyleSheet.absoluteFill, { alignItems: 'center', justifyContent: 'center' }]}>
+      <Glass radius={26} style={{ width: W, height: 62, overflow: 'hidden' }}>
+        <Text style={styles.dialValue}>{zoom >= 10 ? Math.round(zoom) : zoom.toFixed(1)}×</Text>
+        <View style={{ position: 'absolute', left: 0, right: 0, bottom: 6, height: 30 }}>
+          {ticks.map((t) => {
+            const x = xOf(t.v);
+            if (x < -4 || x > W + 4) return null;
+            const d = Math.abs(x - W / 2) / (W / 2);
+            return (
+              <View
+                key={`t${t.v}`}
+                style={{ position: 'absolute', left: x - 0.75, bottom: 0, width: 1.5, height: t.major ? 14 : 8, backgroundColor: `rgba(255,255,255,${0.9 - d * 0.6})` }}
+              />
+            );
+          })}
+          {labels.map((v) => {
+            const x = xOf(v);
+            if (x < 6 || x > W - 6) return null;
+            return (
+              <Text key={`l${v}`} style={[styles.dialLabel, { left: x - 20 }]}>
+                {v < 1 ? v.toFixed(1) : Math.round(v)}
+              </Text>
+            );
+          })}
+        </View>
+        <View style={{ position: 'absolute', left: W / 2 - 1, bottom: 4, width: 2, height: 22, borderRadius: 1, backgroundColor: '#ffd76a' }} />
+      </Glass>
+    </View>
   );
 }
 
@@ -310,6 +440,8 @@ export function Toast({ text }: { text: string | null }) {
 export const styles = StyleSheet.create({
   center: { alignItems: 'center', justifyContent: 'center' },
   zoomBar: { alignSelf: 'center' },
+  dialValue: { color: '#ffd76a', fontSize: 14, fontWeight: '700', textAlign: 'center', marginTop: 4, fontVariant: ['tabular-nums'] },
+  dialLabel: { position: 'absolute', bottom: 15, width: 40, textAlign: 'center', color: 'rgba(255,255,255,0.85)', fontSize: 10, fontWeight: '600' },
   zoomPill: { minWidth: 38, height: 38, borderRadius: 19, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 6 },
   zoomPillActive: { backgroundColor: 'rgba(255,255,255,0.92)' },
   zoomText: { color: '#fff', fontSize: 13, fontWeight: '600' },

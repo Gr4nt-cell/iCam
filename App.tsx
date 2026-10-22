@@ -124,7 +124,7 @@ function CameraScreen() {
   });
   const [mirrorSelfie, setMirrorSelfie] = useState(true);
   const [filter, setFilter] = useState<FilterKey>('natural');
-  const [smoothing, setSmoothing] = useState(0);
+  const smoothing = 0; // skin smoothing removed
   const [showLook, setShowLook] = useState(false);
   const [manual, setManual] = useState<ManualSettings>(AUTO_MANUAL);
   const [proVideo, setProVideo] = useState(false);
@@ -184,7 +184,7 @@ function CameraScreen() {
         if (v.mode) setMode(v.mode === 'pvideo' ? 'video' : v.mode); // Portrait video was removed
         if (typeof v.mirrorSelfie === 'boolean') setMirrorSelfie(v.mirrorSelfie);
         if (v.filter) setFilter(v.filter);
-        if (typeof v.smoothing === 'number') setSmoothing(v.smoothing);
+        // Skin smoothing was removed
         if (v.pip) setPip(v.pip);
         if (v.manual) setManual(v.manual);
         if (typeof v.brightness === 'number') setBrightness(v.brightness);
@@ -246,9 +246,29 @@ function CameraScreen() {
     [caps, weakGpu],
   );
 
-  const stops = useMemo(() => lensStops(zoomRange.min, zoomRange.max), [zoomRange]);
+  // Zoom reach from the lens data: telephoto phones go far past the hardware zoom (digital, with
+  // detail reconstruction for photos); phones without a telephoto stop at 2×
+  const DIGITAL_ZOOM_MODES: CaptureMode[] = ['photo', 'night', 'portrait', 'pro', 'video', 'action'];
+  const maxZoom =
+    facing === 'back' && DIGITAL_ZOOM_MODES.includes(mode)
+      ? caps?.maxZoom ?? Math.min(zoomRange.max, 2)
+      : Math.min(zoomRange.max, 4);
+  const telephoto = facing === 'back' && !!caps?.telephoto && DIGITAL_ZOOM_MODES.includes(mode);
+  const stops = useMemo(() => {
+    const base = lensStops(zoomRange.min, Math.min(maxZoom, 2.01));
+    if (telephoto && caps?.telephotoRatio) {
+      const t = Math.round(caps.telephotoRatio);
+      if (t > 2 && t <= maxZoom) base.push({ label: String(t), zoom: t });
+      if (maxZoom >= 10 && t < 8) base.push({ label: '10', zoom: 10 });
+    }
+    return base;
+  }, [zoomRange, maxZoom, telephoto, caps]);
   // Output width/height (portrait) for the chosen aspect; 'full' matches the screen
   const aspectRatio = aspect === '4:3' ? 3 / 4 : aspect === '16:9' ? 9 / 16 : aspect === '1:1' ? 1 : win.width / win.height;
+
+  useEffect(() => {
+    setZoom((z) => Math.min(z, maxZoom));
+  }, [maxZoom]);
 
   /* ---------- helpers ---------- */
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -305,6 +325,10 @@ function CameraScreen() {
   );
 
   /* ---------- capture: photo / night / pro photo ---------- */
+  /** Front camera: does the JPEG need flipping to match the mirror setting? (1 = phone already mirrored it) */
+  const needsFlip = (jpegMirrored?: number) =>
+    facing === 'front' && (jpegMirrored === 1 ? !mirrorSelfie : mirrorSelfie);
+
   const shootPhoto = useCallback(async () => {
     if (busy || !ready) return;
     const night = mode === 'night';
@@ -343,9 +367,10 @@ function CameraScreen() {
         aspect: aspectRatio,
         meta: res.meta?.[0],
         portrait,
-        // Mirror selfie: saved photo matches the mirrored preview
-        mirror: facing === 'front' && mirrorSelfie,
+        // Mirror selfie: flip only if the JPEG isn't already the way the user wants it
+        mirror: needsFlip(res.meta?.[0]?.jpegMirrored),
         enhance: pro ? 0.3 : ext ? 0.45 : 1,
+        digitalZoom: facing === 'back' ? zoom / Math.max(1, zoomRange.max) : 1,
       });
       const info = pro
         ? 'Pro'
@@ -354,8 +379,9 @@ function CameraScreen() {
           : mode === 'portrait'
             ? ext === 'bokeh' ? 'Portrait (depth)' : portrait ? 'Portrait (subject mask)' : 'Portrait'
             : ext === 'hdr' ? 'Photo (phone HDR)' : ext === 'auto' ? 'Photo (phone Auto)' : 'Photo';
+      const zoomNote = facing === 'back' && zoom > zoomRange.max * 1.01 ? ` · ${trim(zoom)}× detail zoom` : '';
       const assetId = await saveToGallery(uri);
-      setLast({ uri, original, isVideo: false, info: look ? `${info} · ${look}` : info, assetId });
+      setLast({ uri, original, isVideo: false, info: (look ? `${info} · ${look}` : info) + zoomNote, assetId });
       flashToast('Saved');
     } catch (e: any) {
       if (paths[0]) {
@@ -365,7 +391,7 @@ function CameraScreen() {
           filter: 'natural',
           aspect: aspectRatio,
           meta: meta0,
-          mirror: facing === 'front' && mirrorSelfie,
+          mirror: needsFlip(meta0?.jpegMirrored),
         }).catch(() => `file://${paths[0]}`);
         await saveToGallery(fallback).catch(() => {});
       }
@@ -374,7 +400,7 @@ function CameraScreen() {
       setProcessing(false);
       setBusy(false);
     }
-  }, [busy, ready, mode, facing, mirrorSelfie, smoothing, filter, aspectRatio, bokeh, captureBurst, saveToGallery, flashToast]);
+  }, [busy, ready, mode, facing, mirrorSelfie, zoom, zoomRange, smoothing, filter, aspectRatio, bokeh, captureBurst, saveToGallery, flashToast]);
 
   /* ---------- capture: video ---------- */
   const toggleRecording = useCallback(async () => {
@@ -444,8 +470,8 @@ function CameraScreen() {
   );
 
   /* ---------- gestures: tap-to-focus, pinch-to-zoom, swipe modes ---------- */
-  const live = useRef({ zoom, zoomRange, mode, recording, visibleModes });
-  live.current = { zoom, zoomRange, mode, recording, visibleModes };
+  const live = useRef({ zoom, zoomRange, mode, recording, visibleModes, maxZoom });
+  live.current = { zoom, zoomRange, mode, recording, visibleModes, maxZoom };
   const gesture = useRef({ pinchStart: 0, zoomStart: 1, pinched: false });
   const changeModeRef = useRef(changeMode);
   changeModeRef.current = changeMode;
@@ -467,8 +493,8 @@ function CameraScreen() {
             gesture.current.zoomStart = live.current.zoom;
           }
           gesture.current.pinched = true;
-          const { min, max } = live.current.zoomRange;
-          setZoom(clamp(gesture.current.zoomStart * (dist / gesture.current.pinchStart), min, Math.min(max, 20)));
+          const { min } = live.current.zoomRange;
+          setZoom(clamp(gesture.current.zoomStart * (dist / gesture.current.pinchStart), min, live.current.maxZoom));
         },
         onPanResponderRelease: (e, g) => {
           if (gesture.current.pinched) return;
@@ -556,6 +582,10 @@ function CameraScreen() {
           fps={video.fps}
           hdrVideo={video.hdr}
           stabilization={video.stabilization}
+          filterParams={(() => {
+            const f = filterByKey(filter);
+            return [f.sat, f.contrast, f.warmth, f.fade, f.mono, f.vignette];
+          })()}
           nightExtension={photo.vendorNight}
           dualPip={pip}
           aspect={aspect === '16:9' || aspect === 'full' ? '16:9' : '4:3'}
@@ -572,7 +602,7 @@ function CameraScreen() {
             const r = e.nativeEvent;
             setReady(r);
             setZoomRange({ min: r.zoomMin, max: r.zoomMax });
-            setZoom((z) => clamp(z, r.zoomMin, r.zoomMax));
+            setZoom((z) => clamp(z, r.zoomMin, Math.max(r.zoomMax, live.current.maxZoom)));
             if (r.mode === 'slowmo' && r.slowMotionFps) flashToast(`Slow motion · ${r.slowMotionFps} fps`);
           }}
           onError={(e) => {
@@ -637,12 +667,12 @@ function CameraScreen() {
               <MaterialCommunityIcons name={timerIcon} size={22} color="#fff" />
             </Pressable>
           )}
-          {isPhotoShot && (
+          {(isPhotoShot || mode === 'video' || mode === 'action') && (
             <Pressable hitSlop={8} onPress={() => setShowLook((v) => !v)}>
               <MaterialCommunityIcons
                 name="palette-outline"
                 size={22}
-                color={showLook || filter !== 'natural' || smoothing > 0.01 ? '#ffd76a' : '#fff'}
+                color={showLook || filter !== 'natural' ? '#ffd76a' : '#fff'}
               />
             </Pressable>
           )}
@@ -719,12 +749,10 @@ function CameraScreen() {
       {/* Bottom controls */}
       <View style={[styles.bottom, { paddingBottom: insets.bottom + 14 }]} pointerEvents="box-none">
         <Toast text={toast} />
-        {showLook && isPhotoShot && (
+        {showLook && (isPhotoShot || mode === 'video' || mode === 'action') && (
           <LookPanel
             filter={filter}
             onFilter={setFilter}
-            smoothing={smoothing}
-            onSmoothing={setSmoothing}
             blur={mode === 'portrait' ? bokeh : undefined}
             onBlur={setBokeh}
           />
@@ -768,11 +796,15 @@ function CameraScreen() {
           <ZoomPills
             stops={stops}
             zoom={zoom}
-            label={trim(zoom)}
+            label={zoom >= 10 ? String(Math.round(zoom)) : trim(zoom)}
             onSelect={(z) => {
               Haptics.selectionAsync();
               setZoom(z);
             }}
+            min={zoomRange.min}
+            max={maxZoom}
+            dialEnabled={telephoto}
+            onDial={setZoom}
           />
           <IconButton icon="plus" size={40} onPress={() => nudgeExposure(1)} />
         </View>
@@ -826,7 +858,6 @@ function CameraScreen() {
           setVideo({ resolution: '1080p', fps: 30, hdr: false, stabilization: 'cinematic' });
           setMirrorSelfie(true);
           setFilter('natural');
-          setSmoothing(0);
           setPip({ x: 0.74, y: 0.22, size: 0.34 });
           setManual(AUTO_MANUAL);
           setBrightness(0);

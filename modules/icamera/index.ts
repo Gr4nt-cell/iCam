@@ -49,6 +49,12 @@ export type Capabilities = {
   cameras: CameraProfile[];
   /** Whether this phone is strong enough for live Portrait video blur */
   portraitVideo: boolean;
+  /** Rear telephoto lens detected from lens data */
+  telephoto?: boolean;
+  /** Telephoto reach vs the main lens (e.g. 3, 5) */
+  telephotoRatio?: number;
+  /** Highest zoom offered (optical + digital), from the lens data */
+  maxZoom?: number;
 };
 
 type NativeEvent<T> = { nativeEvent: T };
@@ -87,6 +93,8 @@ export type ICameraProps = ViewProps & {
   fps?: number;
   hdrVideo?: boolean;
   stabilization?: 'off' | 'standard' | 'cinematic' | 'horizon';
+  /** Live filter [sat, contrast, warmth, fade, mono, vignette] */
+  filterParams?: number[];
   nightExtension?: boolean;
   /** Dual mode: centre (0..1, y down) and width share of the small window */
   dualPip?: { x: number; y: number; size: number };
@@ -106,7 +114,7 @@ export type ICameraProps = ViewProps & {
     e: NativeEvent<{
       paths: string[];
       evs?: number[];
-      meta?: { orientation: number; width: number; height: number }[];
+      meta?: { orientation: number; width: number; height: number; jpegMirrored?: number }[];
       shortIndex?: number;
       error?: string;
       nightExtension: boolean;
