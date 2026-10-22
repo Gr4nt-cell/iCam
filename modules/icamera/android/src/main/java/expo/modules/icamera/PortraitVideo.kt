@@ -455,7 +455,7 @@ class PortraitProcessor : SurfaceProcessor {
       curveNorm = (1.0 / (1 - Math.exp(-lo))).toFloat()
     }
     // More brightening = more noise to clean
-    temporal = (0.22f + (gain - 1f) * 0.3f).coerceIn(0.22f, 0.62f)
+    temporal = (0.3f + (gain - 1f) * 0.3f + (digitalZoomNow - 1f) * 0.04f).coerceIn(0.3f, 0.7f)
   }
 
   /** One pass: OES frame → tone + spatial/temporal denoise + detail → vtex[cur]. */
@@ -498,6 +498,7 @@ class PortraitProcessor : SurfaceProcessor {
       GLES20.glUniform2f(GLES20.glGetUniformLocation(outProg, "uF2"), f[4], f[5])
     }
     GLES20.glUniform2f(GLES20.glGetUniformLocation(outProg, "uShift"), shiftX, shiftY)
+    GLES20.glUniform2f(GLES20.glGetUniformLocation(outProg, "uSrcTexel"), 1f / maxOf(1, inW), 1f / maxOf(1, inH))
     GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
   }
 
@@ -862,6 +863,21 @@ class PortraitProcessor : SurfaceProcessor {
         float dn = length(c - n);
         // flat areas: blend toward the neighbourhood (grain), edges untouched
         vec3 cs = mix(c, n, (1.0 - smoothstep(0.012, 0.05, dn)) * min(0.6, uTemporal * 1.4));
+        // Chroma noise (colour speckle): average colour over a wider ring where brightness is similar
+        {
+          float yc = dot(cs, LW);
+          vec3 accC = cs - yc;
+          float wc = 1.0;
+          for (int i = 0; i < 8; i++) {
+            float a = float(i) * 0.785398 + 0.3927;
+            vec3 q = texture2D(sTex, vTex + vec2(cos(a), sin(a)) * uTexel * 3.5).rgb;
+            float yq = dot(q, LW);
+            float k = exp(-(yq - yc) * (yq - yc) * 220.0);
+            accC += (q - yq) * k;
+            wc += k;
+          }
+          cs = yc + mix(cs - yc, accC / wc, 0.75);
+        }
         // Skin smoothing: edge-preserving blur limited to skin tones (YCbCr skin range)
         if (uSmooth > 0.01) {
           float cb = -0.1687 * c.r - 0.3313 * c.g + 0.5 * c.b;
@@ -922,6 +938,7 @@ class PortraitProcessor : SurfaceProcessor {
       uniform float uCrop;
       uniform vec2 uShift;
       uniform float uFilterOn;
+      uniform vec2 uSrcTexel;
       uniform vec4 uF1; // sat, contrast, warmth, fade
       uniform vec2 uF2; // mono, vignette
       vec3 applyFilter(vec3 c, vec2 q) {
@@ -940,6 +957,14 @@ class PortraitProcessor : SurfaceProcessor {
         // stabilization: crop margin + shift back onto the smoothed camera path (+ digital zoom)
         uv = 0.5 + (uv - 0.5) / uCrop + uShift;
         vec3 col = texture2D(sCur, uv).rgb;
+        if (uCrop > 1.25) {
+          // zoomed in: bring back edge detail lost to upscaling (cored so noise isn't amplified)
+          vec3 nb = (texture2D(sCur, uv + vec2(uSrcTexel.x, 0.0)).rgb + texture2D(sCur, uv - vec2(uSrcTexel.x, 0.0)).rgb +
+                     texture2D(sCur, uv + vec2(0.0, uSrcTexel.y)).rgb + texture2D(sCur, uv - vec2(0.0, uSrcTexel.y)).rgb) * 0.25;
+          float d = dot(col - nb, vec3(0.299, 0.587, 0.114));
+          float cd = sign(d) * max(abs(d) - 0.01, 0.0);
+          col = clamp(col + clamp(cd, -0.06, 0.06) * min(1.6, (uCrop - 1.0) * 0.8), 0.0, 1.0);
+        }
         if (uFilterOn > 0.5) col = applyFilter(col, q);
         gl_FragColor = vec4(col, 1.0);
       }

@@ -362,7 +362,7 @@ function CameraScreen() {
         if (mask && mask.coverage > 0.02) portrait = { maskPath: mask.maskPath, strength: bokeh };
         else flashToast('No subject found — saved without background blur', 3000);
       }
-      if (facing === 'back' && zoom > 10 && zoom > zoomRange.max * 1.01) setToast('AI zoom · rebuilding detail…');
+      if (facing === 'back' && zoom > zoomRange.max * 1.5) setToast('AI zoom · rebuilding detail…');
       const uri = await processSingle(paths[0], {
         smoothing,
         filter,
@@ -373,8 +373,8 @@ function CameraScreen() {
         mirror: needsFlip(res.meta?.[0]?.jpegMirrored),
         enhance: pro ? 0.3 : ext ? 0.45 : 1,
         digitalZoom: facing === 'back' ? zoom / Math.max(1, zoomRange.max) : 1,
-        // Past 10×: rebuild detail with the on-device AI model
-        aiZoom: facing === 'back' && zoom > 10 && zoom > zoomRange.max * 1.01,
+        // Beyond the lens (≥1.5× digital): rebuild detail with the on-device AI model
+        aiZoom: facing === 'back' && zoom > zoomRange.max * 1.5,
       });
       const info = pro
         ? 'Pro'
@@ -383,7 +383,7 @@ function CameraScreen() {
           : mode === 'portrait'
             ? ext === 'bokeh' ? 'Portrait (depth)' : portrait ? 'Portrait (subject mask)' : 'Portrait'
             : ext === 'hdr' ? 'Photo (phone HDR)' : ext === 'auto' ? 'Photo (phone Auto)' : 'Photo';
-      const zoomNote = facing === 'back' && zoom > zoomRange.max * 1.01 ? ` · ${Math.round(zoom)}× ${zoom > 10 ? 'AI zoom' : 'detail zoom'}` : '';
+      const zoomNote = facing === 'back' && zoom > zoomRange.max * 1.01 ? ` · ${Math.round(zoom)}× ${zoom > zoomRange.max * 1.5 ? 'AI zoom' : 'detail zoom'}` : '';
       const assetId = await saveToGallery(uri);
       setLast({ uri, original, isVideo: false, info: (look ? `${info} · ${look}` : info) + zoomNote, assetId });
       flashToast('Saved');

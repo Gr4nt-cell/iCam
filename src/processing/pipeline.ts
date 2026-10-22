@@ -522,7 +522,7 @@ export function flipH(img: SkImage): SkImage {
  * Single-frame finishing: noise-aware detail sharpening (fine texture without amplifying grain),
  * mid-tone clarity (local contrast) and gentle vibrance.
  */
-function enhance(img: SkImage, amount: number, radius?: number): SkImage {
+function enhance(img: SkImage, amount: number, radius?: number, core = 0.006): SkImage {
   if (amount <= 0.01) return img;
   const W = img.width();
   const H = img.height();
@@ -535,7 +535,7 @@ function enhance(img: SkImage, amount: number, radius?: number): SkImage {
   const paint = Skia.Paint();
   const k = Math.min(1.5, amount);
   // Vibrance stays strong even when the phone already processed the photo (matches the video look)
-  paint.setShader(fx.makeShaderWithChildren([0.7 * k, 0.28 * k, 0.45, radius ?? Math.max(1, Math.min(W, H) / 2000)], [opt(img), opt(base)]));
+  paint.setShader(fx.makeShaderWithChildren([0.7 * k, 0.28 * k, 0.45, radius ?? Math.max(1, Math.min(W, H) / 2000), core], [opt(img), opt(base)]));
   surf.getCanvas().drawPaint(paint);
   return snapshot(surf);
 }
@@ -547,6 +547,7 @@ uniform float sharp;
 uniform float clarity;
 uniform float vib;
 uniform float px;
+uniform float core;
 float lum(float3 c) { return dot(c, float3(0.299, 0.587, 0.114)); }
 half4 main(float2 p) {
   float3 c = float3(img.eval(p).rgb);
@@ -558,7 +559,7 @@ half4 main(float2 p) {
   float d = ly - lum(n1 * 0.6 + n2 * 0.4);
   // coring: ignore tiny differences (sensor grain), sharpen real edges/texture
   float ad = abs(d);
-  float cored = sign(d) * max(ad - 0.006, 0.0) * smoothstep(0.0, 0.03, ad);
+  float cored = sign(d) * max(ad - core, 0.0) * smoothstep(0.0, core * 5.0, ad);
   cored = clamp(cored, -0.08, 0.08);
   float3 o = c + cored * sharp * 1.6;
   float lb = lum(float3(base.eval(p).rgb));
@@ -575,12 +576,53 @@ half4 main(float2 p) {
 }
 `;
 
+/**
+ * Noise level (σ, 0..1 units) measured on the photo itself: median absolute Laplacian over a
+ * centre patch at full resolution (robust to edges, so it mostly sees sensor noise).
+ */
+function measureNoise(img: SkImage): number {
+  try {
+    const S = Math.min(320, img.width(), img.height());
+    const x0 = Math.floor((img.width() - S) / 2);
+    const y0 = Math.floor((img.height() - S) / 2);
+    const px = img.readPixels(x0, y0, { width: S, height: S, colorType: ColorType.RGBA_8888, alphaType: AlphaType.Unpremul });
+    if (!px) return 0.008;
+    const L = new Float32Array(S * S);
+    for (let i = 0; i < S * S; i++) L[i] = (0.299 * px[i * 4] + 0.587 * px[i * 4 + 1] + 0.114 * px[i * 4 + 2]) / 255;
+    const lap: number[] = [];
+    for (let y = 1; y < S - 1; y += 2) {
+      for (let x = 1; x < S - 1; x += 2) {
+        const i = y * S + x;
+        lap.push(Math.abs(L[i] - 0.25 * (L[i - 1] + L[i + 1] + L[i - S] + L[i + S])));
+      }
+    }
+    lap.sort((a, b) => a - b);
+    return lap[Math.floor(lap.length / 2)] * 1.326;
+  } catch {
+    return 0.008;
+  }
+}
+
+/** Edge-aware denoise sized to the measured noise: strong on chroma, gentle on luma (keeps texture). */
+function adaptiveDenoise(img: SkImage, sigma: number): SkImage {
+  const luma = Math.min(0.7, Math.max(0.06, sigma * 28));
+  const radius = Math.max(2, Math.min(img.width(), img.height()) / 900);
+  return shade(img, 'denoise', DENOISE_SKSL, [0.9, luma, radius, Math.max(0.0004, 9 * sigma * sigma)]);
+}
+
 export async function processSingle(path: string, o: SingleOptions): Promise<string> {
   let img = await loadUpright(path, o.meta);
+  // Noise cleanup first (every mode, every zoom), then detail on what's left
+  const sigma = measureNoise(img);
+  try {
+    img = adaptiveDenoise(img, sigma);
+  } catch {}
+  await yieldFrame();
+  const core = Math.max(0.004, sigma * 2.5);
   if (o.enhance) {
     await yieldFrame();
     try {
-      img = enhance(img, o.enhance);
+      img = enhance(img, o.enhance, undefined, core);
     } catch {
       // keep the unenhanced photo rather than failing (and losing mirroring etc.)
     }
