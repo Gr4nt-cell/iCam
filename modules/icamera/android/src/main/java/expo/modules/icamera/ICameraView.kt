@@ -616,8 +616,6 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
 
   @OptIn(ExperimentalCamera2Interop::class)
   @androidx.annotation.OptIn(markerClass = [ExperimentalCamera2Interop::class])
-  @OptIn(ExperimentalCamera2Interop::class)
-  @androidx.annotation.OptIn(markerClass = [ExperimentalCamera2Interop::class])
   private fun newPreview(stabilized: Boolean = false, ois: Boolean = false, matchAspect: Boolean = false): Preview {
     val b = Preview.Builder()
     // Anti-flicker for mains-powered lights (50/60 Hz): stops banding and brightness pulsing indoors
