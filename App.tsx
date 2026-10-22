@@ -153,6 +153,8 @@ function CameraScreen() {
   const [paused, setPaused] = useState(false);
   const [palmShutter, setPalmShutter] = useState(false);
   const [shutterSound, setShutterSound] = useState(true);
+  // Palm shutter live state: off | none | hand | palm | error:…
+  const [palmStatus, setPalmStatus] = useState('off');
   // Another app asked iCam for a photo/video (iCam as the default camera)
   const [captureReq] = useState(() => getCaptureRequest());
 
@@ -654,7 +656,14 @@ function CameraScreen() {
           faceSmoothing={smoothing}
           palmShutter={palmShutter}
           shutterSound={shutterSound}
-          onGesture={() => onGesture()}
+          onGesture={(e) => {
+            const g = e.nativeEvent;
+            if (g.kind === 'status') {
+              const st = g.status ?? 'off';
+              if (st.startsWith('error:') && !palmStatus.startsWith('error:')) flashToast(`Palm shutter: ${st.slice(6)}`, 5000);
+              setPalmStatus(st);
+            } else onGesture();
+          }}
           filterParams={(() => {
             const f = filterByKey(filter);
             return [f.sat, f.contrast, f.warmth, f.fade, f.mono, f.vignette];
@@ -774,6 +783,15 @@ function CameraScreen() {
             >
               <MaterialCommunityIcons name="rotate-left" size={22} color={video.stabilization === 'horizon' ? '#ffd76a' : '#fff'} />
             </Pressable>
+          )}
+          {palmShutter && palmStatus !== 'off' && (
+            <MaterialCommunityIcons
+              name="hand-back-right-outline"
+              size={20}
+              color={
+                palmStatus === 'palm' ? '#ffd76a' : palmStatus === 'hand' ? '#fff' : palmStatus.startsWith('error') ? '#ff6b5f' : 'rgba(255,255,255,0.35)'
+              }
+            />
           )}
           {(facing === 'front' || mode === 'dual') && (
             <Pressable hitSlop={8} onPress={() => setMirrorSelfie((v) => !v)}>

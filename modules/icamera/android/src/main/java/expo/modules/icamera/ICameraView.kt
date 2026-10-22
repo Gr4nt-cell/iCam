@@ -214,7 +214,7 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
   /* ---------------- palm shutter ---------------- */
   private var palmOn = false
   private val palm by lazy {
-    PalmDetector(context) { emitGesture(mapOf("kind" to "palm")) }.also { d ->
+    PalmDetector(context, { emitGesture(mapOf("kind" to "palm")) }, { st -> emitGesture(mapOf("kind" to "status", "status" to st)) }).also { d ->
       d.frameSource = { try { previewView.bitmap } catch (e: Throwable) { null } }
     }
   }
@@ -223,7 +223,9 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
   private fun updateGestures() {
     val photo = mode in PHOTO_MODES
     val live = active && isAttachedToWindow && recording == null
-    palm.setEnabled(palmOn && photo && live)
+    val on = palmOn && photo && live
+    palm.setEnabled(on)
+    if (!on) emitGesture(mapOf("kind" to "status", "status" to "off"))
   }
 
   /* ---------------- capture sounds ---------------- */

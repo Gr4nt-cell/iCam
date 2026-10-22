@@ -17,7 +17,14 @@ import java.util.concurrent.Executors
  *  - its 21 hand landmarks must show all five fingers straight and extended, pointing up and spread,
  *  - held for about a second (3 checks in a row).
  */
-class PalmDetector(private val ctx: Context, private val onPalm: () -> Unit) {
+class PalmDetector(
+  private val ctx: Context,
+  private val onPalm: () -> Unit,
+  /** "none" | "hand" | "palm" | "error:<message>" — reported when it changes */
+  private val onStatus: (String) -> Unit = {},
+) {
+  private var lastStatus = ""
+  private fun status(s: String) { if (s != lastStatus) { lastStatus = s; main.post { onStatus(s) } } }
   private val main = Handler(Looper.getMainLooper())
   private val worker = Executors.newSingleThreadExecutor()
   private var recognizer: GestureRecognizer? = null
@@ -52,6 +59,7 @@ class PalmDetector(private val ctx: Context, private val onPalm: () -> Unit) {
       GestureRecognizer.createFromOptions(ctx, opts).also { recognizer = it }
     } catch (e: Throwable) {
       failed = true
+      status("error:" + (e.message ?: e.javaClass.simpleName).take(120))
       null
     }
   }
@@ -76,21 +84,24 @@ class PalmDetector(private val ctx: Context, private val onPalm: () -> Unit) {
             val gestures = res.gestures()
             val hands = res.landmarks()
             for (i in hands.indices) {
-              val top = gestures.getOrNull(i)?.firstOrNull() ?: continue
-              if (top.categoryName() == "Open_Palm" && top.score() >= 0.7f && openHand(hands[i], small.width, small.height)) {
+              // "Open_Palm" among the model's top guesses, plus our own five-finger check
+              val open = gestures.getOrNull(i)?.any { it.categoryName() == "Open_Palm" && it.score() >= 0.5f } == true
+              if (open && openHand(hands[i], small.width, small.height)) {
                 palm = true
                 break
               }
             }
+            status(if (palm) "palm" else if (hands.isNotEmpty()) "hand" else "none")
           }
-        } catch (_: Throwable) {
+        } catch (e: Throwable) {
+          status("error:" + (e.message ?: e.javaClass.simpleName).take(120))
         } finally {
           small.recycle()
           busy = false
         }
         main.post {
           hits = if (palm) hits + 1 else 0
-          if (hits >= 3 && running) {
+          if (hits >= 2 && running) {
             hits = 0
             lastFire = System.currentTimeMillis()
             onPalm()
@@ -113,18 +124,18 @@ class PalmDetector(private val ctx: Context, private val onPalm: () -> Unit) {
       return n > 0 && (ux * vx + uy * vy) / n >= minCos
     }
     val palm = d(0, 9)
-    if (palm < 0.06 * minOf(w, h)) return false // hand too small / far away to judge
+    if (palm < 0.04 * minOf(w, h)) return false // hand too small / far away to judge
     // index, middle, ring, little: tip well beyond the middle joint, finger straight, pointing up
     for (f in listOf(intArrayOf(5, 6, 7, 8), intArrayOf(9, 10, 11, 12), intArrayOf(13, 14, 15, 16), intArrayOf(17, 18, 19, 20))) {
-      val (mcp, pip, dip, tip) = f.toList()
-      if (d(tip, 0) < d(pip, 0) * 1.2) return false
-      if (!straight(mcp, pip, tip, 0.75) || !straight(pip, dip, tip, 0.7)) return false
+      val (mcp, pip, _, tip) = f.toList()
+      if (d(tip, 0) < d(pip, 0) * 1.1) return false
+      if (!straight(mcp, pip, tip, 0.55)) return false
       if (y[tip] >= y[mcp]) return false
     }
     // thumb: out to the side, straight, tip beyond its middle joint
-    if (d(4, 5) < 0.45 * palm || d(4, 0) <= d(3, 0) || !straight(2, 3, 4, 0.6)) return false
+    if (d(4, 5) < 0.3 * palm || d(4, 0) <= d(3, 0) * 0.98) return false
     // fingers fanned out (an open palm, not a pointing or "stop-sign" pinch)
-    if (d(8, 20) < 0.6 * palm) return false
+    if (d(8, 20) < 0.45 * palm) return false
     // hand upright: fingertips above the wrist
     if (y[12] >= y[0]) return false
     return true
