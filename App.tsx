@@ -723,8 +723,7 @@ function CameraScreen() {
           onRecordingState={(e) => {
             const st = e.nativeEvent as { paused?: boolean; merging?: boolean };
             if (st.merging) {
-              setProcessing(true);
-              flashToast('Joining front and back clips…', 4000);
+              setProcessing(true); // quiet: only the thumbnail's processing ring shows
             } else if (typeof st.paused === 'boolean') setPaused(st.paused);
           }}
           onRecordingFinished={async (e) => {
