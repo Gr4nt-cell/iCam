@@ -490,7 +490,7 @@ function CameraScreen() {
   }, [recording, paused]);
 
   // Front/back can be switched mid-recording in Video and Action (the clip continues)
-  const canFlipWhileRecording = mode === 'video' || mode === 'action';
+  const canFlipWhileRecording = false; // Android's recorder can't switch cameras mid-clip
 
   const runCountdown = useCallback(async (secs: number) => {
     for (let t = secs; t > 0; t--) {

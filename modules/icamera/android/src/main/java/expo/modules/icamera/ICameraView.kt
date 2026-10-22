@@ -80,6 +80,8 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
   private val onGesture by EventDispatcher()
 
   companion object {
+    /** iCam's own recorder (needed only for front/back switching mid-recording) — off by request. */
+    private const val USE_OWN_RECORDER = false
     private val PHOTO_MODES = setOf("photo", "portrait", "night", "pro", "macro")
   }
 
@@ -840,8 +842,8 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
           else -> 1.12f
         }
         proc.onWeakGpu = { reason -> post { emitPortraitStatus(mapOf("blur" to false, "reason" to reason)) } }
-        if (switchable) {
-          // Video / Action: iCam's own recorder. CameraX only feeds the viewfinder stream; the GPU
+        if (USE_OWN_RECORDER && switchable) {
+          // Video / Action: iCam's own recorder (off: Android's recorder is used). CameraX only feeds the viewfinder stream; the GPU
           // pipeline draws each frame into a fixed-size encoder, so front/back can change mid-clip.
           val range = ranges.filter { it.upper == targetFps && it.lower >= minLow && it.lower < targetFps }.minByOrNull { it.lower }
             ?: ranges.firstOrNull { it.lower == targetFps && it.upper == targetFps }
@@ -1374,9 +1376,8 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
     if (audio && micGranted && mode != "slowmo") pending = pending.withAudioEnabled()
     // Persistent: survives re-binding to the other camera (front/back switch while recording)
     persistentRec = false
-    if (mode == "video" || mode == "action") {
-      try { pending = makePersistent(pending); persistentRec = true } catch (_: Throwable) {}
-    }
+    // (Persistent recording for mid-clip camera switches is off: Android's recorder can't change
+    // camera size mid-clip, which produced broken videos.)
     // Keep the timeline continuous if the camera is switched mid-recording
     portraitProcessor?.let { it.resetTimeline(); it.holdTimeline = true }
     // Keep the display awake for the whole recording
