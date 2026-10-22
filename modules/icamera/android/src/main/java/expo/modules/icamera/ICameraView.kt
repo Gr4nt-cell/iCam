@@ -563,11 +563,23 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
             "horizonLock" to sensorOn,
           ),
         )
+        bindRetries = 0
       } catch (e: Throwable) {
-        emitError(e.message ?: e.toString())
+        // Switching front/back: many phones can't open the new camera until the old one has closed,
+        // so CameraX briefly sees "no available camera". Wait and try again instead of failing.
+        val msg = e.message ?: e.toString()
+        if (msg.contains("No available camera", true) && bindRetries < 8) {
+          bindRetries++
+          postDelayed({ rebind() }, 250L * bindRetries)
+        } else {
+          bindRetries = 0
+          emitError(msg)
+        }
       }
     }
   }
+
+  private var bindRetries = 0
 
   /** A specific rear lens chosen from the zoom pills (one the main camera's zoom can't reach). */
   private var lensId: String? = null
@@ -854,6 +866,8 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
           val g = UseCaseGroup.Builder().addUseCase(preview).addEffect(PortraitVideoEffect(proc, CameraEffect.PREVIEW)).build()
           camera = p.bindToLifecycle(owner, sel, g)
           proc.fixedRotation = ((camera?.cameraInfo?.sensorRotationDegrees ?: -90) / 90).let { if (it < 0) -1 else it % 4 }
+          // Recording orientation: rotate the camera buffer by the sensor orientation for a portrait phone
+          proc.inRotation = camera?.cameraInfo?.getSensorRotationDegrees(android.view.Surface.ROTATION_0) ?: if (selfieVideo) 270 else 90
           ownMode = true
           encW = if (uhd) 3840 else 1920
           encH = if (uhd) 2160 else 1080

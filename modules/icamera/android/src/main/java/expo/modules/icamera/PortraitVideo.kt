@@ -83,8 +83,8 @@ class PortraitProcessor : SurfaceProcessor {
   private var encFor: OwnRecorder? = null
   private var encSurf: EGLSurface = EGL14.EGL_NO_SURFACE
   private var encCrop = 1f
-  /** Clockwise degrees that make the camera buffer upright (from the camera pipeline). */
-  @Volatile private var inRotation = 90
+  /** Clockwise degrees that make the camera buffer upright (portrait): the camera's sensor orientation. */
+  @Volatile var inRotation = 90
   private val mup = FloatArray(16)
   private val encM = FloatArray(16)
 
@@ -202,7 +202,6 @@ class PortraitProcessor : SurfaceProcessor {
   override fun onInputSurface(request: SurfaceRequest) {
     if (released) { request.willNotProvideSurface(); return }
     if (holdTimeline) rebase = true
-    try { request.setTransformationInfoListener(executor) { info -> inRotation = info.rotationDegrees } } catch (_: Throwable) {}
     initGl()
     inW = request.resolution.width
     inH = request.resolution.height
@@ -389,10 +388,13 @@ class PortraitProcessor : SurfaceProcessor {
     val eh = rec.height.toFloat()
     GLES20.glViewport(0, 0, rec.width, rec.height)
     // uv = A·t + c  (t = encoder coords 0..1, uv = camera buffer coords 0..1, both y-up)
-    val phi = Math.toRadians((inRotation - 90).toDouble())
+    // Calibrated from a real recording: in these texture coordinates the buffer relates to the upright
+    // picture by +sensorRotation, and the file is tagged 90°, so the encoded frame needs −(rot + 90).
+    val deg = -(inRotation + 90)
+    val phi = Math.toRadians(deg.toDouble())
     val cs = Math.cos(phi).toFloat()
     val sn = Math.sin(phi).toFloat()
-    val quarter = ((inRotation - 90) / 90) % 2 != 0
+    val quarter = Math.abs(deg / 90) % 2 != 0
     val rbw = if (quarter) inH.toFloat() else inW.toFloat()
     val rbh = if (quarter) inW.toFloat() else inH.toFloat()
     val sc = maxOf(ew / rbw, eh / rbh)
