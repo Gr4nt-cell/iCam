@@ -180,7 +180,7 @@ function CameraScreen() {
         setRemember(true);
         if (v.photo) setPhoto((p) => ({ ...p, ...v.photo }));
         // v2: HDR video now defaults off (it looked dark on normal screens and bypasses iCam's video processing)
-        if (v.video) setVideo((x) => ({ ...x, ...v.video, hdr: v.videoV2 ? v.video.hdr : false }));
+        if (v.video) setVideo((x) => ({ ...x, ...v.video, hdr: v.videoV2 ? !!v.video?.hdr : false }));
         if (v.mode) setMode(v.mode);
         if (typeof v.mirrorSelfie === 'boolean') setMirrorSelfie(v.mirrorSelfie);
         if (v.filter) setFilter(v.filter);
