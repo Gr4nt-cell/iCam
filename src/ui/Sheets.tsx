@@ -90,7 +90,7 @@ export function SettingsSheet(p: SettingsProps) {
               </Row>
               <Row
                 label="HDR video"
-                hint={p.supportsVideoHdr ? 'True 10-bit HDR for HDR screens. Looks dim on normal screens and skips iCam's low-light video processing and horizon lock' : 'Not supported by this camera'}
+                hint={p.supportsVideoHdr ? 'True 10-bit HDR for HDR screens. Looks dim on normal screens and skips the iCam low-light video processing and horizon lock' : 'Not supported by this camera'}
               >
                 <Toggle
                   value={p.video.hdr && p.supportsVideoHdr}
