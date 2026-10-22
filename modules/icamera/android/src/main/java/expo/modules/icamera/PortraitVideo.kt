@@ -78,6 +78,16 @@ class PortraitProcessor : SurfaceProcessor {
    * frames with its own clock (and there's a gap while switching), so after a switch the new
    * camera's timestamps are shifted to continue right after the last frame written.
    */
+  /** iCam's own recorder: frames are drawn into its surface, upright, at its fixed size. */
+  @Volatile var encoder: OwnRecorder? = null
+  private var encFor: OwnRecorder? = null
+  private var encSurf: EGLSurface = EGL14.EGL_NO_SURFACE
+  private var encCrop = 1f
+  /** Clockwise degrees that make the camera buffer upright (from the camera pipeline). */
+  @Volatile private var inRotation = 90
+  private val mup = FloatArray(16)
+  private val encM = FloatArray(16)
+
   @Volatile var holdTimeline = false
   @Volatile private var rebase = false
   private var tsOffset = 0L
@@ -192,6 +202,7 @@ class PortraitProcessor : SurfaceProcessor {
   override fun onInputSurface(request: SurfaceRequest) {
     if (released) { request.willNotProvideSurface(); return }
     if (holdTimeline) rebase = true
+    try { request.setTransformationInfoListener(executor) { info -> inRotation = info.rotationDegrees } } catch (_: Throwable) {}
     initGl()
     inW = request.resolution.width
     inH = request.resolution.height
@@ -328,6 +339,8 @@ class PortraitProcessor : SurfaceProcessor {
       EGL14.eglSwapBuffers(display, es)
     }
 
+    drawEncoder(stDet, enh, blurOn)
+
     // Runtime check: if blurring keeps us under ~22 fps for ~2 s, switch it off
     if (blurOn && maskReady && frame > 30) {
       val ms = (System.nanoTime() - t0) / 1_000_000.0
@@ -350,6 +363,64 @@ class PortraitProcessor : SurfaceProcessor {
       "powervr sgx", "powervr rogue ge", "powervr rogue gm", "powervr ge8",
       "videocore", "vivante",
     ).any { g.contains(it) }
+  }
+
+  /**
+   * Recording: the processed frame drawn into the recorder's surface. Encoded frames are landscape
+   * and tagged 90°, so the picture is rotated here (buffer → upright → −90°) and, for selfies,
+   * mirrored as the mirror setting says. The same code serves both cameras, so a switch mid-clip
+   * just changes what comes in.
+   */
+  private fun drawEncoder(stDet: Float, enh: Boolean, blurOn: Boolean) {
+    val rec = encoder
+    if (rec !== encFor) {
+      if (encSurf != EGL14.EGL_NO_SURFACE) { EGL14.eglDestroySurface(display, encSurf); encSurf = EGL14.EGL_NO_SURFACE }
+      if (rec != null) {
+        encSurf = try { EGL14.eglCreateWindowSurface(display, config, rec.surface, intArrayOf(EGL14.EGL_NONE), 0) } catch (e: Throwable) { EGL14.EGL_NO_SURFACE }
+      }
+      encFor = rec
+      encCrop = 1f
+    }
+    if (rec == null || encSurf == EGL14.EGL_NO_SURFACE) return
+    val pts = rec.nextVideoPtsNs()
+    if (pts < 0) return
+    if (!EGL14.eglMakeCurrent(display, encSurf, encSurf, context)) return
+    val ew = rec.width.toFloat()
+    val eh = rec.height.toFloat()
+    GLES20.glViewport(0, 0, rec.width, rec.height)
+    // uv = A·t + c  (t = encoder coords 0..1, uv = camera buffer coords 0..1, both y-up)
+    val phi = Math.toRadians((inRotation - 90).toDouble())
+    val cs = Math.cos(phi).toFloat()
+    val sn = Math.sin(phi).toFloat()
+    val quarter = ((inRotation - 90) / 90) % 2 != 0
+    val rbw = if (quarter) inH.toFloat() else inW.toFloat()
+    val rbh = if (quarter) inW.toFloat() else inH.toFloat()
+    val sc = maxOf(ew / rbw, eh / rbh)
+    val my = if (frontCamera && mirrorVideo) -1f else 1f // selfie mirror (portrait x = encoder y)
+    val a00 = cs * ew / sc / inW
+    val a01 = -sn * eh * my / sc / inW
+    val a10 = sn * ew / sc / inH
+    val a11 = cs * eh * my / sc / inH
+    val c0 = 0.5f - 0.5f * (a00 + a01)
+    val c1 = 0.5f - 0.5f * (a10 + a11)
+    android.opengl.Matrix.setIdentityM(mup, 0)
+    mup[0] = a00; mup[1] = a10; mup[4] = a01; mup[5] = a11; mup[12] = c0; mup[13] = c1
+    android.opengl.Matrix.multiplyMM(encM, 0, stM, 0, mup, 0)
+    var angle = 0f
+    var zoomK = 1f
+    if (horizonLock) {
+      angle = if (frontCamera) -roll else roll
+      var a = Math.abs(angle.toDouble()) % Math.PI
+      if (a > Math.PI / 2) a = Math.PI - a
+      val r = maxOf(ew, eh) / minOf(ew, eh)
+      val needed = (Math.cos(a) + r * Math.sin(a)).toFloat() * 1.03f
+      encCrop = if (needed > encCrop) encCrop + (needed - encCrop) * 0.35f else encCrop + (needed - encCrop) * 0.05f
+      zoomK = maxOf(1f, encCrop)
+    }
+    xform = floatArrayOf(ew, eh, angle, zoomK, 0f)
+    if (blurOn) drawBlur(encM) else if (enh) drawOut(encM) else drawCopy(encM)
+    EGLExt.eglPresentationTimeANDROID(display, encSurf, pts)
+    EGL14.eglSwapBuffers(display, encSurf)
   }
 
   /** Per-output geometry: output w, h, rotation (rad), crop zoom, mirror flag. */

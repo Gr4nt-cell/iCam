@@ -222,7 +222,7 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
   /** Gestures run only in photo modes while the camera is live and nothing is being recorded. */
   private fun updateGestures() {
     val photo = mode in PHOTO_MODES
-    val live = active && isAttachedToWindow && recording == null
+    val live = active && isAttachedToWindow && recording == null && ownRec == null
     val on = palmOn && photo && live
     palm.setEnabled(on)
     if (!on) emitGesture(mapOf("kind" to "status", "status" to "off"))
@@ -481,6 +481,7 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
     super.onDetachedFromWindow()
     recording?.stop()
     recording = null
+    if (ownRec != null) stopOwnRecording()
     provider?.unbindAll()
     setRollSensor(false)
     palm.setEnabled(false)
@@ -527,6 +528,7 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
         p.unbindAll()
         camera = null; imageCapture = null; videoCapture = null
         usingNightExtension = false; activeExtension = null; slowFps = 0; horizonCrop = 1f
+        effectPreview = false; macroZoom = null; ownMode = false
         setRollSensor(false)
         if (!active) return@withProvider
         if (mode != "dual") { dualComposed = false; pendingDualRecord = false }
@@ -824,6 +826,43 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
           else -> 1.12f
         }
         proc.onWeakGpu = { reason -> post { emitPortraitStatus(mapOf("blur" to false, "reason" to reason)) } }
+        if (switchable) {
+          // Video / Action: iCam's own recorder. CameraX only feeds the viewfinder stream; the GPU
+          // pipeline draws each frame into a fixed-size encoder, so front/back can change mid-clip.
+          val range = ranges.filter { it.upper == targetFps && it.lower >= minLow && it.lower < targetFps }.minByOrNull { it.lower }
+            ?: ranges.firstOrNull { it.lower == targetFps && it.upper == targetFps }
+          val pb = Preview.Builder()
+            .setResolutionSelector(
+              androidx.camera.core.resolutionselector.ResolutionSelector.Builder()
+                .setAspectRatioStrategy(androidx.camera.core.resolutionselector.AspectRatioStrategy.RATIO_16_9_FALLBACK_AUTO_STRATEGY)
+                .setResolutionStrategy(
+                  androidx.camera.core.resolutionselector.ResolutionStrategy(
+                    if (uhd) android.util.Size(3840, 2160) else android.util.Size(1920, 1080),
+                    androidx.camera.core.resolutionselector.ResolutionStrategy.FALLBACK_RULE_CLOSEST_LOWER_THEN_HIGHER,
+                  ),
+                )
+                .build(),
+            )
+          if (previewStab) pb.setPreviewStabilizationEnabled(true)
+          range?.let { pb.setTargetFrameRate(it) }
+          if (ois) {
+            androidx.camera.camera2.interop.Camera2Interop.Extender(pb)
+              .setCaptureRequestOption(CaptureRequest.LENS_OPTICAL_STABILIZATION_MODE, CaptureRequest.LENS_OPTICAL_STABILIZATION_MODE_ON)
+          }
+          val preview = pb.build().also { it.setSurfaceProvider(previewView.surfaceProvider); currentPreview = it }
+          proc.mirrorVideo = mirror
+          val g = UseCaseGroup.Builder().addUseCase(preview).addEffect(PortraitVideoEffect(proc, CameraEffect.PREVIEW)).build()
+          camera = p.bindToLifecycle(owner, sel, g)
+          proc.fixedRotation = ((camera?.cameraInfo?.sensorRotationDegrees ?: -90) / 90).let { if (it < 0) -1 else it % 4 }
+          ownMode = true
+          encW = if (uhd) 3840 else 1920
+          encH = if (uhd) 2160 else 1080
+          encFps = range?.upper ?: targetFps
+          encBitrate = if (uhd) 60_000_000 else if (encFps >= 60) 30_000_000 else 20_000_000
+          videoCapture = null
+          setRollSensor(horizon)
+          return
+        }
         val group = UseCaseGroup.Builder()
           .addUseCase(newPreview(previewStab, ois))
           .addUseCase(vc)
@@ -1223,6 +1262,15 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
       scheduleRebind()
       return
     }
+    if (ownMode) {
+      if (ownRec != null || startingRec) return
+      if (soundOn) {
+        startingRec = true
+        playSound(android.media.MediaActionSound.START_VIDEO_RECORDING)
+        postDelayed({ startingRec = false; beginOwnRecording() }, 550)
+      } else beginOwnRecording()
+      return
+    }
     val vc0 = videoCapture ?: run { emitError("Video isn't available in this mode"); return }
     if (recording != null || startingRec) return
     // Start tone first, then the microphone, so the tone isn't recorded into the video
@@ -1234,6 +1282,58 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
   }
 
   private var startingRec = false
+
+  /* ---------------- own recorder (Video / Action) ---------------- */
+  private var ownMode = false
+  private var ownRec: OwnRecorder? = null
+  private var ownFile: File? = null
+  private var encW = 1920
+  private var encH = 1080
+  private var encFps = 30
+  private var encBitrate = 20_000_000
+
+  private fun beginOwnRecording() {
+    if (ownRec != null) return
+    val proc = portraitProcessor ?: run { emitError("Video isn't ready yet"); return }
+    val file = File(context.cacheDir, "iCam_${mode}_${System.currentTimeMillis()}.mp4")
+    val mic = audio && ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+    val rec = try {
+      OwnRecorder(file, encW, encH, encFps, encBitrate, mic).also { it.start() }
+    } catch (e: Throwable) {
+      emitRecordingFinished(mapOf("path" to null, "durationMs" to 0.0, "slowMotion" to false, "error" to "Recorder: ${e.message}"))
+      return
+    }
+    ownRec = rec
+    ownFile = file
+    proc.encoder = rec
+    palm.setEnabled(false)
+    keepScreenOn = true
+    rootView?.keepScreenOn = true
+  }
+
+  private fun stopOwnRecording() {
+    val rec = ownRec ?: return
+    portraitProcessor?.encoder = null
+    val file = ownFile
+    rec.stop { ok, durMs, err ->
+      post {
+        ownRec = null
+        ownFile = null
+        keepScreenOn = false
+        rootView?.keepScreenOn = false
+        emitRecordingFinished(
+          mapOf(
+            "path" to if (ok && file != null) file.absolutePath else null,
+            "durationMs" to durMs,
+            "slowMotion" to false,
+            "error" to err,
+          ),
+        )
+        playSound(android.media.MediaActionSound.STOP_VIDEO_RECORDING)
+        updateGestures()
+      }
+    }
+  }
 
   @SuppressLint("MissingPermission")
   private fun beginRecording(vc: VideoCapture<Recorder>) {
@@ -1283,6 +1383,7 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
   }
 
   fun stopRecording() {
+    if (ownRec != null) { stopOwnRecording(); return }
     recording?.stop()
   }
 
@@ -1292,8 +1393,14 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
   @androidx.annotation.OptIn(markerClass = [ExperimentalPersistentRecording::class])
   private fun makePersistent(p: androidx.camera.video.PendingRecording) = p.asPersistentRecording()
 
-  fun pauseRecording() { recording?.pause() }
-  fun resumeRecording() { recording?.resume() }
+  fun pauseRecording() {
+    ownRec?.let { it.pause(); emitRecordingState(mapOf("paused" to true)); return }
+    recording?.pause()
+  }
+  fun resumeRecording() {
+    ownRec?.let { it.resume(); emitRecordingState(mapOf("paused" to false)); return }
+    recording?.resume()
+  }
 
   private fun emitError(message: String) {
     emitError(mapOf("message" to message))
