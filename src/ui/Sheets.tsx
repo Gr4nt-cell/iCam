@@ -21,6 +21,8 @@ type SettingsProps = {
   onMirrorSelfie: (v: boolean) => void;
   palmShutter: boolean;
   onPalmShutter: (v: boolean) => void;
+  shutterSound: boolean;
+  onShutterSound: (v: boolean) => void;
   capabilities: Capabilities | null;
   remember: boolean;
   onRemember: (v: boolean) => void;
@@ -55,6 +57,12 @@ export function SettingsSheet(p: SettingsProps) {
               <Pressable onPress={p.onResetDefaults} style={s.resetBtn}>
                 <Text style={s.resetText}>Reset everything to defaults</Text>
               </Pressable>
+            </Section>
+
+            <Section title="Sound">
+              <Row label="Capture sound" hint="Shutter click for photos, start/stop tones for video">
+                <Toggle value={p.shutterSound} onChange={p.onShutterSound} />
+              </Row>
             </Section>
 
             <Section title="Hands-free shutter">

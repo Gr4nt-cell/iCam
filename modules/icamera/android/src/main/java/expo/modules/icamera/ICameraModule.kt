@@ -182,6 +182,7 @@ class ICameraModule : Module() {
       Prop("nightExtension") { view: ICameraView, v: Boolean -> view.setNightExtension(v) }
       Prop("aspect") { view: ICameraView, v: String -> view.setAspect(v) }
       Prop("bokeh") { view: ICameraView, v: Double -> view.setBokeh(v.toFloat()) }
+      Prop("shutterSound") { view: ICameraView, v: Boolean -> view.setShutterSound(v) }
       Prop("palmShutter") { view: ICameraView, v: Boolean -> view.setPalmShutter(v) }
       Prop("faceSmoothing") { view: ICameraView, v: Double -> view.setFaceSmoothing(v.toFloat()) }
       Prop("filterParams") { view: ICameraView, v: List<Double> -> view.setFilterParams(v.map { it.toFloat() }.toFloatArray()) }

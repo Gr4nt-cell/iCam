@@ -226,6 +226,43 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
     palm.setEnabled(palmOn && photo && live)
   }
 
+  /* ---------------- capture sounds ---------------- */
+  private var soundOn = true
+  private val sounds by lazy {
+    android.media.MediaActionSound().apply {
+      try {
+        load(android.media.MediaActionSound.SHUTTER_CLICK)
+        load(android.media.MediaActionSound.START_VIDEO_RECORDING)
+        load(android.media.MediaActionSound.STOP_VIDEO_RECORDING)
+      } catch (_: Throwable) {}
+    }
+  }
+  fun setShutterSound(v: Boolean) { soundOn = v }
+  private fun playSound(kind: Int) { if (soundOn) try { sounds.play(kind) } catch (_: Throwable) {} }
+
+  /* ---------------- vivid viewfinder ---------------- */
+  /**
+   * Photo modes: a GPU colour matrix on the viewfinder (saturation + a touch of contrast) so the
+   * preview looks like the finished, vivid photo. Video modes get the same look inside the GL
+   * pipeline instead (so the recording matches), and filters render there too.
+   */
+  private fun applyPreviewColor() {
+    val tv = findTexture(previewView) ?: return
+    val vivid = mode in PHOTO_MODES && !effectPreview
+    if (!vivid) { tv.setLayerType(View.LAYER_TYPE_NONE, null); return }
+    val cm = android.graphics.ColorMatrix().apply { setSaturation(1.28f) }
+    val c = 1.06f
+    val t = (1f - c) * 128f
+    cm.postConcat(android.graphics.ColorMatrix(floatArrayOf(c, 0f, 0f, 0f, t, 0f, c, 0f, 0f, t, 0f, 0f, c, 0f, t, 0f, 0f, 0f, 1f, 0f)))
+    val paint = android.graphics.Paint().apply { colorFilter = android.graphics.ColorMatrixColorFilter(cm) }
+    tv.setLayerType(View.LAYER_TYPE_HARDWARE, paint)
+  }
+  private fun findTexture(v: View): android.view.TextureView? {
+    if (v is android.view.TextureView) return v
+    if (v is ViewGroup) for (i in 0 until v.childCount) findTexture(v.getChildAt(i))?.let { return it }
+    return null
+  }
+
   private var faceSmoothing = 0f
   fun setFaceSmoothing(v: Float) {
     faceSmoothing = v.coerceIn(0f, 1f)
@@ -501,6 +538,8 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
           else -> bindPhoto(p, owner)
         }
         applyZoom()
+        applyPreviewColor()
+        postDelayed({ applyPreviewColor() }, 400) // the viewfinder's surface view appears asynchronously
         if (pendingDualRecord && mode == "dual" && dualComposed) {
           pendingDualRecord = false
           postDelayed({ startRecording() }, 250)
@@ -1089,6 +1128,7 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
       val file = File(context.cacheDir, "iCam_${System.currentTimeMillis()}_$i.jpg")
       // Mirroring is applied when the photo is processed (works the same with every capture path)
       val meta = ImageCapture.Metadata()
+      if (i == 0) playSound(android.media.MediaActionSound.SHUTTER_CLICK)
       if (i > 0) ic.flashMode = ImageCapture.FLASH_MODE_OFF
       val ev = currentEv()
       ic.takePicture(
@@ -1184,6 +1224,7 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
         keepScreenOn = false
         rootView?.keepScreenOn = false
         portraitProcessor?.let { it.holdTimeline = false; it.resetTimeline() }
+        playSound(android.media.MediaActionSound.STOP_VIDEO_RECORDING)
         post { updateGestures() }
         val ok = file.exists() && file.length() > 0
         emitRecordingFinished(

@@ -152,6 +152,7 @@ function CameraScreen() {
   const [recSeconds, setRecSeconds] = useState(0);
   const [paused, setPaused] = useState(false);
   const [palmShutter, setPalmShutter] = useState(false);
+  const [shutterSound, setShutterSound] = useState(true);
   // Another app asked iCam for a photo/video (iCam as the default camera)
   const [captureReq] = useState(() => getCaptureRequest());
 
@@ -182,6 +183,7 @@ function CameraScreen() {
     galleryPref: GalleryPref;
     videoV2?: boolean;
     palmShutter?: boolean;
+    shutterSound?: boolean;
   };
   useEffect(() => {
     loadSettings<Saved>().then((v) => {
@@ -194,6 +196,7 @@ function CameraScreen() {
         if (typeof v.mirrorSelfie === 'boolean') setMirrorSelfie(v.mirrorSelfie);
         if (v.filter === 'natural' || v.filter === 'mono') setFilter(v.filter);
         if (typeof v.palmShutter === 'boolean') setPalmShutter(v.palmShutter);
+        if (typeof v.shutterSound === 'boolean') setShutterSound(v.shutterSound);
         if (typeof v.smoothing === 'number') setSmoothing(v.smoothing);
         if (v.pip) setPip(v.pip);
         if (v.manual) setManual(v.manual);
@@ -210,11 +213,11 @@ function CameraScreen() {
     if (!settingsLoaded) return;
     if (!remember) return;
     const t = setTimeout(
-      () => saveSettings({ videoV2: true, palmShutter, remember, mode, photo, video, mirrorSelfie, filter, smoothing, pip, manual, brightness, shadows, aspect, bokeh, galleryPref }),
+      () => saveSettings({ videoV2: true, palmShutter, shutterSound, remember, mode, photo, video, mirrorSelfie, filter, smoothing, pip, manual, brightness, shadows, aspect, bokeh, galleryPref }),
       400,
     );
     return () => clearTimeout(t);
-  }, [settingsLoaded, remember, mode, photo, video, mirrorSelfie, filter, smoothing, pip, manual, brightness, shadows, aspect, bokeh, galleryPref, palmShutter]);
+  }, [settingsLoaded, remember, mode, photo, video, mirrorSelfie, filter, smoothing, pip, manual, brightness, shadows, aspect, bokeh, galleryPref, palmShutter, shutterSound]);
 
   // If the phone turns out too weak for live blur, fall back to normal Video once not recording
   useEffect(() => {
@@ -650,6 +653,7 @@ function CameraScreen() {
           stabilization={video.stabilization}
           faceSmoothing={smoothing}
           palmShutter={palmShutter}
+          shutterSound={shutterSound}
           onGesture={() => onGesture()}
           filterParams={(() => {
             const f = filterByKey(filter);
@@ -938,6 +942,8 @@ function CameraScreen() {
         onMirrorSelfie={setMirrorSelfie}
         palmShutter={palmShutter}
         onPalmShutter={setPalmShutter}
+        shutterSound={shutterSound}
+        onShutterSound={setShutterSound}
         capabilities={caps}
         remember={remember}
         onRemember={(v) => {

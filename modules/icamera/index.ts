@@ -115,6 +115,7 @@ export type ICameraProps = ViewProps & {
   onRecordingState?: (e: NativeEvent<{ paused: boolean }>) => void;
   onGesture?: (e: NativeEvent<{ kind: 'palm' }>) => void;
   palmShutter?: boolean;
+  shutterSound?: boolean;
 
   onReady?: (e: NativeEvent<ReadyEvent>) => void;
   onError?: (e: NativeEvent<{ message: string }>) => void;

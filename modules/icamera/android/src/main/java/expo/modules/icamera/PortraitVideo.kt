@@ -925,6 +925,12 @@ class PortraitProcessor : SurfaceProcessor {
           float w = uTemporal * (1.0 - smoothstep(0.035, 0.11, d));
           t = mix(t, p, w);
         }
+        // vibrance: richer colour, strongest on muted tones (skin and saturated colours protected)
+        {
+          float l = dot(t, LW);
+          float sat = max(max(t.r, t.g), t.b) - min(min(t.r, t.g), t.b);
+          t = clamp(mix(vec3(l), t, 1.0 + 0.32 * (1.0 - sat)), 0.0, 1.0);
+        }
         float detail = dot(tone(c) - tone(n), LW);
         float cored = sign(detail) * max(abs(detail) - 0.012, 0.0);
         t += clamp(cored, -0.06, 0.06) * uSharp * 2.0;
