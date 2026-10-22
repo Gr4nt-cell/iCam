@@ -62,6 +62,7 @@ export type ReadyEvent = {
   zoomMin: number;
   zoomMax: number;
   hasFlash: boolean;
+  horizonLock?: boolean;
 };
 
 export type ICameraProps = ViewProps & {
@@ -85,7 +86,7 @@ export type ICameraProps = ViewProps & {
   videoQuality?: 'uhd' | 'fhd';
   fps?: number;
   hdrVideo?: boolean;
-  stabilization?: 'off' | 'standard' | 'cinematic';
+  stabilization?: 'off' | 'standard' | 'cinematic' | 'horizon';
   nightExtension?: boolean;
   /** Dual mode: centre (0..1, y down) and width share of the small window */
   dualPip?: { x: number; y: number; size: number };

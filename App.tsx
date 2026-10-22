@@ -333,7 +333,16 @@ function CameraScreen() {
         if (mask && mask.coverage > 0.02) portrait = { maskPath: mask.maskPath, strength: bokeh };
         else flashToast('No subject found — saved without background blur', 3000);
       }
-      const uri = await processSingle(paths[0], smoothing, filter, aspectRatio, res.meta?.[0], portrait);
+      const uri = await processSingle(paths[0], {
+        smoothing,
+        filter,
+        aspect: aspectRatio,
+        meta: res.meta?.[0],
+        portrait,
+        // Mirror selfie: saved photo matches the mirrored preview
+        mirror: facing === 'front' && mirrorSelfie,
+        enhance: pro ? 0.3 : ext ? 0.45 : 1,
+      });
       const info = pro
         ? 'Pro'
         : night
@@ -351,7 +360,7 @@ function CameraScreen() {
       setProcessing(false);
       setBusy(false);
     }
-  }, [busy, ready, mode, smoothing, filter, aspectRatio, bokeh, captureBurst, saveToGallery, flashToast]);
+  }, [busy, ready, mode, facing, mirrorSelfie, smoothing, filter, aspectRatio, bokeh, captureBurst, saveToGallery, flashToast]);
 
   /* ---------- capture: video ---------- */
   const toggleRecording = useCallback(async () => {
@@ -503,8 +512,8 @@ function CameraScreen() {
             : mode === 'dual'
               ? 'DUAL'
               : mode === 'action'
-                ? 'ACTION · 60'
-                : `${video.resolution === '4k' ? '4K' : '1080p'} · ${video.fps}${video.hdr ? ' · HDR' : ''}`;
+                ? 'ACTION · HORIZON LOCK'
+                : `${video.resolution === '4k' ? '4K' : '1080p'} · ${video.fps}${video.hdr ? ' · HDR' : ''}${video.stabilization === 'horizon' ? ' · LOCK' : ''}`;
 
   return (
     <View style={styles.root}>
@@ -634,7 +643,19 @@ function CameraScreen() {
               <Text style={styles.aspectChip}>{aspect === 'full' ? 'FULL' : aspect}</Text>
             </Pressable>
           )}
-          {facing === 'front' && mode !== 'dual' && (
+          {mode === 'video' && (
+            <Pressable
+              hitSlop={8}
+              onPress={() => {
+                const on = video.stabilization !== 'horizon';
+                setVideo((v) => ({ ...v, stabilization: on ? 'horizon' : 'cinematic' }));
+                flashToast(on ? 'Horizon lock on' : 'Horizon lock off');
+              }}
+            >
+              <MaterialCommunityIcons name="rotate-left" size={22} color={video.stabilization === 'horizon' ? '#ffd76a' : '#fff'} />
+            </Pressable>
+          )}
+          {(facing === 'front' || mode === 'dual') && (
             <Pressable hitSlop={8} onPress={() => setMirrorSelfie((v) => !v)}>
               <MaterialCommunityIcons name="flip-horizontal" size={22} color={mirrorSelfie ? '#ffd76a' : '#fff'} />
             </Pressable>

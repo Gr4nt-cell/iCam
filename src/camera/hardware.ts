@@ -6,7 +6,7 @@ export type VideoSettings = {
   resolution: '4k' | '1080p';
   fps: 30 | 60;
   hdr: boolean;
-  stabilization: 'cinematic' | 'standard' | 'off';
+  stabilization: 'cinematic' | 'standard' | 'off' | 'horizon';
 };
 
 export type PhotoSettings = {

@@ -57,6 +57,19 @@ class PortraitProcessor : SurfaceProcessor {
 
   @Volatile var strength = 0.6f
 
+  /** Background blur on/off (off = this processor only does horizon lock / mirroring). */
+  @Volatile var blurEnabled = true
+
+  /** Horizon lock: counter-rotate every frame by the phone's roll so the horizon stays level. */
+  @Volatile var horizonLock = false
+  /** Phone roll in radians (0 = upright portrait, + = rotated anticlockwise), from the gravity sensor. */
+  @Volatile var targetRoll = 0f
+  @Volatile var frontCamera = false
+  /** Mirror the recorded video (selfie mirroring done here so it works with every effect). */
+  @Volatile var mirrorVideo = false
+  private var roll = 0f
+  private var rollInit = false
+
   /** Clockwise quarter turns that make the camera buffer upright (from the sensor orientation). */
   @Volatile var fixedRotation = -1
 
@@ -183,21 +196,49 @@ class PortraitProcessor : SurfaceProcessor {
     frame++
 
     val t0 = System.nanoTime()
-    if (!blurDisabled && frame % 3L == 0L && !segBusy) captureForSegmentation()
+    val blurOn = blurEnabled && !blurDisabled
+    if (blurOn && frame % 3L == 0L && !segBusy) captureForSegmentation()
     uploadMask()
+
+    // Smooth the roll (gravity is already low-noise; this removes hand tremor) with angle wrap
+    if (horizonLock) {
+      if (!rollInit) { roll = targetRoll; rollInit = true }
+      var d = targetRoll - roll
+      while (d > Math.PI) d -= (2 * Math.PI).toFloat()
+      while (d < -Math.PI) d += (2 * Math.PI).toFloat()
+      roll += d * 0.18f
+    } else rollInit = false
+    val stDet = stM[0] * stM[5] - stM[4] * stM[1]
 
     for ((out, p) in outputs) {
       val (es, size) = p
       if (!EGL14.eglMakeCurrent(display, es, es, context)) continue
       GLES20.glViewport(0, 0, size.width, size.height)
       out.updateTransformMatrix(outM, stM)
-      drawBlur(outM)
+      val isVideo = (out.targets and CameraEffect.VIDEO_CAPTURE) != 0
+      // Did CameraX already mirror this output? (handedness of its transform differs from the camera's)
+      val outDet = outM[0] * outM[5] - outM[4] * outM[1]
+      val cxMirrored = (outDet > 0f) != (stDet > 0f)
+      val flip = isVideo && frontCamera && mirrorVideo && !cxMirrored
+      var angle = 0f
+      var zoomK = 1f
+      if (horizonLock) {
+        // In the camera's own (unmirrored) frame a front lens sees the roll reversed
+        angle = if (frontCamera) -roll else roll
+        if (cxMirrored) angle = -angle
+        val w = size.width.toFloat()
+        val h = size.height.toFloat()
+        // Crop that keeps the frame filled at any rotation angle
+        zoomK = (Math.hypot(w.toDouble(), h.toDouble()) / minOf(w, h)).toFloat()
+      }
+      xform = floatArrayOf(size.width.toFloat(), size.height.toFloat(), angle, zoomK, if (flip) 1f else 0f)
+      if (blurOn) drawBlur(outM) else drawCopy(outM)
       EGLExt.eglPresentationTimeANDROID(display, es, s.timestamp)
       EGL14.eglSwapBuffers(display, es)
     }
 
     // Runtime check: if blurring keeps us under ~22 fps for ~2 s, switch it off
-    if (!blurDisabled && maskReady && frame > 30) {
+    if (blurOn && maskReady && frame > 30) {
       val ms = (System.nanoTime() - t0) / 1_000_000.0
       slowFrames = if (ms > 45.0) slowFrames + 1 else maxOf(0, slowFrames - 1)
       if (slowFrames > 45) disableBlur("Background blur was too slow on this phone and has been turned off")
@@ -220,9 +261,31 @@ class PortraitProcessor : SurfaceProcessor {
     ).any { g.contains(it) }
   }
 
+  /** Per-output geometry: output w, h, rotation (rad), crop zoom, mirror flag. */
+  private var xform = floatArrayOf(1f, 1f, 0f, 1f, 0f)
+  private val identityXform = floatArrayOf(1f, 1f, 0f, 1f, 0f)
+
+  private fun applyXform(prog: Int, x: FloatArray) {
+    GLES20.glUniform2f(GLES20.glGetUniformLocation(prog, "uOutSize"), x[0], x[1])
+    GLES20.glUniform1f(GLES20.glGetUniformLocation(prog, "uAngle"), x[2])
+    GLES20.glUniform1f(GLES20.glGetUniformLocation(prog, "uZoom"), x[3])
+    GLES20.glUniform1f(GLES20.glGetUniformLocation(prog, "uFlip"), x[4])
+  }
+
+  private fun drawCopy(texMatrix: FloatArray) {
+    GLES20.glUseProgram(copyProg)
+    bindQuad(copyProg, texMatrix)
+    applyXform(copyProg, xform)
+    GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
+    GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, oesTex)
+    GLES20.glUniform1i(GLES20.glGetUniformLocation(copyProg, "sTex"), 0)
+    GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
+  }
+
   private fun drawBlur(texMatrix: FloatArray) {
     GLES20.glUseProgram(blurProg)
     bindQuad(blurProg, texMatrix)
+    applyXform(blurProg, xform)
     GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
     GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, oesTex)
     GLES20.glUniform1i(GLES20.glGetUniformLocation(blurProg, "sTex"), 0)
@@ -259,6 +322,7 @@ class PortraitProcessor : SurfaceProcessor {
     GLES20.glViewport(0, 0, w, h)
     GLES20.glUseProgram(copyProg)
     bindQuad(copyProg, stM)
+    applyXform(copyProg, identityXform)
     GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
     GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, oesTex)
     GLES20.glUniform1i(GLES20.glGetUniformLocation(copyProg, "sTex"), 0)
@@ -445,10 +509,22 @@ class PortraitProcessor : SurfaceProcessor {
       attribute vec4 aPos;
       attribute vec4 aTex;
       uniform mat4 uTexMatrix;
+      uniform vec2 uOutSize;
+      uniform float uAngle;
+      uniform float uZoom;
+      uniform float uFlip;
       varying vec2 vTex;
       void main() {
         gl_Position = aPos;
-        vTex = (uTexMatrix * aTex).xy;
+        vec2 t = aTex.xy;
+        if (uFlip > 0.5) t.x = 1.0 - t.x;
+        // rotate (by -angle, so the picture turns by +angle) and crop around the centre, in pixels
+        vec2 p = (t - 0.5) * uOutSize;
+        float c = cos(uAngle);
+        float s = sin(uAngle);
+        p = vec2(c * p.x + s * p.y, -s * p.x + c * p.y) / uZoom;
+        t = p / uOutSize + 0.5;
+        vTex = (uTexMatrix * vec4(t, 0.0, 1.0)).xy;
       }
     """
 

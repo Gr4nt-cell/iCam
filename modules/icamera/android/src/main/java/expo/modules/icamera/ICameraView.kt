@@ -4,6 +4,10 @@ import android.Manifest
 import android.annotation.SuppressLint
 import android.content.Context
 import android.content.pm.PackageManager
+import android.hardware.Sensor
+import android.hardware.SensorEvent
+import android.hardware.SensorEventListener
+import android.hardware.SensorManager
 import android.hardware.camera2.CaptureRequest
 import android.hardware.camera2.params.RggbChannelVector
 import android.util.Range
@@ -284,7 +288,45 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
     }
   }
 
-  fun setZoom(v: Float) { zoom = v; camera?.cameraControl?.setZoomRatio(v) }
+  fun setZoom(v: Float) { zoom = v; applyZoom() }
+
+  /** Horizon lock crops by this factor; the lens zooms out by the same amount so framing stays put. */
+  private var horizonCrop = 1f
+
+  private fun applyZoom() {
+    val cam = camera ?: return
+    if (horizonCrop > 1.01f) {
+      val zMin = cam.cameraInfo.zoomState.value?.minZoomRatio ?: 1f
+      cam.cameraControl.setZoomRatio(maxOf(zMin, zoom / horizonCrop))
+    } else cam.cameraControl.setZoomRatio(zoom)
+  }
+
+  /* ---- gravity sensor for horizon lock ---- */
+  private var sensorOn = false
+  private val gravity = FloatArray(3)
+  private val rollListener = object : SensorEventListener {
+    override fun onSensorChanged(e: SensorEvent) {
+      if (e.sensor.type == Sensor.TYPE_ACCELEROMETER) {
+        for (i in 0..2) gravity[i] = gravity[i] * 0.85f + e.values[i] * 0.15f
+      } else for (i in 0..2) gravity[i] = e.values[i]
+      val gx = gravity[0]
+      val gy = gravity[1]
+      // Phone lying flat: the roll is undefined, keep the last angle
+      if (Math.hypot(gx.toDouble(), gy.toDouble()) < 3.0) return
+      portraitProcessor?.targetRoll = Math.atan2(gx.toDouble(), gy.toDouble()).toFloat()
+    }
+    override fun onAccuracyChanged(s: Sensor?, a: Int) {}
+  }
+
+  private fun setRollSensor(on: Boolean) {
+    if (on == sensorOn) return
+    val sm = context.getSystemService(Context.SENSOR_SERVICE) as? SensorManager ?: return
+    if (on) {
+      val sensor = sm.getDefaultSensor(Sensor.TYPE_GRAVITY) ?: sm.getDefaultSensor(Sensor.TYPE_ACCELEROMETER) ?: return
+      sm.registerListener(rollListener, sensor, SensorManager.SENSOR_DELAY_GAME)
+    } else sm.unregisterListener(rollListener)
+    sensorOn = on
+  }
   fun setEvBias(v: Double) { ev = v; applyControls() }
   fun setIso(v: Int) { iso = v; applyControls() }
   fun setShutterNs(v: Long) { shutterNs = v; applyControls() }
@@ -315,6 +357,7 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
     recording?.stop()
     recording = null
     provider?.unbindAll()
+    setRollSensor(false)
     portraitProcessor?.release()
     portraitProcessor = null
     camera = null
@@ -352,7 +395,8 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
       try {
         p.unbindAll()
         camera = null; imageCapture = null; videoCapture = null
-        usingNightExtension = false; activeExtension = null; slowFps = 0
+        usingNightExtension = false; activeExtension = null; slowFps = 0; horizonCrop = 1f
+        setRollSensor(false)
         if (!active) return@withProvider
         if (mode != "dual") { dualComposed = false; pendingDualRecord = false }
         pipContainer.visibility = View.GONE
@@ -363,7 +407,7 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
           "pro" -> bindPro(p, owner)
           else -> bindPhoto(p, owner)
         }
-        camera?.cameraControl?.setZoomRatio(zoom)
+        applyZoom()
         if (pendingDualRecord && mode == "dual" && dualComposed) {
           pendingDualRecord = false
           postDelayed({ startRecording() }, 250)
@@ -380,6 +424,7 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
             "zoomMin" to (z?.minZoomRatio ?: 1f).toDouble(),
             "zoomMax" to (z?.maxZoomRatio ?: 1f).toDouble(),
             "hasFlash" to (camera?.cameraInfo?.hasFlashUnit() ?: false),
+            "horizonLock" to (horizonCrop > 1.01f),
           ),
         )
       } catch (e: Throwable) {
@@ -497,13 +542,17 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
     // "cinematic"), else video EIS; plus optical stabilization when the lens has OIS.
     // Portrait video always uses the strongest (cinematic) stabilization for smooth footage
     // Stabilization crops the frame; on the front camera that would zoom selfies in, so skip it there
-    val wantStab = !selfieVideo && (action || portraitVideo || stabilization != "off")
-    val previewStab = wantStab && (action || portraitVideo || stabilization == "cinematic") &&
+    val horizon = action || stabilization == "horizon"
+    val wantStab = horizon || (!selfieVideo && (portraitVideo || stabilization != "off"))
+    val previewStab = wantStab && (action || horizon || portraitVideo || stabilization == "cinematic") &&
       (try { Preview.getPreviewCapabilities(info).isStabilizationSupported } catch (e: Throwable) { false })
     val videoStabOk = try { Recorder.getVideoCapabilities(info).isStabilizationSupported } catch (e: Throwable) { false }
     val ois = wantStab && oisSupported(info)
+    // Our GL effect handles background blur, horizon lock and selfie mirroring; it mirrors the
+    // recording itself, so CameraX mirroring is off whenever the effect runs
+    val useEffect = portraitVideo || horizon || (selfieVideo && mirror)
     val vb = VideoCapture.Builder(recorder)
-      .setMirrorMode(if (mirror) MirrorMode.MIRROR_MODE_ON_FRONT_ONLY else MirrorMode.MIRROR_MODE_OFF)
+      .setMirrorMode(if (mirror && !useEffect) MirrorMode.MIRROR_MODE_ON_FRONT_ONLY else MirrorMode.MIRROR_MODE_OFF)
     if (wantStab && !previewStab && videoStabOk) vb.setVideoStabilizationEnabled(true)
 
     val ranges = info.supportedFrameRateRanges
@@ -517,11 +566,15 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
       else if (supported.contains(DynamicRange.HDR_UNSPECIFIED_10_BIT)) vb.setDynamicRange(DynamicRange.HDR_UNSPECIFIED_10_BIT)
     }
     val vc = vb.build()
-    if (portraitVideo) {
-      // Real-time background blur on preview + recording via a GPU effect
+    if (useEffect) {
+      // GPU effect on preview + recording: background blur, horizon lock, mirroring
       try {
         val proc = portraitProcessor ?: PortraitProcessor().also { portraitProcessor = it }
         proc.strength = bokeh
+        proc.blurEnabled = portraitVideo
+        proc.horizonLock = horizon
+        proc.frontCamera = selfieVideo
+        proc.mirrorVideo = mirror
         proc.onWeakGpu = { reason -> post { emitPortraitStatus(mapOf("blur" to false, "reason" to reason)) } }
         val group = UseCaseGroup.Builder()
           .addUseCase(newPreview(previewStab, ois))
@@ -531,21 +584,35 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
         camera = p.bindToLifecycle(owner, sel, group)
         proc.fixedRotation = ((camera?.cameraInfo?.sensorRotationDegrees ?: -90) / 90).let { if (it < 0) -1 else it % 4 }
         videoCapture = vc
+        if (horizon) {
+          // 16:9 → ~2.0×, 4:3 → ~1.67× crop; compensated by zooming the lens out (ultrawide when available)
+          horizonCrop = if (selfieVideo) 5f / 3f else 2.04f
+          setRollSensor(true)
+        } else setRollSensor(false)
         return
       } catch (e: Throwable) {
         p.unbindAll()
-        emitError("Background blur isn't supported here – recording without it")
+        emitError(if (portraitVideo) "Background blur isn't supported here – recording without it" else "Horizon lock isn't supported here – using standard stabilization")
       }
     }
+    setRollSensor(false)
+    // Plain path (effect not used or failed): CameraX does the selfie mirroring
+    val plainVc = if (useEffect) {
+      VideoCapture.Builder(recorder)
+        .setMirrorMode(if (mirror) MirrorMode.MIRROR_MODE_ON_FRONT_ONLY else MirrorMode.MIRROR_MODE_OFF)
+        .also { if (wantStab && !previewStab && videoStabOk) it.setVideoStabilizationEnabled(true) }
+        .build()
+    } else vc
     camera = try {
-      p.bindToLifecycle(owner, sel, newPreview(previewStab, ois), vc)
+      p.bindToLifecycle(owner, sel, newPreview(previewStab, ois), plainVc).also { videoCapture = plainVc }
     } catch (e: Throwable) {
       // Fall back to a plain configuration the device is guaranteed to support
       p.unbindAll()
-      val plain = VideoCapture.withOutput(buildRecorder(Quality.FHD, 20_000_000))
+      val plain = VideoCapture.Builder(buildRecorder(Quality.FHD, 20_000_000))
+        .setMirrorMode(if (mirror) MirrorMode.MIRROR_MODE_ON_FRONT_ONLY else MirrorMode.MIRROR_MODE_OFF)
+        .build()
       p.bindToLifecycle(owner, sel, newPreview(), plain).also { videoCapture = plain }
     }
-    if (videoCapture == null) videoCapture = vc
   }
 
   private fun bindPro(p: ProcessCameraProvider, owner: LifecycleOwner) {
@@ -575,7 +642,9 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
     if (Recorder.getHighSpeedVideoCapabilities(info) == null) {
       throw IllegalStateException("Slow motion isn't supported by this camera")
     }
-    val vc = VideoCapture.withOutput(Recorder.Builder().build())
+    val vc = VideoCapture.Builder(Recorder.Builder().build())
+      .setMirrorMode(if (mirror) MirrorMode.MIRROR_MODE_ON_FRONT_ONLY else MirrorMode.MIRROR_MODE_OFF)
+      .build()
     val builder = HighSpeedVideoSessionConfig.Builder(vc)
     builder.setPreview(newPreview())
     builder.setSlowMotionEnabled(true)
@@ -619,7 +688,10 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
       return
     }
 
-    val vc = VideoCapture.withOutput(buildRecorder(Quality.FHD, 20_000_000))
+    // Mirror mode is applied per camera: only the selfie stream is mirrored in the composed video
+    val vc = VideoCapture.Builder(buildRecorder(Quality.FHD, 20_000_000))
+      .setMirrorMode(if (mirror) MirrorMode.MIRROR_MODE_ON_FRONT_ONLY else MirrorMode.MIRROR_MODE_OFF)
+      .build()
     val group = UseCaseGroup.Builder().addUseCase(newPreview()).addUseCase(vc).build()
 
     // Picture-in-picture box in normalized device coordinates (origin centre, +y up).
@@ -784,7 +856,8 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
 
     fun shoot(i: Int) {
       val file = File(context.cacheDir, "iCam_${System.currentTimeMillis()}_$i.jpg")
-      val meta = ImageCapture.Metadata().apply { isReversedHorizontal = facing == "front" && mirror }
+      // Mirroring is applied when the photo is processed (works the same with every capture path)
+      val meta = ImageCapture.Metadata()
       if (i > 0) ic.flashMode = ImageCapture.FLASH_MODE_OFF
       val ev = currentEv()
       ic.takePicture(

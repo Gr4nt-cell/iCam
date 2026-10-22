@@ -77,10 +77,13 @@ export function SettingsSheet(p: SettingsProps) {
                   onChange={(v) => p.onVideo({ ...p.video, fps: Number(v) as VideoSettings['fps'] })}
                 />
               </Row>
-              <Row label="Stabilization">
+              <Row
+                label="Stabilization"
+                hint={p.video.stabilization === 'horizon' ? 'Horizon lock keeps the horizon level even if you tilt or spin the phone (crops in, uses the ultrawide when available)' : undefined}
+              >
                 <Segmented
-                  options={['off', 'standard', 'cinematic']}
-                  labels={['Off', 'Standard', 'Cinematic']}
+                  options={['off', 'standard', 'cinematic', 'horizon']}
+                  labels={['Off', 'Std', 'Cinema', 'Horizon']}
                   value={p.video.stabilization}
                   onChange={(v) => p.onVideo({ ...p.video, stabilization: v as VideoSettings['stabilization'] })}
                 />
