@@ -616,8 +616,13 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
 
   @OptIn(ExperimentalCamera2Interop::class)
   @androidx.annotation.OptIn(markerClass = [ExperimentalCamera2Interop::class])
+  @OptIn(ExperimentalCamera2Interop::class)
+  @androidx.annotation.OptIn(markerClass = [ExperimentalCamera2Interop::class])
   private fun newPreview(stabilized: Boolean = false, ois: Boolean = false, matchAspect: Boolean = false): Preview {
     val b = Preview.Builder()
+    // Anti-flicker for mains-powered lights (50/60 Hz): stops banding and brightness pulsing indoors
+    androidx.camera.camera2.interop.Camera2Interop.Extender(b)
+      .setCaptureRequestOption(CaptureRequest.CONTROL_AE_ANTIBANDING_MODE, CaptureRequest.CONTROL_AE_ANTIBANDING_MODE_AUTO)
     if (matchAspect) b.setResolutionSelector(resolutionSelector())
     if (stabilized) b.setPreviewStabilizationEnabled(true)
     if (ois) {
@@ -812,7 +817,9 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
     // of going dark; it runs at the full rate whenever there is enough light
     // only frame-rate ranges both cameras support
     val ranges = info.supportedFrameRateRanges.filter { r -> otherInfo == null || otherInfo.supportedFrameRateRanges.contains(r) }
-    val minLow = if (targetFps >= 60) 30 else 15
+    // Front cameras flicker in the dark with a variable frame rate (exposure jumps as the rate
+    // changes), so selfies keep a fixed rate; the main camera may slow down to gather light
+    val minLow = if (selfieVideo) targetFps else if (targetFps >= 60) 30 else 15
     (ranges.filter { it.upper == targetFps && it.lower >= minLow && it.lower < targetFps }.minByOrNull { it.lower }
       ?: ranges.firstOrNull { it.lower == targetFps && it.upper == targetFps })
       ?.let { vb.setTargetFrameRate(it) }

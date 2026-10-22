@@ -546,7 +546,9 @@ class PortraitProcessor : SurfaceProcessor {
     val mean = (sum / n).toFloat()
     // Aim for a natural mid-grey; never darken, at most ~2.6× in the shadows
     val target = (0.40f / maxOf(mean, 0.03f)).coerceIn(1f, 2.6f)
-    gain += (target - gain) * 0.2f
+    // Slow, steady brightening: ignore small changes (sensor noise / camera exposure steps) and
+    // ease toward the target, so dim scenes don't pulse
+    if (Math.abs(target - gain) / gain > 0.06f) gain += (target - gain) * 0.06f
     // Curve y' = (1 - e^(-a·y)) / (1 - e^(-a)): shadow slope = gain, highlights roll off smoothly
     if (gain < 1.02f) { curveA = 0f; curveNorm = 1f } else {
       var lo = 0.0; var hi = 20.0
