@@ -490,7 +490,8 @@ function CameraScreen() {
   }, [recording, paused]);
 
   // Front/back can be switched mid-recording in Video and Action (the clip continues)
-  const canFlipWhileRecording = false; // Android's recorder can't switch cameras mid-clip
+  // Video / Action: switching cameras mid-recording records a new piece; pieces are joined at the end
+  const canFlipWhileRecording = mode === 'video' || mode === 'action';
 
   const runCountdown = useCallback(async (secs: number) => {
     for (let t = secs; t > 0; t--) {
@@ -719,11 +720,21 @@ function CameraScreen() {
             burstWaiter.current = null;
             w?.(e.nativeEvent);
           }}
-          onRecordingState={(e) => setPaused(e.nativeEvent.paused)}
+          onRecordingState={(e) => {
+            const st = e.nativeEvent as { paused?: boolean; merging?: boolean };
+            if (st.merging) {
+              setProcessing(true);
+              flashToast('Joining front and back clips…', 4000);
+            } else if (typeof st.paused === 'boolean') setPaused(st.paused);
+          }}
           onRecordingFinished={async (e) => {
             setRecording(false);
             setPaused(false);
+            setProcessing(false);
             const { path, durationMs, slowMotion, error } = e.nativeEvent;
+            const extra = (e.nativeEvent as { extraPaths?: string[] }).extraPaths ?? [];
+            for (const x of extra) await saveToGallery(`file://${x}`).catch(() => undefined);
+            if (error && path) flashToast(error, 4000);
             if (!path) {
               flashToast(error ?? 'Recording failed', 4000);
               return;

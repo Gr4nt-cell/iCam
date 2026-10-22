@@ -128,7 +128,7 @@ export type ICameraProps = ViewProps & {
   /** Portrait video background blur strength 0..1 */
   bokeh?: number;
   onPortraitStatus?: (e: NativeEvent<{ blur: boolean; reason?: string }>) => void;
-  onRecordingState?: (e: NativeEvent<{ paused: boolean }>) => void;
+  onRecordingState?: (e: NativeEvent<{ paused?: boolean; merging?: boolean }>) => void;
   onGesture?: (e: NativeEvent<{ kind: 'palm' | 'status'; status?: string }>) => void;
   palmShutter?: boolean;
   shutterSound?: boolean;

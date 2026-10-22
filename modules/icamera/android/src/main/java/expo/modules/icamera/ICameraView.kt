@@ -521,8 +521,12 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
   private fun rebind() {
     if (!isAttachedToWindow) return
     if (recording != null) {
-      // A persistent recording keeps going while we move it to the other camera
-      if (persistentRec && (mode == "video" || mode == "action")) switchCameraWhileRecording()
+      // Front/back switch mid-video (Xiaomi-style): close this piece, re-open on the other camera,
+      // keep recording into a new piece; pieces are joined into one video when recording stops.
+      if (!segmentSwitching && (mode == "video" || mode == "action")) {
+        segmentSwitching = true
+        recording?.stop()
+      }
       return
     }
     val owner = appContext.currentActivity as? LifecycleOwner
@@ -1367,8 +1371,16 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
   }
 
   @SuppressLint("MissingPermission")
-  private fun beginRecording(vc: VideoCapture<Recorder>) {
+  private fun beginRecording(vc: VideoCapture<Recorder>, continuing: Boolean = false) {
     if (recording != null) return
+    if (!continuing) {
+      segments.clear()
+      segmentMs = 0.0
+      // How the phone is held when recording starts decides the video's orientation (like the
+      // built-in camera app), and stays the same for every piece of a multi-camera video
+      sessionRotation = when (deviceDeg) { 90 -> android.view.Surface.ROTATION_270; 180 -> android.view.Surface.ROTATION_180; 270 -> android.view.Surface.ROTATION_90; else -> android.view.Surface.ROTATION_0 }
+    }
+    try { vc.targetRotation = sessionRotation } catch (_: Throwable) {}
     val file = File(context.cacheDir, "iCam_${mode}_${System.currentTimeMillis()}.mp4")
     var pending = vc.output.prepareRecording(context, FileOutputOptions.Builder(file).build())
     val micGranted = ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
@@ -1390,6 +1402,24 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
       if (event is VideoRecordEvent.Finalize) {
         recording = null
         persistentRec = false
+        val okPiece = file.exists() && file.length() > 0
+        if (segmentSwitching) {
+          // A camera switch: keep this piece, bind the other camera, then record the next piece
+          if (okPiece) { segments.add(file); segmentMs += event.recordingStats.recordedDurationNanos / 1_000_000.0 }
+          rebind()
+          postDelayed({ continueAfterSwitch() }, 350)
+          return@start
+        }
+        if (segments.isNotEmpty()) {
+          // Last piece of a multi-camera video: join everything into one file
+          if (okPiece) { segments.add(file); segmentMs += event.recordingStats.recordedDurationNanos / 1_000_000.0 }
+          keepScreenOn = false
+          rootView?.keepScreenOn = false
+          playSound(android.media.MediaActionSound.STOP_VIDEO_RECORDING)
+          post { updateGestures() }
+          finishMultiCamera()
+          return@start
+        }
         keepScreenOn = false
         rootView?.keepScreenOn = false
         portraitProcessor?.let { it.holdTimeline = false; it.resetTimeline() }
@@ -1414,10 +1444,97 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
 
   fun stopRecording() {
     if (ownRec != null) { stopOwnRecording(); return }
+    // Stopped while switching cameras: finish with the pieces recorded so far
+    if (segmentSwitching && recording == null) { stopAfterSwitch = true; return }
     recording?.stop()
   }
 
+  private var stopAfterSwitch = false
+
   private var persistentRec = false
+
+  /* ---------------- multi-camera video (switch front/back mid-recording) ---------------- */
+  private val segments = ArrayList<File>()
+  private var segmentMs = 0.0
+  private var segmentSwitching = false
+  private var sessionRotation = android.view.Surface.ROTATION_0
+
+  /** After the other camera is bound, start the next piece (retries while the camera opens). */
+  private fun continueAfterSwitch(tries: Int = 0) {
+    val vc = videoCapture
+    if (vc == null || camera == null) {
+      if (tries < 20) postDelayed({ continueAfterSwitch(tries + 1) }, 200)
+      else { segmentSwitching = false; finishMultiCamera() }
+      return
+    }
+    segmentSwitching = false
+    if (stopAfterSwitch) {
+      stopAfterSwitch = false
+      keepScreenOn = false
+      rootView?.keepScreenOn = false
+      playSound(android.media.MediaActionSound.STOP_VIDEO_RECORDING)
+      updateGestures()
+      finishMultiCamera()
+      return
+    }
+    beginRecording(vc, continuing = true)
+    emitRecordingState(mapOf("paused" to false))
+  }
+
+  /** Joins the pieces with Media3 Transformer: one video, same size and orientation throughout. */
+  @androidx.annotation.OptIn(markerClass = [androidx.media3.common.util.UnstableApi::class])
+  private fun finishMultiCamera() {
+    val parts = ArrayList(segments)
+    segments.clear()
+    val dur = segmentMs
+    if (parts.isEmpty()) {
+      emitRecordingFinished(mapOf("path" to null, "durationMs" to 0.0, "slowMotion" to false, "error" to "Nothing was recorded"))
+      return
+    }
+    if (parts.size == 1) {
+      emitRecordingFinished(mapOf("path" to parts[0].absolutePath, "durationMs" to dur, "slowMotion" to false))
+      return
+    }
+    emitRecordingState(mapOf("merging" to true))
+    val portrait = sessionRotation == android.view.Surface.ROTATION_0 || sessionRotation == android.view.Surface.ROTATION_180
+    val w = if (portrait) 1080 else 1920
+    val h = if (portrait) 1920 else 1080
+    val out = File(context.cacheDir, "iCam_video_${System.currentTimeMillis()}.mp4")
+    try {
+      val present = androidx.media3.effect.Presentation.createForWidthAndHeight(w, h, androidx.media3.effect.Presentation.LAYOUT_SCALE_TO_FIT_WITH_CROP)
+      val items = parts.map { f ->
+        androidx.media3.transformer.EditedMediaItem.Builder(androidx.media3.common.MediaItem.fromUri(android.net.Uri.fromFile(f)))
+          .setEffects(androidx.media3.transformer.Effects(emptyList(), listOf(present)))
+          .build()
+      }
+      val composition = androidx.media3.transformer.Composition.Builder(listOf(androidx.media3.transformer.EditedMediaItemSequence(items))).build()
+      val transformer = androidx.media3.transformer.Transformer.Builder(context)
+        .setVideoMimeType(androidx.media3.common.MimeTypes.VIDEO_H264)
+        .setAudioMimeType(androidx.media3.common.MimeTypes.AUDIO_AAC)
+        .addListener(object : androidx.media3.transformer.Transformer.Listener {
+          override fun onCompleted(c: androidx.media3.transformer.Composition, r: androidx.media3.transformer.ExportResult) {
+            parts.forEach { try { it.delete() } catch (_: Throwable) {} }
+            emitRecordingFinished(mapOf("path" to out.absolutePath, "durationMs" to dur, "slowMotion" to false))
+          }
+          override fun onError(c: androidx.media3.transformer.Composition, r: androidx.media3.transformer.ExportResult, e: androidx.media3.transformer.ExportException) {
+            // Couldn't join: keep every piece (each is a valid video) rather than lose anything
+            emitRecordingFinished(mapOf(
+              "path" to parts[0].absolutePath, "durationMs" to dur, "slowMotion" to false,
+              "extraPaths" to parts.drop(1).map { it.absolutePath },
+              "error" to "Couldn't join the clips (${e.errorCodeName}); saved them separately",
+            ))
+          }
+        })
+        .build()
+      transformer.start(composition, out.absolutePath)
+    } catch (e: Throwable) {
+      emitRecordingFinished(mapOf(
+        "path" to parts[0].absolutePath, "durationMs" to dur, "slowMotion" to false,
+        "extraPaths" to parts.drop(1).map { it.absolutePath },
+        "error" to "Couldn't join the clips; saved them separately",
+      ))
+    }
+  }
 
   @OptIn(ExperimentalPersistentRecording::class)
   @androidx.annotation.OptIn(markerClass = [ExperimentalPersistentRecording::class])
