@@ -148,6 +148,11 @@ function CameraScreen() {
   const [recording, setRecording] = useState(false);
   const [recSeconds, setRecSeconds] = useState(0);
   const [paused, setPaused] = useState(false);
+  const [palmShutter, setPalmShutter] = useState(false);
+  const [voiceShutter, setVoiceShutter] = useState(false);
+  // Back screen: wanted (switch on) and actually showing
+  const [rearScreen, setRearScreen] = useState(false);
+  const [rearActive, setRearActive] = useState(false);
   const [countdown, setCountdown] = useState(0);
   const [last, setLast] = useState<Last | null>(null);
   const [toast, setToast] = useState<string | null>(null);
@@ -174,6 +179,8 @@ function CameraScreen() {
     bokeh: number;
     galleryPref: GalleryPref;
     videoV2?: boolean;
+    palmShutter?: boolean;
+    voiceShutter?: boolean;
   };
   useEffect(() => {
     loadSettings<Saved>().then((v) => {
@@ -184,7 +191,9 @@ function CameraScreen() {
         if (v.video) setVideo((x) => ({ ...x, ...v.video, hdr: v.videoV2 ? !!v.video?.hdr : false }));
         if (v.mode) setMode(v.mode === 'pvideo' ? 'video' : v.mode); // Portrait video was removed
         if (typeof v.mirrorSelfie === 'boolean') setMirrorSelfie(v.mirrorSelfie);
-        if (v.filter) setFilter(v.filter);
+        if (v.filter === 'natural' || v.filter === 'mono') setFilter(v.filter);
+        if (typeof v.palmShutter === 'boolean') setPalmShutter(v.palmShutter);
+        if (typeof v.voiceShutter === 'boolean') setVoiceShutter(v.voiceShutter);
         if (typeof v.smoothing === 'number') setSmoothing(v.smoothing);
         if (v.pip) setPip(v.pip);
         if (v.manual) setManual(v.manual);
@@ -201,11 +210,11 @@ function CameraScreen() {
     if (!settingsLoaded) return;
     if (!remember) return;
     const t = setTimeout(
-      () => saveSettings({ videoV2: true, remember, mode, photo, video, mirrorSelfie, filter, smoothing, pip, manual, brightness, shadows, aspect, bokeh, galleryPref }),
+      () => saveSettings({ videoV2: true, palmShutter, voiceShutter, remember, mode, photo, video, mirrorSelfie, filter, smoothing, pip, manual, brightness, shadows, aspect, bokeh, galleryPref }),
       400,
     );
     return () => clearTimeout(t);
-  }, [settingsLoaded, remember, mode, photo, video, mirrorSelfie, filter, smoothing, pip, manual, brightness, shadows, aspect, bokeh, galleryPref]);
+  }, [settingsLoaded, remember, mode, photo, video, mirrorSelfie, filter, smoothing, pip, manual, brightness, shadows, aspect, bokeh, galleryPref, palmShutter, voiceShutter]);
 
   // If the phone turns out too weak for live blur, fall back to normal Video once not recording
   useEffect(() => {
@@ -240,6 +249,8 @@ function CameraScreen() {
       MODES.filter((m) => {
         if (m.key === 'slowmo') return !!caps?.slowMotion;
         if (m.key === 'dual') return !!caps?.concurrent;
+        // Macro only on phones with a dedicated macro camera or a close-focusing telephoto
+        if (m.key === 'macro') return !!caps?.macro;
         // Live background blur needs a capable GPU: hidden on weak phones (or after it proved too slow)
         if (m.key === 'pvideo') return caps ? caps.portraitVideo !== false && !weakGpu : false;
         return true;
@@ -328,7 +339,9 @@ function CameraScreen() {
   /* ---------- capture: photo / night / pro photo ---------- */
   /** Front camera: does the JPEG need flipping to match the mirror setting? (1 = phone already mirrored it) */
   const needsFlip = (jpegMirrored?: number) =>
-    facing === 'front' && (jpegMirrored === 1 ? !mirrorSelfie : mirrorSelfie);
+    facing === 'front'
+      ? jpegMirrored === 1 ? !mirrorSelfie : mirrorSelfie
+      : rearActive && mirrorSelfie; // back-screen selfies with the main camera
 
   const shootPhoto = useCallback(async () => {
     if (busy || !ready) return;
@@ -376,7 +389,9 @@ function CameraScreen() {
         // Beyond the lens (≥1.5× digital): rebuild detail with the on-device AI model
         aiZoom: facing === 'back' && zoom > zoomRange.max * 1.5,
       });
-      const info = pro
+      const info = mode === 'macro'
+        ? `Macro${caps?.macroKind === 'tele' ? ' (telephoto)' : ''}`
+        : pro
         ? 'Pro'
         : night
           ? ext === 'night' ? 'Night (phone)' : 'Night'
@@ -404,7 +419,7 @@ function CameraScreen() {
       setProcessing(false);
       setBusy(false);
     }
-  }, [busy, ready, mode, facing, mirrorSelfie, zoom, zoomRange, smoothing, filter, aspectRatio, bokeh, captureBurst, saveToGallery, flashToast]);
+  }, [busy, ready, mode, facing, mirrorSelfie, rearActive, zoom, zoomRange, smoothing, filter, aspectRatio, bokeh, captureBurst, saveToGallery, flashToast]);
 
   /* ---------- capture: video ---------- */
   const toggleRecording = useCallback(async () => {
@@ -443,8 +458,21 @@ function CameraScreen() {
   // Front/back can be switched mid-recording in Video and Action (the clip continues)
   const canFlipWhileRecording = mode === 'video' || mode === 'action';
 
+  const runCountdown = useCallback(async (secs: number) => {
+    for (let t = secs; t > 0; t--) {
+      setCountdown(t);
+      Haptics.selectionAsync();
+      await sleep(1000);
+    }
+    setCountdown(0);
+  }, []);
+
   const onShutter = useCallback(async () => {
-    if (isVideoMode) return toggleRecording();
+    if (isVideoMode) {
+      // timer delays the start of a recording (stopping is immediate)
+      if (!recording && timer > 0) await runCountdown(timer);
+      return toggleRecording();
+    }
     if (timer > 0) {
       for (let t = timer; t > 0; t--) {
         setCountdown(t);
@@ -454,7 +482,18 @@ function CameraScreen() {
       setCountdown(0);
     }
     return shootPhoto();
-  }, [isVideoMode, timer, toggleRecording, shootPhoto]);
+  }, [isVideoMode, recording, timer, runCountdown, toggleRecording, shootPhoto]);
+
+  // Palm shutter → 3 s timer then shoot; voice "cheese" → shoot now
+  const onGesture = useCallback(
+    async (kind: 'palm' | 'voice') => {
+      if (busy || countdown > 0 || recording || isVideoMode) return;
+      flashToast(kind === 'palm' ? 'Palm detected' : '"Cheese!"', 1200);
+      if (kind === 'palm') await runCountdown(3);
+      shootPhoto();
+    },
+    [busy, countdown, recording, isVideoMode, flashToast, runCountdown, shootPhoto],
+  );
 
  /* ---------- open the last capture: iCam viewer, gallery app, or "Open with" ---------- */
   const openLast = useCallback(async () => {
@@ -490,6 +529,8 @@ function CameraScreen() {
   const live = useRef({ zoom, zoomRange, mode, recording, visibleModes, maxZoom });
   live.current = { zoom, zoomRange, mode, recording, visibleModes, maxZoom };
   const gesture = useRef({ pinchStart: 0, zoomStart: 1, pinched: false });
+  const onShutterRef = useRef(onShutter);
+  onShutterRef.current = onShutter;
   const changeModeRef = useRef(changeMode);
   changeModeRef.current = changeMode;
 
@@ -600,6 +641,35 @@ function CameraScreen() {
           hdrVideo={video.hdr}
           stabilization={video.stabilization}
           faceSmoothing={smoothing}
+          palmShutter={palmShutter}
+          voiceShutter={voiceShutter && perms.mic}
+          rearScreen={rearScreen}
+          rearState={{
+            mode: isVideoMode ? 'video' : 'photo',
+            recording,
+            countdown,
+            time: `${String(Math.floor(recSeconds / 60)).padStart(2, '0')}:${String(recSeconds % 60).padStart(2, '0')}`,
+            busy: busy || processing,
+            mirror: mirrorSelfie && facing === 'back',
+          }}
+          onGesture={(e) => onGesture(e.nativeEvent.kind)}
+          onRearScreen={(e) => {
+            const r = e.nativeEvent;
+            if (r.error) {
+              setRearScreen(false);
+              setRearActive(false);
+              flashToast(r.error, 5000);
+              return;
+            }
+            if (typeof r.active === 'boolean') {
+              setRearActive(r.active);
+              if (!r.active) setRearScreen(false);
+              else if (facing === 'front') setFacing('back'); // back screen = selfies with the main camera
+            }
+            if (r.action === 'shutter') onShutterRef.current();
+            if (r.action === 'mode') changeModeRef.current(isVideoMode ? 'photo' : 'video');
+            if (r.action === 'close') setRearScreen(false);
+          }}
           filterParams={(() => {
             const f = filterByKey(filter);
             return [f.sat, f.contrast, f.warmth, f.fade, f.mono, f.vignette];
@@ -682,7 +752,7 @@ function CameraScreen() {
           <Pressable hitSlop={8} onPress={() => setFlash((f) => (f === 'off' ? 'auto' : f === 'auto' ? 'on' : 'off'))}>
             <MaterialCommunityIcons name={flashIcon} size={22} color={ready?.hasFlash === false ? 'rgba(255,255,255,0.35)' : '#fff'} />
           </Pressable>
-          {isPhotoShot && (
+          {mode !== 'dual' && (
             <Pressable hitSlop={8} onPress={() => setTimer((t) => (t === 0 ? 3 : t === 3 ? 10 : 0))}>
               <MaterialCommunityIcons name={timerIcon} size={22} color="#fff" />
             </Pressable>
@@ -717,6 +787,18 @@ function CameraScreen() {
               }}
             >
               <MaterialCommunityIcons name="rotate-left" size={22} color={video.stabilization === 'horizon' ? '#ffd76a' : '#fff'} />
+            </Pressable>
+          )}
+          {(caps?.rearScreen || caps?.root) && (
+            <Pressable
+              hitSlop={8}
+              onPress={() => {
+                Haptics.selectionAsync();
+                setRearScreen((v) => !v);
+                if (!rearScreen) flashToast('Opening the back screen…');
+              }}
+            >
+              <MaterialCommunityIcons name="cellphone-arrow-down" size={22} color={rearScreen ? '#ffd76a' : '#fff'} />
             </Pressable>
           )}
           {(facing === 'front' || mode === 'dual') && (
@@ -758,6 +840,22 @@ function CameraScreen() {
             setDualPrimary((p) => (p === 'back' ? 'front' : 'back'));
           }}
         />
+      )}
+
+      {rearActive && (
+        <View style={[StyleSheet.absoluteFill, styles.center, { backgroundColor: '#000' }]}>
+          <MaterialCommunityIcons name="cellphone-arrow-down" size={48} color="rgba(255,255,255,0.8)" />
+          <Text style={{ color: '#fff', fontSize: 18, fontWeight: '700', marginTop: 12 }}>Using the back screen</Text>
+          <Text style={{ color: 'rgba(255,255,255,0.6)', fontSize: 13, marginTop: 6, textAlign: 'center', paddingHorizontal: 40 }}>
+            Turn the phone around and shoot with the main camera. Tap below to switch back.
+          </Text>
+          <Pressable
+            onPress={() => setRearScreen(false)}
+            style={{ marginTop: 24, paddingHorizontal: 22, height: 44, borderRadius: 22, backgroundColor: 'rgba(255,255,255,0.14)', justifyContent: 'center' }}
+          >
+            <Text style={{ color: '#fff', fontWeight: '700' }}>Switch to front screen</Text>
+          </Pressable>
+        </View>
       )}
 
       {countdown > 0 && (
@@ -871,6 +969,13 @@ function CameraScreen() {
         bottomInset={insets.bottom}
         mirrorSelfie={mirrorSelfie}
         onMirrorSelfie={setMirrorSelfie}
+        palmShutter={palmShutter}
+        onPalmShutter={setPalmShutter}
+        voiceShutter={voiceShutter}
+        onVoiceShutter={(v: boolean) => {
+          setVoiceShutter(v);
+          if (v && !perms.mic) flashToast('Voice shutter needs microphone permission', 3500);
+        }}
         capabilities={caps}
         remember={remember}
         onRemember={(v) => {

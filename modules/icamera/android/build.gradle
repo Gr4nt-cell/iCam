@@ -30,6 +30,8 @@ dependencies {
   implementation "com.google.mlkit:segmentation-selfie:16.0.0-beta6"
   // On-device AI zoom (Real-ESRGAN via ONNX Runtime)
   implementation "com.microsoft.onnxruntime:onnxruntime-android:1.22.0"
+  // Palm shutter (raised hand) detection
+  implementation "com.google.mlkit:pose-detection:18.0.0-beta5"
   // Subject segmentation (people / pets / objects at any distance) via Google Play services
   implementation "com.google.android.gms:play-services-mlkit-subject-segmentation:16.0.0-beta1"
 }

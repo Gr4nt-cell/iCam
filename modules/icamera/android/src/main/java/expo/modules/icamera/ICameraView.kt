@@ -77,9 +77,11 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
   private val onDualChange by EventDispatcher()
   private val onPortraitStatus by EventDispatcher()
   private val onRecordingState by EventDispatcher()
+  private val onGesture by EventDispatcher()
+  private val onRearScreen by EventDispatcher()
 
   companion object {
-    private val PHOTO_MODES = setOf("photo", "portrait", "night", "pro")
+    private val PHOTO_MODES = setOf("photo", "portrait", "night", "pro", "macro")
   }
 
   private val previewView = PreviewView(context).apply {
@@ -142,6 +144,8 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
   private fun emitDualChange(m: Map<String, Any?>) = onDualChange(clean(m))
   private fun emitPortraitStatus(m: Map<String, Any?>) = onPortraitStatus(clean(m))
   private fun emitRecordingState(m: Map<String, Any?>) = onRecordingState(clean(m))
+  private fun emitGesture(m: Map<String, Any?>) = onGesture(clean(m))
+  private fun emitRearScreen(m: Map<String, Any?>) = onRearScreen(clean(m))
 
   private var burstEvOffset = 0.0
 
@@ -189,11 +193,11 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
     if (old != new) { set(new); scheduleRebind() }
   }
 
-  fun setMode(v: String) = rebindOnChange(mode, v) { mode = it }
+  fun setMode(v: String) = rebindOnChange(mode, v) { mode = it; post { updateGestures() } }
   fun setFacing(v: String) = rebindOnChange(facing, v) { facing = it }
   fun setDualPrimary(v: String) = rebindOnChange(dualPrimary, v) { dualPrimary = it }
   fun setMirror(v: Boolean) = rebindOnChange(mirror, v) { mirror = it }
-  fun setActive(v: Boolean) = rebindOnChange(active, v) { active = it }
+  fun setActive(v: Boolean) = rebindOnChange(active, v) { active = it; post { updateGestures() } }
   fun setVideoQuality(v: String) = rebindOnChange(videoQuality, v) { videoQuality = it }
   fun setFps(v: Int) = rebindOnChange(fps, v) { fps = it }
   fun setHdrVideo(v: Boolean) = rebindOnChange(hdrVideo, v) { hdrVideo = it }
@@ -209,6 +213,57 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
   private var filterParams = FloatArray(0)
   private fun filterActive(f: FloatArray) = f.size >= 6 &&
     (Math.abs(f[0] - 1f) > 0.001f || Math.abs(f[1] - 1f) > 0.001f || f[2] != 0f || f[3] != 0f || f[4] != 0f || f[5] != 0f)
+  /* ---------------- palm / voice shutter ---------------- */
+  private var palmOn = false
+  private var voiceOn = false
+  private val palm by lazy {
+    PalmDetector { emitGesture(mapOf("kind" to "palm")) }.also { d ->
+      d.frameSource = { try { (rearPreview ?: previewView).bitmap } catch (e: Throwable) { null } }
+    }
+  }
+  private val voice by lazy {
+    VoiceShutter(context, { emitGesture(mapOf("kind" to "voice")) }) { msg -> emitError(msg) }
+  }
+  fun setPalmShutter(v: Boolean) { palmOn = v; updateGestures() }
+  fun setVoiceShutter(v: Boolean) { voiceOn = v; updateGestures() }
+  /** Gestures run only in photo modes while the camera is live and nothing is being recorded. */
+  private fun updateGestures() {
+    val photo = mode in PHOTO_MODES
+    val live = active && isAttachedToWindow && recording == null
+    palm.setEnabled(palmOn && photo && live)
+    voice.setEnabled(voiceOn && photo && live)
+  }
+
+  /* ---------------- back screen ---------------- */
+  private var rearPreview: PreviewView? = null
+  private var rearWanted = false
+  fun setRearScreen(v: Boolean) {
+    if (v == rearWanted) return
+    rearWanted = v
+    if (v) {
+      RearBridge.onAction = { a -> post { emitRearScreen(mapOf("action" to a)) } }
+      RearBridge.onAttach = { pv -> post { onRearAttached(pv) } }
+      Thread {
+        val err = RearScreen.launch(context.applicationContext)
+        if (err != null) post {
+          rearWanted = false
+          emitRearScreen(mapOf("active" to false, "error" to err))
+        }
+      }.start()
+    } else {
+      RearBridge.close()
+    }
+  }
+  fun setRearState(m: Map<String, Any?>) { RearBridge.pushState(m) }
+  private fun onRearAttached(pv: PreviewView?) {
+    rearPreview = pv
+    // Move the live viewfinder to whichever screen is in use (rebind picks up the new target)
+    currentPreview?.setSurfaceProvider((pv ?: previewView).surfaceProvider)
+    pv?.display?.rotation?.let { currentPreview?.targetRotation = it }
+    emitRearScreen(mapOf("active" to (pv != null)))
+    if (pv == null) { rearWanted = false; RearBridge.onAttach = null }
+  }
+
   private var faceSmoothing = 0f
   fun setFaceSmoothing(v: Float) {
     faceSmoothing = v.coerceIn(0f, 1f)
@@ -324,13 +379,15 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
   /** Zoom beyond the lens/hardware maximum, done digitally (preview + recording; photos are cropped in JS). */
   private var digitalZoom = 1f
   private var zoomAnim: android.animation.ValueAnimator? = null
+  /** Macro fallback: hold the logical camera at the tele-macro lens's zoom. */
+  private var macroZoom: Float? = null
 
   private fun applyZoom() {
     val cam = camera ?: return
     val z = cam.cameraInfo.zoomState.value
     val zMin = z?.minZoomRatio ?: 1f
     val zMax = z?.maxZoomRatio ?: 1f
-    var hw = zoom.coerceIn(zMin, zMax)
+    var hw = (macroZoom ?: zoom).coerceIn(zMin, zMax)
     if (horizonCrop > 1.01f) hw = maxOf(zMin, hw / horizonCrop)
     // Big jumps (tapping a lens pill) glide instead of cutting, so lens changes are smooth on video too
     val from = z?.zoomRatio ?: hw
@@ -425,6 +482,9 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
     recording = null
     provider?.unbindAll()
     setRollSensor(false)
+    palm.setEnabled(false)
+    voice.setEnabled(false)
+    RearBridge.close()
     portraitProcessor?.release()
     portraitProcessor = null
     camera = null
@@ -477,6 +537,7 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
           "slowmo" -> bindSlowMo(p, owner)
           "video", "action", "pvideo" -> bindVideo(p, owner)
           "pro" -> bindPro(p, owner)
+          "macro" -> bindMacro(p, owner)
           else -> bindPhoto(p, owner)
         }
         applyZoom()
@@ -527,8 +588,9 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
       androidx.camera.camera2.interop.Camera2Interop.Extender(b)
         .setCaptureRequestOption(CaptureRequest.LENS_OPTICAL_STABILIZATION_MODE, CaptureRequest.LENS_OPTICAL_STABILIZATION_MODE_ON)
     }
+    rearPreview?.display?.rotation?.let { b.setTargetRotation(it) }
     return b.build().also {
-      it.setSurfaceProvider(previewView.surfaceProvider)
+      it.setSurfaceProvider((rearPreview ?: previewView).surfaceProvider)
       currentPreview = it
     }
   }
@@ -768,6 +830,51 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
         .build()
       p.bindToLifecycle(owner, sel, newPreview(), plain).also { videoCapture = plain }
     }
+  }
+
+  /** Macro: the tele-macro or dedicated macro camera found from lens data, with close-focus AF. */
+  @OptIn(ExperimentalCamera2Interop::class)
+  @androidx.annotation.OptIn(markerClass = [ExperimentalCamera2Interop::class])
+  private fun bindMacro(p: ProcessCameraProvider, owner: LifecycleOwner) {
+    val m = MacroFinder.find(context) ?: throw IllegalStateException("This phone has no macro camera")
+    val targetId = m.parentId ?: m.id
+    val sel = CameraSelector.Builder()
+      .addCameraFilter { infos -> infos.filter { Camera2CameraInfo.from(it).cameraId == targetId } }
+      .build()
+    fun <T> macroOpts(b: androidx.camera.core.ExtendableBuilder<T>) {
+      val ext = androidx.camera.camera2.interop.Camera2Interop.Extender(b)
+      if (m.parentId != null) ext.setPhysicalCameraId(m.id)
+      ext.setCaptureRequestOption(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
+    }
+    val pb = Preview.Builder().setResolutionSelector(resolutionSelector())
+    macroOpts(pb)
+    val ib = ImageCapture.Builder()
+      .setResolutionSelector(resolutionSelector())
+      .setCaptureMode(ImageCapture.CAPTURE_MODE_MAXIMIZE_QUALITY)
+      .setJpegQuality(100)
+      .setFlashMode(flashMode())
+    macroOpts(ib)
+    val preview = pb.build().also {
+      rearPreview?.display?.rotation?.let { r -> it.targetRotation = r }
+      it.setSurfaceProvider((rearPreview ?: previewView).surfaceProvider)
+      currentPreview = it
+    }
+    val ic = ib.build()
+    camera = try {
+      p.bindToLifecycle(owner, sel, preview, ic)
+    } catch (e: Throwable) {
+      // Physical-lens streaming refused: fall back to the logical camera zoomed to that lens
+      p.unbindAll()
+      val prev2 = newPreview(matchAspect = true)
+      val ic2 = newImageCapture()
+      val cam = p.bindToLifecycle(owner, selector("back"), prev2, ic2)
+      if (m.kind == "tele") macroZoom = (m.focalEq / 26.0).toFloat()
+      camera = cam
+      imageCapture = ic2
+      emitError("Macro lens isn't directly accessible here; using the closest-focusing lens instead")
+      return
+    }
+    imageCapture = ic
   }
 
   private fun bindPro(p: ProcessCameraProvider, owner: LifecycleOwner) {
@@ -1100,7 +1207,9 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
     if (mode == "video" || mode == "action") {
       try { pending = makePersistent(pending); persistentRec = true } catch (_: Throwable) {}
     }
-    // Keep the display awake for the whole recording
+    // Keep the display awake for the whole recording; free the microphone from the voice shutter
+    voice.setEnabled(false)
+    palm.setEnabled(false)
     keepScreenOn = true
     rootView?.keepScreenOn = true
     recording = pending.start(executor) { event ->
@@ -1111,6 +1220,7 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
         persistentRec = false
         keepScreenOn = false
         rootView?.keepScreenOn = false
+        post { updateGestures() }
         val ok = file.exists() && file.length() > 0
         emitRecordingFinished(
           mapOf(

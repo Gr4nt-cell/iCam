@@ -107,7 +107,7 @@ class ICameraModule : Module() {
     }
 
     View(ICameraView::class) {
-      Events("onReady", "onError", "onRecordingFinished", "onPhotosCaptured", "onDualChange", "onPortraitStatus", "onRecordingState")
+      Events("onReady", "onError", "onRecordingFinished", "onPhotosCaptured", "onDualChange", "onPortraitStatus", "onRecordingState", "onGesture", "onRearScreen")
 
       Prop("mode") { view: ICameraView, v: String -> view.setMode(v) }
       Prop("facing") { view: ICameraView, v: String -> view.setFacing(v) }
@@ -131,6 +131,10 @@ class ICameraModule : Module() {
       Prop("nightExtension") { view: ICameraView, v: Boolean -> view.setNightExtension(v) }
       Prop("aspect") { view: ICameraView, v: String -> view.setAspect(v) }
       Prop("bokeh") { view: ICameraView, v: Double -> view.setBokeh(v.toFloat()) }
+      Prop("palmShutter") { view: ICameraView, v: Boolean -> view.setPalmShutter(v) }
+      Prop("voiceShutter") { view: ICameraView, v: Boolean -> view.setVoiceShutter(v) }
+      Prop("rearScreen") { view: ICameraView, v: Boolean -> view.setRearScreen(v) }
+      Prop("rearState") { view: ICameraView, v: Map<String, Any?> -> view.setRearState(v) }
       Prop("faceSmoothing") { view: ICameraView, v: Double -> view.setFaceSmoothing(v.toFloat()) }
       Prop("filterParams") { view: ICameraView, v: List<Double> -> view.setFilterParams(v.map { it.toFloat() }.toFloatArray()) }
       Prop("previewFit") { view: ICameraView, v: Boolean -> view.setPreviewFit(v) }
@@ -191,7 +195,10 @@ class ICameraModule : Module() {
       "minFocusDistance" to (back?.get("minFocusDistance") ?: 0.0),
       "cameras" to cameras,
       "portraitVideo" to portraitVideoCapable(ctx),
-    ) + zoomProfile(ctx, back)
+    ) + zoomProfile(ctx, back) + macroProfile(ctx) + mapOf(
+      "rearScreen" to (RearScreen.visibleRearDisplay(ctx) != null),
+      "root" to RearScreen.hasRoot(),
+    )
   }
 
   @OptIn(ExperimentalCamera2Interop::class, ExperimentalHighSpeedVideo::class, androidx.camera.core.ExperimentalSessionConfig::class)
@@ -303,6 +310,11 @@ class ICameraModule : Module() {
     } catch (e: Throwable) {
       mapOf("telephoto" to false, "telephotoRatio" to 1.0, "maxZoom" to 2.0, "mainFocalEq" to 0.0)
     }
+  }
+
+  private fun macroProfile(ctx: Context): Map<String, Any?> {
+    val m = MacroFinder.find(ctx) ?: return mapOf("macro" to false)
+    return mapOf("macro" to true, "macroKind" to m.kind, "macroMinFocusCm" to Math.round(m.minFocusCm * 10) / 10.0)
   }
 
   /** Hardware gate for live background blur: enough RAM, 64-bit, not a low-RAM device, 6+ cores. */

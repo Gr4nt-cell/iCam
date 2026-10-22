@@ -2,7 +2,7 @@ import { requireNativeView, requireOptionalNativeModule } from 'expo';
 import React, { forwardRef } from 'react';
 import type { ViewProps } from 'react-native';
 
-export type CamMode = 'photo' | 'portrait' | 'night' | 'pro' | 'video' | 'pvideo' | 'slowmo' | 'dual' | 'action';
+export type CamMode = 'photo' | 'portrait' | 'night' | 'pro' | 'macro' | 'video' | 'pvideo' | 'slowmo' | 'dual' | 'action';
 export type WhiteBalance = 'auto' | 'daylight' | 'cloudy' | 'shade' | 'tungsten' | 'fluorescent' | 'twilight' | 'kelvin';
 
 export type CameraProfile = {
@@ -55,6 +55,13 @@ export type Capabilities = {
   telephotoRatio?: number;
   /** Highest zoom offered (optical + digital), from the lens data */
   maxZoom?: number;
+  /** Macro: dedicated macro camera or close-focusing telephoto */
+  macro?: boolean;
+  macroKind?: 'tele' | 'dedicated';
+  macroMinFocusCm?: number;
+  /** A back screen apps can reach directly, and whether root (su) is present */
+  rearScreen?: boolean;
+  root?: boolean;
 };
 
 type NativeEvent<T> = { nativeEvent: T };
@@ -108,6 +115,12 @@ export type ICameraProps = ViewProps & {
   bokeh?: number;
   onPortraitStatus?: (e: NativeEvent<{ blur: boolean; reason?: string }>) => void;
   onRecordingState?: (e: NativeEvent<{ paused: boolean }>) => void;
+  onGesture?: (e: NativeEvent<{ kind: 'palm' | 'voice' }>) => void;
+  onRearScreen?: (e: NativeEvent<{ active?: boolean; error?: string; action?: 'shutter' | 'mode' | 'close' | 'flip' }>) => void;
+  palmShutter?: boolean;
+  voiceShutter?: boolean;
+  rearScreen?: boolean;
+  rearState?: { mode: 'photo' | 'video'; recording: boolean; countdown: number; time: string; busy: boolean; mirror: boolean };
   onReady?: (e: NativeEvent<ReadyEvent>) => void;
   onError?: (e: NativeEvent<{ message: string }>) => void;
   onRecordingFinished?: (

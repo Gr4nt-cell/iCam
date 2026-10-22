@@ -20,6 +20,7 @@ export const MODES: { key: CaptureMode; label: string }[] = [
   { key: 'pro', label: 'Pro' },
   { key: 'photo', label: 'Photo' },
   { key: 'portrait', label: 'Portrait' },
+  { key: 'macro', label: 'Macro' },
   { key: 'video', label: 'Video' },
   { key: 'slowmo', label: 'Slo-mo' },
   { key: 'dual', label: 'Dual' },
