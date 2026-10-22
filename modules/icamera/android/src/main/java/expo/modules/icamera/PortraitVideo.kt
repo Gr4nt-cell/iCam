@@ -83,8 +83,12 @@ class PortraitProcessor : SurfaceProcessor {
   private var encFor: OwnRecorder? = null
   private var encSurf: EGLSurface = EGL14.EGL_NO_SURFACE
   private var encCrop = 1f
-  /** Clockwise degrees that make the camera buffer upright (portrait): the camera's sensor orientation. */
+  /** The camera's sensor orientation (clockwise degrees). */
   @Volatile var inRotation = 90
+  /** Phone orientation when the recording started (OrientationEventListener degrees, 0/90/180/270). */
+  @Volatile var encDeviceDeg = 0
+  /** Rotation tag written to the file (the first camera's rotation for that phone orientation). */
+  @Volatile var encHint = 90
   private val mup = FloatArray(16)
   private val encM = FloatArray(16)
 
@@ -388,20 +392,26 @@ class PortraitProcessor : SurfaceProcessor {
     val eh = rec.height.toFloat()
     GLES20.glViewport(0, 0, rec.width, rec.height)
     // uv = A·t + c  (t = encoder coords 0..1, uv = camera buffer coords 0..1, both y-up)
-    // Calibrated from a real recording: in these texture coordinates the buffer relates to the upright
-    // picture by +sensorRotation, and the file is tagged 90°, so the encoded frame needs −(rot + 90).
-    val deg = -(inRotation + 90)
+    // Encoded frames are the camera buffer turned so that, with the file's rotation tag (taken from
+    // the first camera at the start), the picture is level for how the phone is held. Calibrated
+    // from real clips: a camera needs (sensor + phone orientation) clockwise degrees; a camera
+    // switched to mid-clip is turned by the difference.
+    val need = (inRotation + encDeviceDeg) % 360
+    val deg = ((need - encHint) % 360 + 360) % 360
     val phi = Math.toRadians(deg.toDouble())
     val cs = Math.cos(phi).toFloat()
     val sn = Math.sin(phi).toFloat()
-    val quarter = Math.abs(deg / 90) % 2 != 0
+    val quarter = (deg / 90) % 2 != 0
     val rbw = if (quarter) inH.toFloat() else inW.toFloat()
     val rbh = if (quarter) inW.toFloat() else inH.toFloat()
     val sc = maxOf(ew / rbw, eh / rbh)
-    val my = if (frontCamera && mirrorVideo) -1f else 1f // selfie mirror (portrait x = encoder y)
-    val a00 = cs * ew / sc / inW
+    // selfie mirror flips the picture's horizontal axis as it will be shown (encoder y when tagged 90/270)
+    val mirrorOn = frontCamera && mirrorVideo
+    val mx = if (mirrorOn && encHint % 180 == 0) -1f else 1f
+    val my = if (mirrorOn && encHint % 180 != 0) -1f else 1f
+    val a00 = cs * ew * mx / sc / inW
     val a01 = -sn * eh * my / sc / inW
-    val a10 = sn * ew / sc / inH
+    val a10 = sn * ew * mx / sc / inH
     val a11 = cs * eh * my / sc / inH
     val c0 = 0.5f - 0.5f * (a00 + a01)
     val c1 = 0.5f - 0.5f * (a10 + a11)

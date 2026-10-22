@@ -28,6 +28,8 @@ class OwnRecorder(
   fps: Int,
   bitrate: Int,
   private val withAudio: Boolean,
+  /** Clockwise degrees players rotate the frames by (how the phone was held when recording started) */
+  orientationHint: Int = 90,
 ) {
   val width: Int
   val height: Int
@@ -72,7 +74,7 @@ class OwnRecorder(
     video = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
     video.configure(fmt, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
     surface = video.createInputSurface()
-    muxer.setOrientationHint(90)
+    muxer.setOrientationHint(((orientationHint % 360) + 360) % 360)
     if (withAudio) setupAudio()
   }
 

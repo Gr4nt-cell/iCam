@@ -474,11 +474,13 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
 
   override fun onAttachedToWindow() {
     super.onAttachedToWindow()
+    try { if (orientationListener.canDetectOrientation()) orientationListener.enable() } catch (_: Throwable) {}
     scheduleRebind(150)
   }
 
   override fun onDetachedFromWindow() {
     super.onDetachedFromWindow()
+    try { orientationListener.disable() } catch (_: Throwable) {}
     recording?.stop()
     recording = null
     if (ownRec != null) stopOwnRecording()
@@ -1306,13 +1308,26 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
   private var encFps = 30
   private var encBitrate = 20_000_000
 
+  /** How the phone is held (OrientationEventListener degrees rounded to 0/90/180/270). */
+  @Volatile private var deviceDeg = 0
+  private val orientationListener by lazy {
+    object : android.view.OrientationEventListener(context) {
+      override fun onOrientationChanged(o: Int) {
+        if (o != ORIENTATION_UNKNOWN) deviceDeg = ((o + 45) / 90 * 90) % 360
+      }
+    }
+  }
+
   private fun beginOwnRecording() {
     if (ownRec != null) return
     val proc = portraitProcessor ?: run { emitError("Video isn't ready yet"); return }
+    // Lock the video's orientation to how the phone is held now (portrait, landscape, upside down)
+    proc.encDeviceDeg = deviceDeg
+    proc.encHint = (proc.inRotation + deviceDeg) % 360
     val file = File(context.cacheDir, "iCam_${mode}_${System.currentTimeMillis()}.mp4")
     val mic = audio && ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
     val rec = try {
-      OwnRecorder(file, encW, encH, encFps, encBitrate, mic).also { it.start() }
+      OwnRecorder(file, encW, encH, encFps, encBitrate, mic, proc.encHint).also { it.start() }
     } catch (e: Throwable) {
       emitRecordingFinished(mapOf("path" to null, "durationMs" to 0.0, "slowMotion" to false, "error" to "Recorder: ${e.message}"))
       return
