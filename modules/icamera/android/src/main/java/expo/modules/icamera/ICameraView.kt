@@ -1100,12 +1100,17 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
     if (mode == "video" || mode == "action") {
       try { pending = makePersistent(pending); persistentRec = true } catch (_: Throwable) {}
     }
+    // Keep the display awake for the whole recording
+    keepScreenOn = true
+    rootView?.keepScreenOn = true
     recording = pending.start(executor) { event ->
       if (event is VideoRecordEvent.Pause) emitRecordingState(mapOf("paused" to true))
       if (event is VideoRecordEvent.Resume) emitRecordingState(mapOf("paused" to false))
       if (event is VideoRecordEvent.Finalize) {
         recording = null
         persistentRec = false
+        keepScreenOn = false
+        rootView?.keepScreenOn = false
         val ok = file.exists() && file.length() > 0
         emitRecordingFinished(
           mapOf(
