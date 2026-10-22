@@ -17,6 +17,12 @@ jobs:
       run:
         shell: bash
     steps:
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL /usr/local/share/boost /usr/local/lib/node_modules/@angular /usr/share/swift /usr/local/share/powershell /usr/local/share/chromium /opt/microsoft /opt/google/chrome /usr/lib/jvm/temurin-8* /usr/lib/jvm/temurin-11* || true
+          sudo docker image prune --all --force >/dev/null 2>&1 || true
+          df -h / | tail -1
+
       - uses: actions/checkout@v5
 
       - uses: actions/setup-node@v5
@@ -85,6 +91,11 @@ jobs:
           mkdir -p modules/icamera/android/src/main/assets
           python scripts/export_sr_model.py "$RUNNER_TEMP/sr.pth" modules/icamera/android/src/main/assets/realesr_general_x4v3.onnx 2>&1 | tee -a build.log
           ls -la modules/icamera/android/src/main/assets
+          # torch is ~2 GB: drop it before the Android build needs the disk
+          pip uninstall -y torch onnx onnxruntime >/dev/null 2>&1 || true
+          pip cache purge >/dev/null 2>&1 || true
+          rm -f "$RUNNER_TEMP/sr.pth"
+          df -h / | tail -1
 
       - name: Upload key (Play signing)
         env:
