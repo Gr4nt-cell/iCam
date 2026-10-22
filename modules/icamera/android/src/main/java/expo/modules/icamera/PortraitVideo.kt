@@ -72,6 +72,17 @@ class PortraitProcessor : SurfaceProcessor {
   @Volatile var mirrorVideo = false
   private var roll = 0f
   private var rollInit = false
+
+  /**
+   * Continuous video timeline across a front/back switch during a recording: each camera stamps
+   * frames with its own clock (and there's a gap while switching), so after a switch the new
+   * camera's timestamps are shifted to continue right after the last frame written.
+   */
+  @Volatile var holdTimeline = false
+  @Volatile private var rebase = false
+  private var tsOffset = 0L
+  private var lastOutTs = 0L
+  fun resetTimeline() { handler.post { tsOffset = 0L; lastOutTs = 0L; rebase = false } }
   private val cropState = HashMap<SurfaceOutput, Float>()
 
   /** Video processing when blur is off: auto low-light tone curve, temporal denoise, detail. */
@@ -180,6 +191,7 @@ class PortraitProcessor : SurfaceProcessor {
 
   override fun onInputSurface(request: SurfaceRequest) {
     if (released) { request.willNotProvideSurface(); return }
+    if (holdTimeline) rebase = true
     initGl()
     inW = request.resolution.width
     inH = request.resolution.height
@@ -247,6 +259,15 @@ class PortraitProcessor : SurfaceProcessor {
     frame++
 
     val t0 = System.nanoTime()
+    // Presentation time for the encoder (continuous across camera switches while recording)
+    val rawTs = s.timestamp
+    if (rebase && lastOutTs > 0L) {
+      tsOffset = lastOutTs + 33_333_333L - rawTs
+      rebase = false
+    }
+    var outTs = rawTs + tsOffset
+    if (holdTimeline && lastOutTs > 0L && outTs <= lastOutTs) outTs = lastOutTs + 1_000_000L
+    lastOutTs = outTs
     val blurOn = blurEnabled && !blurDisabled
     if (blurOn && frame % 3L == 0L && !segBusy) captureForSegmentation()
     uploadMask()
@@ -303,7 +324,7 @@ class PortraitProcessor : SurfaceProcessor {
       }
       xform = floatArrayOf(size.width.toFloat(), size.height.toFloat(), angle, zoomK, if (flip) 1f else 0f)
       if (blurOn) drawBlur(outM) else if (enh) drawOut(outM) else drawCopy(outM)
-      EGLExt.eglPresentationTimeANDROID(display, es, s.timestamp)
+      EGLExt.eglPresentationTimeANDROID(display, es, outTs)
       EGL14.eglSwapBuffers(display, es)
     }
 

@@ -650,6 +650,12 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
   private fun switchCameraWhileRecording() {
     val owner = appContext.currentActivity as? LifecycleOwner ?: return
     val vc = videoCapture ?: return
+    if (portraitProcessor == null || !effectPreview) {
+      // Without the GPU pipeline the two cameras' clocks can't be joined into one playable clip
+      facing = if (facing == "front") "back" else "front"
+      emitError("Switching cameras while recording needs HDR video turned off")
+      return
+    }
     withProvider { p ->
       try {
         p.unbindAll()
@@ -1177,6 +1183,7 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
         persistentRec = false
         keepScreenOn = false
         rootView?.keepScreenOn = false
+        portraitProcessor?.let { it.holdTimeline = false; it.resetTimeline() }
         post { updateGestures() }
         val ok = file.exists() && file.length() > 0
         emitRecordingFinished(
