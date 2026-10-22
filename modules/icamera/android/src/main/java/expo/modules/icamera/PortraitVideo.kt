@@ -69,6 +69,24 @@ class PortraitProcessor : SurfaceProcessor {
   @Volatile var mirrorVideo = false
   private var roll = 0f
   private var rollInit = false
+  private val cropState = HashMap<SurfaceOutput, Float>()
+
+  /** Video processing when blur is off: auto low-light tone curve, temporal denoise, detail. */
+  @Volatile var enhance = true
+  private val vfbo = IntArray(2)
+  private val vtex = IntArray(2)
+  private var vW = 0
+  private var vH = 0
+  private var cur = 0
+  private var havePrev = false
+  private var enhProg = 0
+  private var outProg = 0
+  private var statFbo = 0
+  private var statTex = 0
+  private var gain = 1f
+  private var curveA = 0f
+  private var curveNorm = 1f
+  private var temporal = 0.25f
 
   /** Clockwise quarter turns that make the camera buffer upright (from the sensor orientation). */
   @Volatile var fixedRotation = -1
@@ -158,6 +176,7 @@ class PortraitProcessor : SurfaceProcessor {
     if (released) { surfaceOutput.close(); return }
     initGl()
     val surface = surfaceOutput.getSurface(executor) {
+      cropState.remove(surfaceOutput)
       outputs.remove(surfaceOutput)?.let { EGL14.eglDestroySurface(display, it.first) }
       surfaceOutput.close()
     }
@@ -210,6 +229,15 @@ class PortraitProcessor : SurfaceProcessor {
     } else rollInit = false
     val stDet = stM[0] * stM[5] - stM[4] * stM[1]
 
+    // Enhanced (non-blur) path: process the frame once into an offscreen buffer, then draw outputs from it
+    val enh = !blurOn && enhance
+    if (enh) {
+      if (frame % 6L == 1L) updateStats()
+      processFrame()
+      cur = 1 - cur
+      havePrev = true
+    }
+
     for ((out, p) in outputs) {
       val (es, size) = p
       if (!EGL14.eglMakeCurrent(display, es, es, context)) continue
@@ -228,11 +256,18 @@ class PortraitProcessor : SurfaceProcessor {
         if (cxMirrored) angle = -angle
         val w = size.width.toFloat()
         val h = size.height.toFloat()
-        // Crop that keeps the frame filled at any rotation angle
-        zoomK = (Math.hypot(w.toDouble(), h.toDouble()) / minOf(w, h)).toFloat()
+        // Crop only as much as the current tilt needs (zoom in quickly, ease back out slowly)
+        var a = Math.abs(angle.toDouble()) % Math.PI
+        if (a > Math.PI / 2) a = Math.PI - a
+        val r = maxOf(w, h) / minOf(w, h)
+        val needed = (Math.cos(a) + r * Math.sin(a)).toFloat() * 1.03f
+        val prev = cropState[out] ?: needed
+        val k = if (needed > prev) prev + (needed - prev) * 0.35f else prev + (needed - prev) * 0.05f
+        cropState[out] = k
+        zoomK = maxOf(1f, k)
       }
       xform = floatArrayOf(size.width.toFloat(), size.height.toFloat(), angle, zoomK, if (flip) 1f else 0f)
-      if (blurOn) drawBlur(outM) else drawCopy(outM)
+      if (blurOn) drawBlur(outM) else if (enh) drawOut(outM) else drawCopy(outM)
       EGLExt.eglPresentationTimeANDROID(display, es, s.timestamp)
       EGL14.eglSwapBuffers(display, es)
     }
@@ -309,6 +344,117 @@ class PortraitProcessor : SurfaceProcessor {
     GLES20.glEnableVertexAttribArray(aTex)
     GLES20.glVertexAttribPointer(aTex, 2, GLES20.GL_FLOAT, false, 0, quadTex)
     GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(prog, "uTexMatrix"), 1, false, texMatrix, 0)
+  }
+
+  /* ---------------- video enhancement ---------------- */
+
+  private fun ensureVideoFbos() {
+    if (vW == inW && vH == inH && vfbo[0] != 0) return
+    if (vfbo[0] != 0) {
+      GLES20.glDeleteFramebuffers(2, vfbo, 0)
+      GLES20.glDeleteTextures(2, vtex, 0)
+    }
+    GLES20.glGenTextures(2, vtex, 0)
+    GLES20.glGenFramebuffers(2, vfbo, 0)
+    for (i in 0..1) {
+      GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, vtex[i])
+      GLES20.glTexImage2D(GLES20.GL_TEXTURE_2D, 0, GLES20.GL_RGBA, inW, inH, 0, GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE, null)
+      GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR)
+      GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR)
+      GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_CLAMP_TO_EDGE)
+      GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE)
+      GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, vfbo[i])
+      GLES20.glFramebufferTexture2D(GLES20.GL_FRAMEBUFFER, GLES20.GL_COLOR_ATTACHMENT0, GLES20.GL_TEXTURE_2D, vtex[i], 0)
+    }
+    GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
+    vW = inW; vH = inH; havePrev = false
+  }
+
+  /** Reads a tiny copy of the frame and adapts brightness / denoise strength to the scene. */
+  private fun updateStats() {
+    val w = 64
+    val h = 36
+    if (statFbo == 0) {
+      val t = IntArray(1); GLES20.glGenTextures(1, t, 0); statTex = t[0]
+      GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, statTex)
+      GLES20.glTexImage2D(GLES20.GL_TEXTURE_2D, 0, GLES20.GL_RGBA, w, h, 0, GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE, null)
+      GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR)
+      GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR)
+      val f = IntArray(1); GLES20.glGenFramebuffers(1, f, 0); statFbo = f[0]
+      GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, statFbo)
+      GLES20.glFramebufferTexture2D(GLES20.GL_FRAMEBUFFER, GLES20.GL_COLOR_ATTACHMENT0, GLES20.GL_TEXTURE_2D, statTex, 0)
+    }
+    GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, statFbo)
+    GLES20.glViewport(0, 0, w, h)
+    GLES20.glUseProgram(copyProg)
+    bindQuad(copyProg, stM)
+    applyXform(copyProg, identityXform)
+    GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
+    GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, oesTex)
+    GLES20.glUniform1i(GLES20.glGetUniformLocation(copyProg, "sTex"), 0)
+    GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
+    val buf = ByteBuffer.allocateDirect(w * h * 4).order(ByteOrder.nativeOrder())
+    GLES20.glReadPixels(0, 0, w, h, GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE, buf)
+    GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
+    var sum = 0.0
+    val n = w * h
+    for (i in 0 until n) {
+      val r = (buf.get(i * 4).toInt() and 0xff)
+      val g = (buf.get(i * 4 + 1).toInt() and 0xff)
+      val b = (buf.get(i * 4 + 2).toInt() and 0xff)
+      sum += (0.299 * r + 0.587 * g + 0.114 * b) / 255.0
+    }
+    val mean = (sum / n).toFloat()
+    // Aim for a natural mid-grey; never darken, at most ~2.6× in the shadows
+    val target = (0.40f / maxOf(mean, 0.03f)).coerceIn(1f, 2.6f)
+    gain += (target - gain) * 0.2f
+    // Curve y' = (1 - e^(-a·y)) / (1 - e^(-a)): shadow slope = gain, highlights roll off smoothly
+    if (gain < 1.02f) { curveA = 0f; curveNorm = 1f } else {
+      var lo = 0.0; var hi = 20.0
+      repeat(30) {
+        val mid = (lo + hi) / 2
+        val slope = mid / (1 - Math.exp(-mid))
+        if (slope < gain) lo = mid else hi = mid
+      }
+      curveA = lo.toFloat()
+      curveNorm = (1.0 / (1 - Math.exp(-lo))).toFloat()
+    }
+    // More brightening = more noise to clean
+    temporal = (0.22f + (gain - 1f) * 0.3f).coerceIn(0.22f, 0.62f)
+  }
+
+  /** One pass: OES frame → tone + spatial/temporal denoise + detail → vtex[cur]. */
+  private fun processFrame() {
+    ensureVideoFbos()
+    GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, vfbo[cur])
+    GLES20.glViewport(0, 0, inW, inH)
+    GLES20.glUseProgram(enhProg)
+    bindQuad(enhProg, stM)
+    GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
+    GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, oesTex)
+    GLES20.glUniform1i(GLES20.glGetUniformLocation(enhProg, "sTex"), 0)
+    GLES20.glActiveTexture(GLES20.GL_TEXTURE1)
+    GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, vtex[1 - cur])
+    GLES20.glUniform1i(GLES20.glGetUniformLocation(enhProg, "sPrev"), 1)
+    GLES20.glUniform2f(GLES20.glGetUniformLocation(enhProg, "uTexel"), 1f / inW, 1f / inH)
+    GLES20.glUniform1f(GLES20.glGetUniformLocation(enhProg, "uA"), curveA)
+    GLES20.glUniform1f(GLES20.glGetUniformLocation(enhProg, "uNorm"), curveNorm)
+    GLES20.glUniform1f(GLES20.glGetUniformLocation(enhProg, "uTemporal"), if (havePrev) temporal else 0f)
+    GLES20.glUniform1f(GLES20.glGetUniformLocation(enhProg, "uSharp"), 0.55f)
+    GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
+    GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
+  }
+
+  /** Draws the processed frame (written before the swap, so now vtex[1 - cur]) to an output. */
+  private fun drawOut(texMatrix: FloatArray) {
+    GLES20.glUseProgram(outProg)
+    bindQuad(outProg, texMatrix)
+    applyXform(outProg, xform)
+    GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
+    GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, vtex[1 - cur])
+    GLES20.glUniform1i(GLES20.glGetUniformLocation(outProg, "sCur"), 0)
+    GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(outProg, "uStInv"), 1, false, stInv, 0)
+    GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
   }
 
   /* ---------------- segmentation ---------------- */
@@ -448,6 +594,8 @@ class PortraitProcessor : SurfaceProcessor {
 
     blurProg = program(VERTEX, BLUR_FRAGMENT)
     copyProg = program(VERTEX, COPY_FRAGMENT)
+    enhProg = program(ENH_VERTEX, ENH_FRAGMENT)
+    outProg = program(VERTEX, OUT_FRAGMENT)
     val t = IntArray(1)
     GLES20.glGenTextures(1, t, 0)
     maskTex = t[0]
@@ -525,6 +673,71 @@ class PortraitProcessor : SurfaceProcessor {
         p = vec2(c * p.x + s * p.y, -s * p.x + c * p.y) / uZoom;
         t = p / uOutSize + 0.5;
         vTex = (uTexMatrix * vec4(t, 0.0, 1.0)).xy;
+      }
+    """
+
+    private const val ENH_VERTEX = """
+      attribute vec4 aPos;
+      attribute vec4 aTex;
+      uniform mat4 uTexMatrix;
+      varying vec2 vTex;
+      varying vec2 vUv;
+      void main() {
+        gl_Position = aPos;
+        vUv = aTex.xy;
+        vTex = (uTexMatrix * aTex).xy;
+      }
+    """
+
+    // Low-light tone curve + edge-aware spatial denoise + motion-aware temporal denoise + cored sharpening
+    private const val ENH_FRAGMENT = """
+      #extension GL_OES_EGL_image_external : require
+      precision highp float;
+      varying vec2 vTex;
+      varying vec2 vUv;
+      uniform samplerExternalOES sTex;
+      uniform sampler2D sPrev;
+      uniform vec2 uTexel;
+      uniform float uA;
+      uniform float uNorm;
+      uniform float uTemporal;
+      uniform float uSharp;
+      const vec3 LW = vec3(0.299, 0.587, 0.114);
+      vec3 tone(vec3 c) {
+        if (uA < 0.01) return c;
+        float y = max(dot(c, LW), 0.0005);
+        float y2 = (1.0 - exp(-uA * y)) * uNorm;
+        return c * (y2 / y);
+      }
+      void main() {
+        vec3 c = texture2D(sTex, vTex).rgb;
+        vec3 n = (texture2D(sTex, vTex + vec2(uTexel.x, 0.0)).rgb + texture2D(sTex, vTex - vec2(uTexel.x, 0.0)).rgb +
+                  texture2D(sTex, vTex + vec2(0.0, uTexel.y)).rgb + texture2D(sTex, vTex - vec2(0.0, uTexel.y)).rgb) * 0.25;
+        float dn = length(c - n);
+        // flat areas: blend toward the neighbourhood (grain), edges untouched
+        vec3 cs = mix(c, n, (1.0 - smoothstep(0.012, 0.05, dn)) * min(0.6, uTemporal * 1.4));
+        vec3 t = tone(cs);
+        if (uTemporal > 0.0) {
+          vec3 p = texture2D(sPrev, vUv).rgb;
+          float d = length(t - p);
+          float w = uTemporal * (1.0 - smoothstep(0.035, 0.11, d));
+          t = mix(t, p, w);
+        }
+        float detail = dot(tone(c) - tone(n), LW);
+        float cored = sign(detail) * max(abs(detail) - 0.012, 0.0);
+        t += clamp(cored, -0.06, 0.06) * uSharp * 2.0;
+        gl_FragColor = vec4(clamp(t, 0.0, 1.0), 1.0);
+      }
+    """
+
+    private const val OUT_FRAGMENT = """
+      precision highp float;
+      varying vec2 vTex;
+      uniform sampler2D sCur;
+      uniform mat4 uStInv;
+      void main() {
+        vec2 uv = (uStInv * vec4(vTex, 0.0, 1.0)).xy;
+        gl_FragColor = vec4(texture2D(sCur, uv).rgb, 1.0);
       }
     """
 

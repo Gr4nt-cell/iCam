@@ -424,7 +424,7 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
             "zoomMin" to (z?.minZoomRatio ?: 1f).toDouble(),
             "zoomMax" to (z?.maxZoomRatio ?: 1f).toDouble(),
             "hasFlash" to (camera?.cameraInfo?.hasFlashUnit() ?: false),
-            "horizonLock" to (horizonCrop > 1.01f),
+            "horizonLock" to sensorOn,
           ),
         )
       } catch (e: Throwable) {
@@ -542,7 +542,11 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
     // "cinematic"), else video EIS; plus optical stabilization when the lens has OIS.
     // Portrait video always uses the strongest (cinematic) stabilization for smooth footage
     // Stabilization crops the frame; on the front camera that would zoom selfies in, so skip it there
-    val horizon = action || stabilization == "horizon"
+    // True 10-bit HDR bypasses our (8-bit) GPU processing
+    val hdr = hdrVideo && !action && !portraitVideo &&
+      (try { Recorder.getVideoCapabilities(info).supportedDynamicRanges.any { it != DynamicRange.SDR } } catch (e: Throwable) { false })
+    // Horizon lock is for the main cameras (a selfie would just be cropped)
+    val horizon = !hdr && !selfieVideo && (action || stabilization == "horizon")
     val wantStab = horizon || (!selfieVideo && (portraitVideo || stabilization != "off"))
     val previewStab = wantStab && (action || horizon || portraitVideo || stabilization == "cinematic") &&
       (try { Preview.getPreviewCapabilities(info).isStabilizationSupported } catch (e: Throwable) { false })
@@ -550,17 +554,22 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
     val ois = wantStab && oisSupported(info)
     // Our GL effect handles background blur, horizon lock and selfie mirroring; it mirrors the
     // recording itself, so CameraX mirroring is off whenever the effect runs
-    val useEffect = portraitVideo || horizon || (selfieVideo && mirror)
+    // Every SDR recording goes through it for low-light tone, denoise and detail
+    val useEffect = !hdr
     val vb = VideoCapture.Builder(recorder)
       .setMirrorMode(if (mirror && !useEffect) MirrorMode.MIRROR_MODE_ON_FRONT_ONLY else MirrorMode.MIRROR_MODE_OFF)
     if (wantStab && !previewStab && videoStabOk) vb.setVideoStabilizationEnabled(true)
 
+    // Variable frame rate (e.g. 15–30 or 30–60) lets the camera expose longer in dim light instead
+    // of going dark; it runs at the full rate whenever there is enough light
     val ranges = info.supportedFrameRateRanges
-    ranges.firstOrNull { it.lower == targetFps && it.upper == targetFps }
+    val minLow = if (targetFps >= 60) 30 else 15
+    (ranges.filter { it.upper == targetFps && it.lower >= minLow && it.lower < targetFps }.minByOrNull { it.lower }
+      ?: ranges.firstOrNull { it.lower == targetFps && it.upper == targetFps })
       ?.let { vb.setTargetFrameRate(it) }
       ?: ranges.filter { it.upper >= targetFps }.minByOrNull { it.upper }?.let { vb.setTargetFrameRate(Range(it.upper, it.upper)) }
 
-    if (hdrVideo && !action && !portraitVideo) {
+    if (hdr) {
       val supported = Recorder.getVideoCapabilities(info).supportedDynamicRanges
       if (supported.contains(DynamicRange.HLG_10_BIT)) vb.setDynamicRange(DynamicRange.HLG_10_BIT)
       else if (supported.contains(DynamicRange.HDR_UNSPECIFIED_10_BIT)) vb.setDynamicRange(DynamicRange.HDR_UNSPECIFIED_10_BIT)
@@ -572,6 +581,7 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
         val proc = portraitProcessor ?: PortraitProcessor().also { portraitProcessor = it }
         proc.strength = bokeh
         proc.blurEnabled = portraitVideo
+        proc.enhance = true
         proc.horizonLock = horizon
         proc.frontCamera = selfieVideo
         proc.mirrorVideo = mirror
@@ -584,15 +594,12 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
         camera = p.bindToLifecycle(owner, sel, group)
         proc.fixedRotation = ((camera?.cameraInfo?.sensorRotationDegrees ?: -90) / 90).let { if (it < 0) -1 else it % 4 }
         videoCapture = vc
-        if (horizon) {
-          // 16:9 → ~2.0×, 4:3 → ~1.67× crop; compensated by zooming the lens out (ultrawide when available)
-          horizonCrop = if (selfieVideo) 5f / 3f else 2.04f
-          setRollSensor(true)
-        } else setRollSensor(false)
+        // Horizon lock crops only as much as the current tilt needs, so normal framing is kept
+        setRollSensor(horizon)
         return
       } catch (e: Throwable) {
         p.unbindAll()
-        emitError(if (portraitVideo) "Background blur isn't supported here – recording without it" else "Horizon lock isn't supported here – using standard stabilization")
+        if (portraitVideo) emitError("Background blur isn't supported here – recording without it")
       }
     }
     setRollSensor(false)

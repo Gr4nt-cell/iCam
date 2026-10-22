@@ -119,7 +119,7 @@ function CameraScreen() {
   const [video, setVideo] = useState<VideoSettings>({
     resolution: '1080p',
     fps: 30,
-    hdr: true,
+    hdr: false,
     stabilization: 'cinematic',
   });
   const [mirrorSelfie, setMirrorSelfie] = useState(true);
@@ -172,13 +172,15 @@ function CameraScreen() {
     aspect: Aspect;
     bokeh: number;
     galleryPref: GalleryPref;
+    videoV2?: boolean;
   };
   useEffect(() => {
     loadSettings<Saved>().then((v) => {
       if (v?.remember) {
         setRemember(true);
         if (v.photo) setPhoto((p) => ({ ...p, ...v.photo }));
-        if (v.video) setVideo((x) => ({ ...x, ...v.video }));
+        // v2: HDR video now defaults off (it looked dark on normal screens and bypasses iCam's video processing)
+        if (v.video) setVideo((x) => ({ ...x, ...v.video, hdr: v.videoV2 ? v.video.hdr : false }));
         if (v.mode) setMode(v.mode);
         if (typeof v.mirrorSelfie === 'boolean') setMirrorSelfie(v.mirrorSelfie);
         if (v.filter) setFilter(v.filter);
@@ -198,7 +200,7 @@ function CameraScreen() {
     if (!settingsLoaded) return;
     if (!remember) return;
     const t = setTimeout(
-      () => saveSettings({ remember, mode, photo, video, mirrorSelfie, filter, smoothing, pip, manual, brightness, shadows, aspect, bokeh, galleryPref }),
+      () => saveSettings({ videoV2: true, remember, mode, photo, video, mirrorSelfie, filter, smoothing, pip, manual, brightness, shadows, aspect, bokeh, galleryPref }),
       400,
     );
     return () => clearTimeout(t);
@@ -545,7 +547,7 @@ function CameraScreen() {
           nightExtension={photo.vendorNight}
           dualPip={pip}
           aspect={aspect === '16:9' || aspect === 'full' ? '16:9' : '4:3'}
-          previewFit={isPhotoShot && aspect !== 'full'}
+          previewFit={isPhotoShot ? aspect !== 'full' : mode !== 'dual'}
           bokeh={bokeh}
           onPortraitStatus={(e) => {
             if (e.nativeEvent.blur === false) {
@@ -643,7 +645,7 @@ function CameraScreen() {
               <Text style={styles.aspectChip}>{aspect === 'full' ? 'FULL' : aspect}</Text>
             </Pressable>
           )}
-          {mode === 'video' && (
+          {mode === 'video' && facing === 'back' && (
             <Pressable
               hitSlop={8}
               onPress={() => {
@@ -809,7 +811,7 @@ function CameraScreen() {
           clearSettings();
           setRemember(false);
           setPhoto({ frames: 4, vendorNight: true, highlightBracket: true });
-          setVideo({ resolution: '1080p', fps: 30, hdr: true, stabilization: 'cinematic' });
+          setVideo({ resolution: '1080p', fps: 30, hdr: false, stabilization: 'cinematic' });
           setMirrorSelfie(true);
           setFilter('natural');
           setSmoothing(0);
