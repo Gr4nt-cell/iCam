@@ -1211,6 +1211,9 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
     if (mode == "video" || mode == "action") {
       try { pending = makePersistent(pending); persistentRec = true } catch (_: Throwable) {}
     }
+    // Keep the timeline continuous if the camera is switched mid-recording
+    portraitProcessor?.let { it.resetTimeline(); it.holdTimeline = true }
+    playSound(android.media.MediaActionSound.START_VIDEO_RECORDING)
     // Keep the display awake for the whole recording
     palm.setEnabled(false)
     keepScreenOn = true
