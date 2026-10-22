@@ -469,7 +469,8 @@ function enhance(img: SkImage, amount: number): SkImage {
   const surf = surface(W, H);
   const paint = Skia.Paint();
   const k = Math.min(1.5, amount);
-  paint.setShader(fx.makeShaderWithChildren([0.7 * k, 0.28 * k, 0.12 * k, Math.max(1, Math.min(W, H) / 2000)], [opt(img), opt(base)]));
+  // Vibrance stays strong even when the phone already processed the photo (matches the video look)
+  paint.setShader(fx.makeShaderWithChildren([0.7 * k, 0.28 * k, 0.45, Math.max(1, Math.min(W, H) / 2000)], [opt(img), opt(base)]));
   surf.getCanvas().drawPaint(paint);
   return snapshot(surf);
 }
@@ -481,28 +482,31 @@ uniform float sharp;
 uniform float clarity;
 uniform float vib;
 uniform float px;
-const half3 LW = half3(0.299, 0.587, 0.114);
+float lum(float3 c) { return dot(c, float3(0.299, 0.587, 0.114)); }
 half4 main(float2 p) {
-  half3 c = img.eval(p).rgb;
-  half3 n1 = (img.eval(p + float2(px, 0)).rgb + img.eval(p - float2(px, 0)).rgb +
-              img.eval(p + float2(0, px)).rgb + img.eval(p - float2(0, px)).rgb) * 0.25;
-  half3 n2 = (img.eval(p + float2(px, px)).rgb + img.eval(p - float2(px, px)).rgb +
-              img.eval(p + float2(px, -px)).rgb + img.eval(p - float2(px, -px)).rgb) * 0.25;
-  half ly = dot(c, LW);
-  half d = ly - dot(n1 * 0.6 + n2 * 0.4, LW);
+  float3 c = float3(img.eval(p).rgb);
+  float3 n1 = (float3(img.eval(p + float2(px, 0.0)).rgb) + float3(img.eval(p - float2(px, 0.0)).rgb) +
+               float3(img.eval(p + float2(0.0, px)).rgb) + float3(img.eval(p - float2(0.0, px)).rgb)) * 0.25;
+  float3 n2 = (float3(img.eval(p + float2(px, px)).rgb) + float3(img.eval(p - float2(px, px)).rgb) +
+               float3(img.eval(p + float2(px, -px)).rgb) + float3(img.eval(p - float2(px, -px)).rgb)) * 0.25;
+  float ly = lum(c);
+  float d = ly - lum(n1 * 0.6 + n2 * 0.4);
   // coring: ignore tiny differences (sensor grain), sharpen real edges/texture
-  half ad = abs(d);
-  half cored = sign(d) * max(ad - 0.006, 0.0) * smoothstep(0.0, 0.03, ad);
-  // limit halos on strong edges
+  float ad = abs(d);
+  float cored = sign(d) * max(ad - 0.006, 0.0) * smoothstep(0.0, 0.03, ad);
   cored = clamp(cored, -0.08, 0.08);
-  half3 o = c + cored * sharp * 1.6;
-  half lb = dot(base.eval(p).rgb, LW);
-  half mid = 1.0 - abs(ly * 2.0 - 1.0);
+  float3 o = c + cored * sharp * 1.6;
+  float lb = lum(float3(base.eval(p).rgb));
+  float mid = 1.0 - abs(ly * 2.0 - 1.0);
   o += (ly - lb) * clarity * mid;
-  half l2 = dot(o, LW);
-  half sat = max(max(o.r, o.g), o.b) - min(min(o.r, o.g), o.b);
-  o = mix(half3(l2), o, 1.0 + vib * (1.0 - sat));
-  return half4(clamp(o, 0.0, 1.0), 1.0);
+  // gentle S-curve for punch (mid-tones untouched at 0.5)
+  float3 sc = o * o * (3.0 - 2.0 * o);
+  o = mix(o, sc, 0.18);
+  // vibrance: boosts muted colours most, protects already-saturated ones and skin
+  float l2 = lum(o);
+  float sat = max(max(o.r, o.g), o.b) - min(min(o.r, o.g), o.b);
+  o = mix(float3(l2), o, 1.0 + vib * (1.0 - sat));
+  return half4(half3(clamp(o, 0.0, 1.0)), 1.0);
 }
 `;
 
@@ -510,7 +514,11 @@ export async function processSingle(path: string, o: SingleOptions): Promise<str
   let img = await loadUpright(path, o.meta);
   if (o.enhance) {
     await yieldFrame();
-    img = enhance(img, o.enhance);
+    try {
+      img = enhance(img, o.enhance);
+    } catch {
+      // keep the unenhanced photo rather than failing (and losing mirroring etc.)
+    }
   }
   if (o.portrait) img = await applyPortrait(img, o.portrait.maskPath, o.portrait.strength);
   img = finishLook(img, o.smoothing, o.filter);

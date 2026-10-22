@@ -181,7 +181,7 @@ function CameraScreen() {
         if (v.photo) setPhoto((p) => ({ ...p, ...v.photo }));
         // v2: HDR video now defaults off (it looked dark on normal screens and bypasses iCam's video processing)
         if (v.video) setVideo((x) => ({ ...x, ...v.video, hdr: v.videoV2 ? !!v.video?.hdr : false }));
-        if (v.mode) setMode(v.mode);
+        if (v.mode) setMode(v.mode === 'pvideo' ? 'video' : v.mode); // Portrait video was removed
         if (typeof v.mirrorSelfie === 'boolean') setMirrorSelfie(v.mirrorSelfie);
         if (v.filter) setFilter(v.filter);
         if (typeof v.smoothing === 'number') setSmoothing(v.smoothing);
@@ -314,10 +314,12 @@ function CameraScreen() {
     setBusy(true);
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     let paths: string[] = [];
+    let meta0: PhotoMeta | undefined;
     try {
       // One full-quality frame; the phone's own image processor (vendor HDR / Bokeh / Night) does the heavy lifting
       const res = await captureBurst(1, 0, 0);
       paths = res.paths;
+      meta0 = res.meta?.[0];
       if (!paths.length) throw new Error(res.error ?? 'No photo captured');
 
       const original = `file://${paths[0]}`;
@@ -356,7 +358,17 @@ function CameraScreen() {
       setLast({ uri, original, isVideo: false, info: look ? `${info} · ${look}` : info, assetId });
       flashToast('Saved');
     } catch (e: any) {
-      if (paths[0]) await saveToGallery(`file://${paths[0]}`).catch(() => {});
+      if (paths[0]) {
+        // Minimal fallback that still honours selfie mirroring and aspect ratio
+        const fallback = await processSingle(paths[0], {
+          smoothing: 0,
+          filter: 'natural',
+          aspect: aspectRatio,
+          meta: meta0,
+          mirror: facing === 'front' && mirrorSelfie,
+        }).catch(() => `file://${paths[0]}`);
+        await saveToGallery(fallback).catch(() => {});
+      }
       flashToast(`${paths[0] ? 'Saved original — ' : ''}${String(e?.message ?? e).slice(0, 80)}`, 4000);
     } finally {
       setProcessing(false);

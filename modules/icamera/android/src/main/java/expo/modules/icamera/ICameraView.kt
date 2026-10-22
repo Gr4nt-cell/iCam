@@ -556,8 +556,9 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
     // recording itself, so CameraX mirroring is off whenever the effect runs
     // Every SDR recording goes through it for low-light tone, denoise and detail
     val useEffect = !hdr
+    // Selfie mirroring is always done by CameraX (it accounts for every device's buffer layout)
     val vb = VideoCapture.Builder(recorder)
-      .setMirrorMode(if (mirror && !useEffect) MirrorMode.MIRROR_MODE_ON_FRONT_ONLY else MirrorMode.MIRROR_MODE_OFF)
+      .setMirrorMode(if (mirror) MirrorMode.MIRROR_MODE_ON_FRONT_ONLY else MirrorMode.MIRROR_MODE_OFF)
     if (wantStab && !previewStab && videoStabOk) vb.setVideoStabilizationEnabled(true)
 
     // Variable frame rate (e.g. 15–30 or 30–60) lets the camera expose longer in dim light instead
@@ -584,7 +585,15 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
         proc.enhance = true
         proc.horizonLock = horizon
         proc.frontCamera = selfieVideo
-        proc.mirrorVideo = mirror
+        proc.mirrorVideo = false
+        // Second-stage (image-based) stabilization on top of the phone's own: crop margin by mode
+        proc.stabCrop = when {
+          stabilization == "off" && !action -> 1f
+          selfieVideo -> 1.06f
+          action -> 1.16f
+          stabilization == "standard" -> 1.08f
+          else -> 1.12f
+        }
         proc.onWeakGpu = { reason -> post { emitPortraitStatus(mapOf("blur" to false, "reason" to reason)) } }
         val group = UseCaseGroup.Builder()
           .addUseCase(newPreview(previewStab, ois))

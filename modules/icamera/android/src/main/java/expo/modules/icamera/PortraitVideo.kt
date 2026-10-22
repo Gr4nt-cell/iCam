@@ -88,6 +88,28 @@ class PortraitProcessor : SurfaceProcessor {
   private var curveNorm = 1f
   private var temporal = 0.25f
 
+  /**
+   * Second-stage stabilization: global motion is measured between consecutive frames (block
+   * matching on a small copy, sub-pixel), the camera path is smoothed, and each frame is shifted
+   * back onto the smooth path inside a small crop margin. Works on whatever shake is left after the
+   * phone's own EIS/OIS, and needs no gyro calibration because it measures the picture itself.
+   * 1 = off; e.g. 1.12 = 12% crop margin.
+   */
+  @Volatile var stabCrop = 1f
+  private val MW = 160
+  private val MH = 90
+  private var motFbo = 0
+  private var motTex = 0
+  private var downProg = 0
+  private var prevLuma: IntArray? = null
+  private var trajX = 0.0
+  private var trajY = 0.0
+  private var smoothX = 0.0
+  private var smoothY = 0.0
+  private var shiftX = 0f
+  private var shiftY = 0f
+  private var lastTs = 0L
+
   /** Clockwise quarter turns that make the camera buffer upright (from the sensor orientation). */
   @Volatile var fixedRotation = -1
 
@@ -233,6 +255,7 @@ class PortraitProcessor : SurfaceProcessor {
     val enh = !blurOn && enhance
     if (enh) {
       if (frame % 6L == 1L) updateStats()
+      if (stabCrop > 1.001f) updateMotion(s.timestamp) else { shiftX = 0f; shiftY = 0f; prevLuma = null }
       processFrame()
       cur = 1 - cur
       havePrev = true
@@ -454,7 +477,109 @@ class PortraitProcessor : SurfaceProcessor {
     GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, vtex[1 - cur])
     GLES20.glUniform1i(GLES20.glGetUniformLocation(outProg, "sCur"), 0)
     GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(outProg, "uStInv"), 1, false, stInv, 0)
+    GLES20.glUniform1f(GLES20.glGetUniformLocation(outProg, "uCrop"), maxOf(1f, stabCrop))
+    GLES20.glUniform2f(GLES20.glGetUniformLocation(outProg, "uShift"), shiftX, shiftY)
     GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
+  }
+
+  /* ---------------- image-based stabilization ---------------- */
+
+  private fun updateMotion(ts: Long) {
+    if (motFbo == 0) {
+      val t = IntArray(1); GLES20.glGenTextures(1, t, 0); motTex = t[0]
+      GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, motTex)
+      GLES20.glTexImage2D(GLES20.GL_TEXTURE_2D, 0, GLES20.GL_RGBA, MW, MH, 0, GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE, null)
+      GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_NEAREST)
+      GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_NEAREST)
+      val f = IntArray(1); GLES20.glGenFramebuffers(1, f, 0); motFbo = f[0]
+      GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, motFbo)
+      GLES20.glFramebufferTexture2D(GLES20.GL_FRAMEBUFFER, GLES20.GL_COLOR_ATTACHMENT0, GLES20.GL_TEXTURE_2D, motTex, 0)
+    }
+    // Area-averaged downscale of the raw frame (in the same uv space the output is sampled in)
+    GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, motFbo)
+    GLES20.glViewport(0, 0, MW, MH)
+    GLES20.glUseProgram(downProg)
+    bindQuad(downProg, stM)
+    applyXform(downProg, identityXform)
+    GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
+    GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, oesTex)
+    GLES20.glUniform1i(GLES20.glGetUniformLocation(downProg, "sTex"), 0)
+    GLES20.glUniform2f(GLES20.glGetUniformLocation(downProg, "uStep"), 1f / MW / 4f, 1f / MH / 4f)
+    GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
+    val buf = ByteBuffer.allocateDirect(MW * MH * 4).order(ByteOrder.nativeOrder())
+    GLES20.glReadPixels(0, 0, MW, MH, GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE, buf)
+    GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
+    val luma = IntArray(MW * MH) { buf.get(it * 4).toInt() and 0xff }
+
+    val prev = prevLuma
+    prevLuma = luma
+    val dt = if (lastTs > 0L && ts > lastTs) ((ts - lastTs) / 1e9).coerceIn(0.005, 0.1) else 1.0 / 30
+    lastTs = ts
+    if (prev == null) { trajX = 0.0; trajY = 0.0; smoothX = 0.0; smoothY = 0.0; return }
+
+    val m = estimateShift(prev, luma)
+    if (m == null) {
+      // Scene change / too fast: re-anchor the path here (no jump)
+      smoothX = trajX; smoothY = trajY
+    } else {
+      trajX += m[0] / MW
+      trajY += m[1] / MH
+    }
+    // Smooth the camera path (~0.45 s time constant), following faster when near the crop edge
+    val limit = ((1f - 1f / stabCrop) / 2f).toDouble()
+    val ex = trajX - smoothX
+    val ey = trajY - smoothY
+    val edge = maxOf(Math.abs(ex), Math.abs(ey)) / maxOf(limit, 1e-4)
+    val tau = if (edge > 0.7) 0.12 else 0.45
+    val alpha = 1 - Math.exp(-dt / tau)
+    smoothX += (trajX - smoothX) * alpha
+    smoothY += (trajY - smoothY) * alpha
+    shiftX = (trajX - smoothX).coerceIn(-limit, limit).toFloat()
+    shiftY = (trajY - smoothY).coerceIn(-limit, limit).toFloat()
+  }
+
+  /** Median block-matching shift (content motion prev → cur) in low-res pixels, or null if unreliable. */
+  private fun estimateShift(prev: IntArray, cur: IntArray): DoubleArray? {
+    val R = 6
+    val bw = 28
+    val bh = 18
+    val xs = intArrayOf(12, 47, 85, 120)
+    val ys = intArrayOf(10, 36, 62)
+    val dxs = ArrayList<Double>()
+    val dys = ArrayList<Double>()
+    val sad = IntArray((2 * R + 1) * (2 * R + 1))
+    for (by in ys) for (bx in xs) {
+      // skip flat blocks (no texture to track)
+      var mn = 255; var mx = 0
+      for (y in by until by + bh step 3) for (x in bx until bx + bw step 3) {
+        val v = prev[y * MW + x]; if (v < mn) mn = v; if (v > mx) mx = v
+      }
+      if (mx - mn < 18) continue
+      var best = Int.MAX_VALUE; var bdx = 0; var bdy = 0
+      for (dy in -R..R) for (dx in -R..R) {
+        var acc = 0
+        for (y in by until by + bh) {
+          val py = y * MW
+          val cy = (y + dy).coerceIn(0, MH - 1) * MW
+          for (x in bx until bx + bw) {
+            acc += Math.abs(cur[cy + (x + dx).coerceIn(0, MW - 1)] - prev[py + x])
+          }
+        }
+        sad[(dy + R) * (2 * R + 1) + (dx + R)] = acc
+        if (acc < best) { best = acc; bdx = dx; bdy = dy }
+      }
+      if (best > bw * bh * 22) continue // poor match (occlusion / big change)
+      if (Math.abs(bdx) == R || Math.abs(bdy) == R) continue // at the search edge: unreliable
+      // sub-pixel refinement (parabola through the neighbours)
+      fun sub(a: Int, b: Int, c: Int): Double { val d = a - 2.0 * b + c; return if (d > 0) 0.5 * (a - c) / d else 0.0 }
+      val i = (bdy + R) * (2 * R + 1) + (bdx + R)
+      val w = 2 * R + 1
+      dxs.add(bdx + sub(sad[i - 1], sad[i], sad[i + 1]))
+      dys.add(bdy + sub(sad[i - w], sad[i], sad[i + w]))
+    }
+    if (dxs.size < 3) return null
+    dxs.sort(); dys.sort()
+    return doubleArrayOf(dxs[dxs.size / 2], dys[dys.size / 2])
   }
 
   /* ---------------- segmentation ---------------- */
@@ -596,6 +721,7 @@ class PortraitProcessor : SurfaceProcessor {
     copyProg = program(VERTEX, COPY_FRAGMENT)
     enhProg = program(ENH_VERTEX, ENH_FRAGMENT)
     outProg = program(VERTEX, OUT_FRAGMENT)
+    downProg = program(VERTEX, DOWN_FRAGMENT)
     val t = IntArray(1)
     GLES20.glGenTextures(1, t, 0)
     maskTex = t[0]
@@ -730,13 +856,36 @@ class PortraitProcessor : SurfaceProcessor {
       }
     """
 
+    // 4×4 box average → luma (for motion estimation)
+    private const val DOWN_FRAGMENT = """
+      #extension GL_OES_EGL_image_external : require
+      precision mediump float;
+      varying vec2 vTex;
+      uniform samplerExternalOES sTex;
+      uniform vec2 uStep;
+      void main() {
+        vec3 acc = vec3(0.0);
+        for (int y = 0; y < 4; y++) {
+          for (int x = 0; x < 4; x++) {
+            acc += texture2D(sTex, vTex + (vec2(float(x), float(y)) - 1.5) * uStep).rgb;
+          }
+        }
+        float l = dot(acc / 16.0, vec3(0.299, 0.587, 0.114));
+        gl_FragColor = vec4(l, l, l, 1.0);
+      }
+    """
+
     private const val OUT_FRAGMENT = """
       precision highp float;
       varying vec2 vTex;
       uniform sampler2D sCur;
       uniform mat4 uStInv;
+      uniform float uCrop;
+      uniform vec2 uShift;
       void main() {
         vec2 uv = (uStInv * vec4(vTex, 0.0, 1.0)).xy;
+        // stabilization: crop margin + shift back onto the smoothed camera path
+        uv = 0.5 + (uv - 0.5) / uCrop + uShift;
         gl_FragColor = vec4(texture2D(sCur, uv).rgb, 1.0);
       }
     """
