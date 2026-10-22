@@ -28,6 +28,8 @@ dependencies {
   implementation "androidx.camera:camera-extensions:$camerax"
   // On-device person segmentation for Portrait mode
   implementation "com.google.mlkit:segmentation-selfie:16.0.0-beta6"
+  // On-device AI zoom (Real-ESRGAN via ONNX Runtime)
+  implementation "com.microsoft.onnxruntime:onnxruntime-android:1.22.0"
   // Subject segmentation (people / pets / objects at any distance) via Google Play services
   implementation "com.google.android.gms:play-services-mlkit-subject-segmentation:16.0.0-beta1"
 }

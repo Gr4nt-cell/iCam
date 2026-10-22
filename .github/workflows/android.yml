@@ -64,6 +64,28 @@ jobs:
             exit 1
           }
 
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - uses: actions/cache@v4
+        id: srmodel
+        with:
+          path: modules/icamera/android/src/main/assets/realesr_general_x4v3.onnx
+          key: sr-model-realesr-general-x4v3-v1
+
+      # AI zoom model: Real-ESRGAN general x4v3 (BSD-3-Clause) converted to ONNX for ONNX Runtime
+      - name: Build AI zoom model
+        if: steps.srmodel.outputs.cache-hit != 'true'
+        run: |
+          set -o pipefail
+          pip install --quiet torch==2.5.1 --index-url https://download.pytorch.org/whl/cpu
+          pip install --quiet numpy onnx onnxruntime
+          curl -sSL -o "$RUNNER_TEMP/sr.pth" https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/realesr-general-x4v3.pth
+          mkdir -p modules/icamera/android/src/main/assets
+          python scripts/export_sr_model.py "$RUNNER_TEMP/sr.pth" modules/icamera/android/src/main/assets/realesr_general_x4v3.onnx 2>&1 | tee -a build.log
+          ls -la modules/icamera/android/src/main/assets
+
       - name: Upload key (Play signing)
         env:
           KS_B64: ${{ secrets.ICAM_UPLOAD_KEYSTORE_BASE64 }}

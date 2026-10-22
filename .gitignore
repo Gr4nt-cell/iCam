@@ -8,3 +8,6 @@ dist/
 *.keystore
 !debug.keystore
 .DS_Store
+
+# generated in CI
+modules/icamera/android/src/main/assets/*.onnx

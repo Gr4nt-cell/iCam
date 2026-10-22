@@ -136,7 +136,29 @@ const NativeModule = requireOptionalNativeModule<{
   detectFaces: (path: string) => Promise<FaceBox[]>;
   segmentPerson: (path: string) => Promise<PersonMask | null>;
   openMedia: (id: string, isVideo: boolean, chooser: boolean) => Promise<void>;
+  aiUpscale: (path: string, maxEdge: number) => Promise<AiUpscaleResult | null>;
+  aiAvailable: () => boolean;
 }>('ICamera');
+
+export type AiUpscaleResult = { path: string; width: number; height: number; ms: number };
+
+/** Whether this build carries the on-device AI zoom model. */
+export function aiAvailable(): boolean {
+  try {
+    return !!NativeModule?.aiAvailable();
+  } catch {
+    return false;
+  }
+}
+
+/** On-device AI 4× super-resolution of an image file (null if unavailable or it failed). */
+export async function aiUpscale(path: string, maxEdge = 512): Promise<AiUpscaleResult | null> {
+  try {
+    return (await NativeModule?.aiUpscale(path, maxEdge)) ?? null;
+  } catch {
+    return null;
+  }
+}
 
 export type PersonMask = { maskPath: string; width: number; height: number; coverage: number };
 

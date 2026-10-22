@@ -84,6 +84,19 @@ class ICameraModule : Module() {
     }
 
     /** Everything the app needs to know about this phone's cameras, read once at startup. */
+    /** On-device AI 4× super-resolution (null when the model isn't in this build). */
+    AsyncFunction("aiUpscale") { inPath: String, maxEdge: Int ->
+      val ctx = appContext.reactContext ?: throw IllegalStateException("No context")
+      if (!AiUpscaler.available(ctx)) return@AsyncFunction null
+      val out = java.io.File(ctx.cacheDir, "iCam_ai_${System.currentTimeMillis()}.jpg").absolutePath
+      AiUpscaler.upscale(ctx, inPath, out, maxEdge.coerceIn(64, 1024))
+    }
+
+    Function("aiAvailable") {
+      val ctx = appContext.reactContext ?: return@Function false
+      AiUpscaler.available(ctx)
+    }
+
     AsyncFunction("getCapabilities") {
       val ctx = appContext.reactContext ?: throw IllegalStateException("No context")
       val provider = ProcessCameraProvider.getInstance(ctx).get(10, TimeUnit.SECONDS)

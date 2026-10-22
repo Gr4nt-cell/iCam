@@ -449,7 +449,43 @@ export type SingleOptions = {
   enhance?: number;
   /** Zoom past the lens maximum: centre crop + upscale + detail reconstruction */
   digitalZoom?: number;
+  /** Use the on-device AI model (Real-ESRGAN) to rebuild detail in the zoomed crop */
+  aiZoom?: boolean;
 };
+
+/**
+ * AI zoom: the zoomed crop goes through Real-ESRGAN (4× super-resolution on the device), which
+ * rebuilds edges and texture; the result is fitted back to full size. Falls back to [zoomCrop].
+ */
+async function aiZoomCrop(img: SkImage, dz: number): Promise<SkImage | null> {
+  const { aiUpscale } = require('../../modules/icamera') as typeof import('../../modules/icamera');
+  const W = img.width();
+  const H = img.height();
+  const cw = W / dz;
+  const ch = H / dz;
+  // crop at real resolution (the network gets the actual pixels, at most 512 px on the long edge)
+  const lim = Math.min(1, 512 / Math.max(cw, ch));
+  const iw = Math.max(16, Math.round(cw * lim));
+  const ih = Math.max(16, Math.round(ch * lim));
+  const surf = surface(iw, ih);
+  surf.getCanvas().drawImageRectOptions(
+    img, Skia.XYWHRect((W - cw) / 2, (H - ch) / 2, cw, ch), Skia.XYWHRect(0, 0, iw, ih), FilterMode.Linear, MipmapMode.None,
+  );
+  const crop = snapshot(surf);
+  const tmp = new File(Paths.cache, `iCam_aiin_${Date.now()}.png`);
+  tmp.create({ overwrite: true });
+  tmp.write(crop.encodeToBytes(ImageFormat.PNG, 100));
+  const res = await aiUpscale(tmp.uri, 512);
+  try { tmp.delete(); } catch {}
+  if (!res) return null;
+  const outUri = res.path.startsWith('file://') ? res.path : `file://${res.path}`;
+  const up = Skia.Image.MakeImageFromEncoded(Skia.Data.fromBytes(await new File(outUri).bytes()));
+  try { new File(outUri).delete(); } catch {}
+  if (!up) return null;
+  const fs = surface(W, H);
+  fs.getCanvas().drawImageRectCubic(up, Skia.XYWHRect(0, 0, up.width(), up.height()), Skia.XYWHRect(0, 0, W, H), 0, 0.5);
+  return enhance(snapshot(fs), 0.35);
+}
 
 /**
  * Digital zoom: centre crop, high-quality bicubic (Catmull-Rom) upscale back to full size, then
@@ -554,7 +590,8 @@ export async function processSingle(path: string, o: SingleOptions): Promise<str
   if (o.digitalZoom && o.digitalZoom > 1.01) {
     await yieldFrame();
     try {
-      img = zoomCrop(img, o.digitalZoom);
+      const ai = o.aiZoom ? await aiZoomCrop(img, o.digitalZoom).catch(() => null) : null;
+      img = ai ?? zoomCrop(img, o.digitalZoom);
     } catch {
       // keep the un-zoomed photo rather than failing
     }
