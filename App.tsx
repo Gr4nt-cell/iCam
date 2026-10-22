@@ -11,6 +11,9 @@ import {
   openMedia,
   segmentPerson,
   getCapabilities,
+  getCaptureRequest,
+  finishCapture,
+  cancelCapture,
   ICameraView,
   type Capabilities,
   type ICameraHandle,
@@ -149,10 +152,9 @@ function CameraScreen() {
   const [recSeconds, setRecSeconds] = useState(0);
   const [paused, setPaused] = useState(false);
   const [palmShutter, setPalmShutter] = useState(false);
-  const [voiceShutter, setVoiceShutter] = useState(false);
-  // Back screen: wanted (switch on) and actually showing
-  const [rearScreen, setRearScreen] = useState(false);
-  const [rearActive, setRearActive] = useState(false);
+  // Another app asked iCam for a photo/video (iCam as the default camera)
+  const [captureReq] = useState(() => getCaptureRequest());
+
   const [countdown, setCountdown] = useState(0);
   const [last, setLast] = useState<Last | null>(null);
   const [toast, setToast] = useState<string | null>(null);
@@ -180,7 +182,6 @@ function CameraScreen() {
     galleryPref: GalleryPref;
     videoV2?: boolean;
     palmShutter?: boolean;
-    voiceShutter?: boolean;
   };
   useEffect(() => {
     loadSettings<Saved>().then((v) => {
@@ -193,7 +194,6 @@ function CameraScreen() {
         if (typeof v.mirrorSelfie === 'boolean') setMirrorSelfie(v.mirrorSelfie);
         if (v.filter === 'natural' || v.filter === 'mono') setFilter(v.filter);
         if (typeof v.palmShutter === 'boolean') setPalmShutter(v.palmShutter);
-        if (typeof v.voiceShutter === 'boolean') setVoiceShutter(v.voiceShutter);
         if (typeof v.smoothing === 'number') setSmoothing(v.smoothing);
         if (v.pip) setPip(v.pip);
         if (v.manual) setManual(v.manual);
@@ -210,11 +210,11 @@ function CameraScreen() {
     if (!settingsLoaded) return;
     if (!remember) return;
     const t = setTimeout(
-      () => saveSettings({ videoV2: true, palmShutter, voiceShutter, remember, mode, photo, video, mirrorSelfie, filter, smoothing, pip, manual, brightness, shadows, aspect, bokeh, galleryPref }),
+      () => saveSettings({ videoV2: true, palmShutter, remember, mode, photo, video, mirrorSelfie, filter, smoothing, pip, manual, brightness, shadows, aspect, bokeh, galleryPref }),
       400,
     );
     return () => clearTimeout(t);
-  }, [settingsLoaded, remember, mode, photo, video, mirrorSelfie, filter, smoothing, pip, manual, brightness, shadows, aspect, bokeh, galleryPref, palmShutter, voiceShutter]);
+  }, [settingsLoaded, remember, mode, photo, video, mirrorSelfie, filter, smoothing, pip, manual, brightness, shadows, aspect, bokeh, galleryPref, palmShutter]);
 
   // If the phone turns out too weak for live blur, fall back to normal Video once not recording
   useEffect(() => {
@@ -282,6 +282,11 @@ function CameraScreen() {
     setZoom((z) => Math.min(z, maxZoom));
   }, [maxZoom]);
 
+  useEffect(() => {
+    if (captureReq === 'video') setMode('video');
+    else if (captureReq === 'image') setMode('photo');
+  }, [captureReq]);
+
   /* ---------- helpers ---------- */
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const flashToast = useCallback((t: string, ms = 2200) => {
@@ -339,9 +344,7 @@ function CameraScreen() {
   /* ---------- capture: photo / night / pro photo ---------- */
   /** Front camera: does the JPEG need flipping to match the mirror setting? (1 = phone already mirrored it) */
   const needsFlip = (jpegMirrored?: number) =>
-    facing === 'front'
-      ? jpegMirrored === 1 ? !mirrorSelfie : mirrorSelfie
-      : rearActive && mirrorSelfie; // back-screen selfies with the main camera
+    facing === 'front' && (jpegMirrored === 1 ? !mirrorSelfie : mirrorSelfie);
 
   const shootPhoto = useCallback(async () => {
     if (busy || !ready) return;
@@ -399,6 +402,11 @@ function CameraScreen() {
             ? ext === 'bokeh' ? 'Portrait (depth)' : portrait ? 'Portrait (subject mask)' : 'Portrait'
             : ext === 'hdr' ? 'Photo (phone HDR)' : ext === 'auto' ? 'Photo (phone Auto)' : 'Photo';
       const zoomNote = facing === 'back' && zoom > zoomRange.max * 1.01 ? ` · ${Math.round(zoom)}× ${zoom > zoomRange.max * 1.5 ? 'AI zoom' : 'detail zoom'}` : '';
+      if (captureReq === 'image') {
+        // Requested by another app: hand the photo back instead of saving it to the gallery
+        flashToast('Sending photo…');
+        if (await finishCapture(uri, false)) return;
+      }
       const assetId = await saveToGallery(uri);
       setLast({ uri, original, isVideo: false, info: (look ? `${info} · ${look}` : info) + zoomNote, assetId });
       flashToast('Saved');
@@ -419,7 +427,7 @@ function CameraScreen() {
       setProcessing(false);
       setBusy(false);
     }
-  }, [busy, ready, mode, facing, mirrorSelfie, rearActive, zoom, zoomRange, smoothing, filter, aspectRatio, bokeh, captureBurst, saveToGallery, flashToast]);
+  }, [busy, ready, mode, facing, mirrorSelfie, captureReq, zoom, zoomRange, smoothing, filter, aspectRatio, bokeh, captureBurst, saveToGallery, flashToast]);
 
   /* ---------- capture: video ---------- */
   const toggleRecording = useCallback(async () => {
@@ -484,12 +492,12 @@ function CameraScreen() {
     return shootPhoto();
   }, [isVideoMode, recording, timer, runCountdown, toggleRecording, shootPhoto]);
 
-  // Palm shutter → 3 s timer then shoot; voice "cheese" → shoot now
+  // Palm shutter → 3 s timer then shoot
   const onGesture = useCallback(
-    async (kind: 'palm' | 'voice') => {
+    async () => {
       if (busy || countdown > 0 || recording || isVideoMode) return;
-      flashToast(kind === 'palm' ? 'Palm detected' : '"Cheese!"', 1200);
-      if (kind === 'palm') await runCountdown(3);
+      flashToast('Palm detected', 1200);
+      await runCountdown(3);
       shootPhoto();
     },
     [busy, countdown, recording, isVideoMode, flashToast, runCountdown, shootPhoto],
@@ -642,34 +650,7 @@ function CameraScreen() {
           stabilization={video.stabilization}
           faceSmoothing={smoothing}
           palmShutter={palmShutter}
-          voiceShutter={voiceShutter && perms.mic}
-          rearScreen={rearScreen}
-          rearState={{
-            mode: isVideoMode ? 'video' : 'photo',
-            recording,
-            countdown,
-            time: `${String(Math.floor(recSeconds / 60)).padStart(2, '0')}:${String(recSeconds % 60).padStart(2, '0')}`,
-            busy: busy || processing,
-            mirror: mirrorSelfie && facing === 'back',
-          }}
-          onGesture={(e) => onGesture(e.nativeEvent.kind)}
-          onRearScreen={(e) => {
-            const r = e.nativeEvent;
-            if (r.error) {
-              setRearScreen(false);
-              setRearActive(false);
-              flashToast(r.error, 5000);
-              return;
-            }
-            if (typeof r.active === 'boolean') {
-              setRearActive(r.active);
-              if (!r.active) setRearScreen(false);
-              else if (facing === 'front') setFacing('back'); // back screen = selfies with the main camera
-            }
-            if (r.action === 'shutter') onShutterRef.current();
-            if (r.action === 'mode') changeModeRef.current(isVideoMode ? 'photo' : 'video');
-            if (r.action === 'close') setRearScreen(false);
-          }}
+          onGesture={() => onGesture()}
           filterParams={(() => {
             const f = filterByKey(filter);
             return [f.sat, f.contrast, f.warmth, f.fade, f.mono, f.vignette];
@@ -712,6 +693,7 @@ function CameraScreen() {
               flashToast(error ?? 'Recording failed', 4000);
               return;
             }
+            if (captureReq === 'video' && (await finishCapture(`file://${path}`, true))) return;
             try {
               const assetId = await saveToGallery(`file://${path}`);
               setLast({
@@ -789,18 +771,6 @@ function CameraScreen() {
               <MaterialCommunityIcons name="rotate-left" size={22} color={video.stabilization === 'horizon' ? '#ffd76a' : '#fff'} />
             </Pressable>
           )}
-          {(caps?.rearScreen || caps?.root) && (
-            <Pressable
-              hitSlop={8}
-              onPress={() => {
-                Haptics.selectionAsync();
-                setRearScreen((v) => !v);
-                if (!rearScreen) flashToast('Opening the back screen…');
-              }}
-            >
-              <MaterialCommunityIcons name="cellphone-arrow-down" size={22} color={rearScreen ? '#ffd76a' : '#fff'} />
-            </Pressable>
-          )}
           {(facing === 'front' || mode === 'dual') && (
             <Pressable hitSlop={8} onPress={() => setMirrorSelfie((v) => !v)}>
               <MaterialCommunityIcons name="flip-horizontal" size={22} color={mirrorSelfie ? '#ffd76a' : '#fff'} />
@@ -842,19 +812,16 @@ function CameraScreen() {
         />
       )}
 
-      {rearActive && (
-        <View style={[StyleSheet.absoluteFill, styles.center, { backgroundColor: '#000' }]}>
-          <MaterialCommunityIcons name="cellphone-arrow-down" size={48} color="rgba(255,255,255,0.8)" />
-          <Text style={{ color: '#fff', fontSize: 18, fontWeight: '700', marginTop: 12 }}>Using the back screen</Text>
-          <Text style={{ color: 'rgba(255,255,255,0.6)', fontSize: 13, marginTop: 6, textAlign: 'center', paddingHorizontal: 40 }}>
-            Turn the phone around and shoot with the main camera. Tap below to switch back.
-          </Text>
-          <Pressable
-            onPress={() => setRearScreen(false)}
-            style={{ marginTop: 24, paddingHorizontal: 22, height: 44, borderRadius: 22, backgroundColor: 'rgba(255,255,255,0.14)', justifyContent: 'center' }}
-          >
-            <Text style={{ color: '#fff', fontWeight: '700' }}>Switch to front screen</Text>
-          </Pressable>
+      {captureReq && (
+        <View style={{ position: 'absolute', top: insets.top + 64, alignSelf: 'center' }}>
+          <Glass radius={18} style={{ flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 14, height: 36 }}>
+            <Text style={{ color: '#fff', fontWeight: '700', fontSize: 13 }}>
+              {captureReq === 'image' ? 'Take a photo for the app' : 'Record a video for the app'}
+            </Text>
+            <Pressable hitSlop={10} onPress={() => cancelCapture()}>
+              <MaterialCommunityIcons name="close" size={18} color="#fff" />
+            </Pressable>
+          </Glass>
         </View>
       )}
 
@@ -971,11 +938,6 @@ function CameraScreen() {
         onMirrorSelfie={setMirrorSelfie}
         palmShutter={palmShutter}
         onPalmShutter={setPalmShutter}
-        voiceShutter={voiceShutter}
-        onVoiceShutter={(v: boolean) => {
-          setVoiceShutter(v);
-          if (v && !perms.mic) flashToast('Voice shutter needs microphone permission', 3500);
-        }}
         capabilities={caps}
         remember={remember}
         onRemember={(v) => {

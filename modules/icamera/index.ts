@@ -59,9 +59,7 @@ export type Capabilities = {
   macro?: boolean;
   macroKind?: 'tele' | 'dedicated';
   macroMinFocusCm?: number;
-  /** A back screen apps can reach directly, and whether root (su) is present */
-  rearScreen?: boolean;
-  root?: boolean;
+
 };
 
 type NativeEvent<T> = { nativeEvent: T };
@@ -115,12 +113,9 @@ export type ICameraProps = ViewProps & {
   bokeh?: number;
   onPortraitStatus?: (e: NativeEvent<{ blur: boolean; reason?: string }>) => void;
   onRecordingState?: (e: NativeEvent<{ paused: boolean }>) => void;
-  onGesture?: (e: NativeEvent<{ kind: 'palm' | 'voice' }>) => void;
-  onRearScreen?: (e: NativeEvent<{ active?: boolean; error?: string; action?: 'shutter' | 'mode' | 'close' | 'flip' }>) => void;
+  onGesture?: (e: NativeEvent<{ kind: 'palm' }>) => void;
   palmShutter?: boolean;
-  voiceShutter?: boolean;
-  rearScreen?: boolean;
-  rearState?: { mode: 'photo' | 'video'; recording: boolean; countdown: number; time: string; busy: boolean; mirror: boolean };
+
   onReady?: (e: NativeEvent<ReadyEvent>) => void;
   onError?: (e: NativeEvent<{ message: string }>) => void;
   onRecordingFinished?: (
@@ -156,7 +151,34 @@ const NativeModule = requireOptionalNativeModule<{
   openMedia: (id: string, isVideo: boolean, chooser: boolean) => Promise<void>;
   aiUpscale: (path: string, maxEdge: number) => Promise<AiUpscaleResult | null>;
   aiAvailable: () => boolean;
+  getCaptureRequest: () => 'image' | 'video' | null;
+  finishCapture: (path: string, isVideo: boolean) => Promise<boolean>;
+  cancelCapture: () => Promise<boolean>;
 }>('ICamera');
+
+/** Set when another app opened iCam to take a photo or video for it ("default camera" use). */
+export function getCaptureRequest(): 'image' | 'video' | null {
+  try {
+    return NativeModule?.getCaptureRequest() ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/** Returns the photo/video to the app that asked for it (iCam then closes). */
+export async function finishCapture(path: string, isVideo: boolean): Promise<boolean> {
+  try {
+    return !!(await NativeModule?.finishCapture(path, isVideo));
+  } catch {
+    return false;
+  }
+}
+
+export async function cancelCapture(): Promise<void> {
+  try {
+    await NativeModule?.cancelCapture();
+  } catch {}
+}
 
 export type AiUpscaleResult = { path: string; width: number; height: number; ms: number };
 

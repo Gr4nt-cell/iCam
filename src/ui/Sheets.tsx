@@ -21,8 +21,6 @@ type SettingsProps = {
   onMirrorSelfie: (v: boolean) => void;
   palmShutter: boolean;
   onPalmShutter: (v: boolean) => void;
-  voiceShutter: boolean;
-  onVoiceShutter: (v: boolean) => void;
   capabilities: Capabilities | null;
   remember: boolean;
   onRemember: (v: boolean) => void;
@@ -62,9 +60,6 @@ export function SettingsSheet(p: SettingsProps) {
             <Section title="Hands-free shutter">
               <Row label="Palm shutter" hint="Raise an open hand toward the camera: a 3-second timer starts and the photo is taken">
                 <Toggle value={p.palmShutter} onChange={p.onPalmShutter} />
-              </Row>
-              <Row label="Voice shutter" hint='Say "Cheese" to take a photo (photo modes)'>
-                <Toggle value={p.voiceShutter} onChange={p.onVoiceShutter} />
               </Row>
             </Section>
 

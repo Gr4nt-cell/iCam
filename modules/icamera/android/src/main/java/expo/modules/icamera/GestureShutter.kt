@@ -1,14 +1,8 @@
 package expo.modules.icamera
 
-import android.content.Context
-import android.content.Intent
 import android.graphics.Bitmap
-import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
-import android.speech.RecognitionListener
-import android.speech.RecognizerIntent
-import android.speech.SpeechRecognizer
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.pose.PoseDetection
 import com.google.mlkit.vision.pose.PoseLandmark
@@ -95,81 +89,3 @@ class PalmDetector(private val onPalm: () -> Unit) {
   }
 }
 
-/** Voice shutter: listens for "cheese" with the phone's speech recognizer (offline when available). */
-class VoiceShutter(private val ctx: Context, private val onWord: () -> Unit, private val onError: (String) -> Unit) {
-  private val main = Handler(Looper.getMainLooper())
-  private var recognizer: SpeechRecognizer? = null
-  private var running = false
-  private var lastFire = 0L
-
-  fun setEnabled(on: Boolean) {
-    if (on == running) return
-    running = on
-    if (on) start() else stop()
-  }
-
-  private fun heard(list: ArrayList<String>?): Boolean =
-    list?.any { it.lowercase().contains("cheese") } == true
-
-  private fun start() {
-    if (!running) return
-    if (!SpeechRecognizer.isRecognitionAvailable(ctx)) {
-      running = false
-      onError("Voice shutter needs a speech recognition service on this phone")
-      return
-    }
-    val r = recognizer ?: SpeechRecognizer.createSpeechRecognizer(ctx).also { recognizer = it }
-    r.setRecognitionListener(object : RecognitionListener {
-      override fun onReadyForSpeech(params: Bundle?) {}
-      override fun onBeginningOfSpeech() {}
-      override fun onRmsChanged(rmsdB: Float) {}
-      override fun onBufferReceived(buffer: ByteArray?) {}
-      override fun onEndOfSpeech() {}
-      override fun onEvent(eventType: Int, params: Bundle?) {}
-      override fun onPartialResults(partial: Bundle?) {
-        if (heard(partial?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION))) fire()
-      }
-      override fun onResults(results: Bundle?) {
-        if (heard(results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION))) fire()
-        restart(250)
-      }
-      override fun onError(error: Int) {
-        if (error == SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS) {
-          running = false
-          onError("Voice shutter needs microphone permission")
-          return
-        }
-        restart(if (error == SpeechRecognizer.ERROR_RECOGNIZER_BUSY) 1200L else 400L)
-      }
-    })
-    val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-      putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-      putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
-      putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
-      putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 5)
-      putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, ctx.packageName)
-    }
-    try { r.startListening(intent) } catch (e: Throwable) { restart(1500) }
-  }
-
-  private fun fire() {
-    val now = System.currentTimeMillis()
-    if (now - lastFire < 2500) return
-    lastFire = now
-    onWord()
-  }
-
-  private fun restart(delay: Long) {
-    if (!running) return
-    main.postDelayed({ if (running) { try { recognizer?.cancel() } catch (_: Throwable) {}; start() } }, delay)
-  }
-
-  private fun stop() {
-    main.removeCallbacksAndMessages(null)
-    try { recognizer?.cancel() } catch (_: Throwable) {}
-    try { recognizer?.destroy() } catch (_: Throwable) {}
-    recognizer = null
-  }
-
-  fun release() { running = false; stop() }
-}

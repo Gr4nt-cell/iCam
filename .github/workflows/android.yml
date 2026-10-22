@@ -114,8 +114,17 @@ jobs:
               echo "ICAM_UPLOAD_KEY_PASSWORD=${KS_KEY_PASS:-$KS_PASS}"
             } >> "$GITHUB_ENV"
             echo "::notice title=Signing::Release APK/AAB signed with the Play upload key"
+          elif [ -f signing/icam-upload.jks ]; then
+            # Upload key kept in this private repo
+            {
+              echo "ICAM_UPLOAD_STORE_FILE=$GITHUB_WORKSPACE/signing/icam-upload.jks"
+              echo "ICAM_UPLOAD_STORE_PASSWORD=$(sed -n 's/^storePassword=//p' signing/upload.properties)"
+              echo "ICAM_UPLOAD_KEY_ALIAS=$(sed -n 's/^keyAlias=//p' signing/upload.properties)"
+              echo "ICAM_UPLOAD_KEY_PASSWORD=$(sed -n 's/^keyPassword=//p' signing/upload.properties)"
+            } >> "$GITHUB_ENV"
+            echo "::notice title=Signing::Release APK/AAB signed with the Play upload key (repo keystore)"
           else
-            echo "::warning title=Signing::No upload key secrets set - AAB is debug-signed and Play will reject it. Add the ICAM_UPLOAD_* repository secrets."
+            echo "::warning title=Signing::No upload key - AAB is debug-signed and Play will reject it."
           fi
 
       - name: Generate native Android project
@@ -168,8 +177,10 @@ jobs:
           # share of app classes renamed by R8 (a, b, c... names)
           total=$(grep -c " -> " out/aab/mapping-*.txt 2>/dev/null || echo 0)
           renamed=$(grep -E "^[^ ].* -> [a-zA-Z0-9_.$]*\.?[a-z]{1,3}:$" out/aab/mapping-*.txt 2>/dev/null | wc -l)
-          signer=$(keytool -printcert -jarfile out/aab/*.aab 2>/dev/null | grep -m1 "Owner")
-          echo "::notice title=Play pre-checks::$vc | $sdk | screenOrientation attrs: $orient | resizeableActivity=false: $resize | R8 classes renamed: $renamed / $total | signer: ${signer:-unsigned?}"
+          signer=$(keytool -printcert -jarfile out/aab/*.aab 2>/dev/null | grep -m1 -E "Owner|SHA256")
+          orientv=$(echo "$man" | grep -A0 "screenOrientation" | head -2 | tr -s ' ')
+          filters=$(echo "$man" | grep -c "IMAGE_CAPTURE\|VIDEO_CAPTURE\|STILL_IMAGE_CAMERA")
+          echo "::notice title=Play pre-checks::$vc | $sdk | screenOrientation attrs: $orient | resizeableActivity=false: $resize | R8 classes renamed: $renamed / $total | orientation: $orientv | camera intent filters: $filters | signer: ${signer:-unsigned?}"
 
       - uses: actions/upload-artifact@v4
         with:

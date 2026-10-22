@@ -92,6 +92,57 @@ class ICameraModule : Module() {
       AiUpscaler.upscale(ctx, inPath, out, maxEdge.coerceIn(64, 1024))
     }
 
+    /** "image" / "video" when another app asked iCam to take a photo/video for it, else null. */
+    Function("getCaptureRequest") {
+      when (appContext.currentActivity?.intent?.action) {
+        android.provider.MediaStore.ACTION_IMAGE_CAPTURE -> "image"
+        android.provider.MediaStore.ACTION_VIDEO_CAPTURE -> "video"
+        else -> null
+      }
+    }
+
+    /** Hands the photo/video back to the app that asked for it and closes. */
+    AsyncFunction("finishCapture") { path: String, isVideo: Boolean ->
+      val act = appContext.currentActivity ?: throw IllegalStateException("No activity")
+      val src = java.io.File(android.net.Uri.parse(path).path ?: path.removePrefix("file://"))
+      val req = act.intent
+      @Suppress("DEPRECATION")
+      val out: android.net.Uri? = req?.getParcelableExtra(android.provider.MediaStore.EXTRA_OUTPUT)
+        ?: req?.clipData?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.uri
+      val result = android.content.Intent()
+      if (out != null) {
+        act.contentResolver.openOutputStream(out, "w")?.use { o -> src.inputStream().use { it.copyTo(o) } }
+        result.data = out
+      } else if (isVideo) {
+        // No destination given: store it in Movies/iCam and return its content address
+        val values = android.content.ContentValues().apply {
+          put(android.provider.MediaStore.Video.Media.DISPLAY_NAME, src.name)
+          put(android.provider.MediaStore.Video.Media.MIME_TYPE, "video/mp4")
+          if (android.os.Build.VERSION.SDK_INT >= 29) put(android.provider.MediaStore.Video.Media.RELATIVE_PATH, "Movies/iCam")
+        }
+        val uri = act.contentResolver.insert(android.provider.MediaStore.Video.Media.EXTERNAL_CONTENT_URI, values)
+          ?: throw IllegalStateException("Couldn't save the video")
+        act.contentResolver.openOutputStream(uri, "w")?.use { o -> src.inputStream().use { it.copyTo(o) } }
+        result.data = uri
+        result.addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+      } else {
+        // No destination given: the convention is a small preview bitmap in "data"
+        val opts = android.graphics.BitmapFactory.Options().apply { inSampleSize = 8 }
+        val bmp = android.graphics.BitmapFactory.decodeFile(src.absolutePath, opts)
+        result.putExtra("data", bmp)
+      }
+      act.setResult(android.app.Activity.RESULT_OK, result)
+      act.finish()
+      true
+    }
+
+    AsyncFunction("cancelCapture") {
+      val act = appContext.currentActivity ?: return@AsyncFunction false
+      act.setResult(android.app.Activity.RESULT_CANCELED)
+      act.finish()
+      true
+    }
+
     Function("aiAvailable") {
       val ctx = appContext.reactContext ?: return@Function false
       AiUpscaler.available(ctx)
@@ -107,7 +158,7 @@ class ICameraModule : Module() {
     }
 
     View(ICameraView::class) {
-      Events("onReady", "onError", "onRecordingFinished", "onPhotosCaptured", "onDualChange", "onPortraitStatus", "onRecordingState", "onGesture", "onRearScreen")
+      Events("onReady", "onError", "onRecordingFinished", "onPhotosCaptured", "onDualChange", "onPortraitStatus", "onRecordingState", "onGesture")
 
       Prop("mode") { view: ICameraView, v: String -> view.setMode(v) }
       Prop("facing") { view: ICameraView, v: String -> view.setFacing(v) }
@@ -132,9 +183,6 @@ class ICameraModule : Module() {
       Prop("aspect") { view: ICameraView, v: String -> view.setAspect(v) }
       Prop("bokeh") { view: ICameraView, v: Double -> view.setBokeh(v.toFloat()) }
       Prop("palmShutter") { view: ICameraView, v: Boolean -> view.setPalmShutter(v) }
-      Prop("voiceShutter") { view: ICameraView, v: Boolean -> view.setVoiceShutter(v) }
-      Prop("rearScreen") { view: ICameraView, v: Boolean -> view.setRearScreen(v) }
-      Prop("rearState") { view: ICameraView, v: Map<String, Any?> -> view.setRearState(v) }
       Prop("faceSmoothing") { view: ICameraView, v: Double -> view.setFaceSmoothing(v.toFloat()) }
       Prop("filterParams") { view: ICameraView, v: List<Double> -> view.setFilterParams(v.map { it.toFloat() }.toFloatArray()) }
       Prop("previewFit") { view: ICameraView, v: Boolean -> view.setPreviewFit(v) }
@@ -195,10 +243,7 @@ class ICameraModule : Module() {
       "minFocusDistance" to (back?.get("minFocusDistance") ?: 0.0),
       "cameras" to cameras,
       "portraitVideo" to portraitVideoCapable(ctx),
-    ) + zoomProfile(ctx, back) + macroProfile(ctx) + mapOf(
-      "rearScreen" to (RearScreen.visibleRearDisplay(ctx) != null),
-      "root" to RearScreen.hasRoot(),
-    )
+    ) + zoomProfile(ctx, back) + macroProfile(ctx)
   }
 
   @OptIn(ExperimentalCamera2Interop::class, ExperimentalHighSpeedVideo::class, androidx.camera.core.ExperimentalSessionConfig::class)

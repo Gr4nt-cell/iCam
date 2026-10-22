@@ -56,7 +56,8 @@
           "backgroundColor": "#000000"
         }
       ],
-      "./plugins/withReleaseSigning"
+      "./plugins/withReleaseSigning",
+      "./plugins/withDefaultCamera"
     ],
     "icon": "./assets/icon.png"
   }

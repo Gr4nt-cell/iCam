@@ -78,7 +78,6 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
   private val onPortraitStatus by EventDispatcher()
   private val onRecordingState by EventDispatcher()
   private val onGesture by EventDispatcher()
-  private val onRearScreen by EventDispatcher()
 
   companion object {
     private val PHOTO_MODES = setOf("photo", "portrait", "night", "pro", "macro")
@@ -145,7 +144,6 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
   private fun emitPortraitStatus(m: Map<String, Any?>) = onPortraitStatus(clean(m))
   private fun emitRecordingState(m: Map<String, Any?>) = onRecordingState(clean(m))
   private fun emitGesture(m: Map<String, Any?>) = onGesture(clean(m))
-  private fun emitRearScreen(m: Map<String, Any?>) = onRearScreen(clean(m))
 
   private var burstEvOffset = 0.0
 
@@ -213,55 +211,19 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
   private var filterParams = FloatArray(0)
   private fun filterActive(f: FloatArray) = f.size >= 6 &&
     (Math.abs(f[0] - 1f) > 0.001f || Math.abs(f[1] - 1f) > 0.001f || f[2] != 0f || f[3] != 0f || f[4] != 0f || f[5] != 0f)
-  /* ---------------- palm / voice shutter ---------------- */
+  /* ---------------- palm shutter ---------------- */
   private var palmOn = false
-  private var voiceOn = false
   private val palm by lazy {
     PalmDetector { emitGesture(mapOf("kind" to "palm")) }.also { d ->
-      d.frameSource = { try { (rearPreview ?: previewView).bitmap } catch (e: Throwable) { null } }
+      d.frameSource = { try { previewView.bitmap } catch (e: Throwable) { null } }
     }
   }
-  private val voice by lazy {
-    VoiceShutter(context, { emitGesture(mapOf("kind" to "voice")) }) { msg -> emitError(msg) }
-  }
   fun setPalmShutter(v: Boolean) { palmOn = v; updateGestures() }
-  fun setVoiceShutter(v: Boolean) { voiceOn = v; updateGestures() }
   /** Gestures run only in photo modes while the camera is live and nothing is being recorded. */
   private fun updateGestures() {
     val photo = mode in PHOTO_MODES
     val live = active && isAttachedToWindow && recording == null
     palm.setEnabled(palmOn && photo && live)
-    voice.setEnabled(voiceOn && photo && live)
-  }
-
-  /* ---------------- back screen ---------------- */
-  private var rearPreview: PreviewView? = null
-  private var rearWanted = false
-  fun setRearScreen(v: Boolean) {
-    if (v == rearWanted) return
-    rearWanted = v
-    if (v) {
-      RearBridge.onAction = { a -> post { emitRearScreen(mapOf("action" to a)) } }
-      RearBridge.onAttach = { pv -> post { onRearAttached(pv) } }
-      Thread {
-        val err = RearScreen.launch(context.applicationContext)
-        if (err != null) post {
-          rearWanted = false
-          emitRearScreen(mapOf("active" to false, "error" to err))
-        }
-      }.start()
-    } else {
-      RearBridge.close()
-    }
-  }
-  fun setRearState(m: Map<String, Any?>) { RearBridge.pushState(m) }
-  private fun onRearAttached(pv: PreviewView?) {
-    rearPreview = pv
-    // Move the live viewfinder to whichever screen is in use (rebind picks up the new target)
-    currentPreview?.setSurfaceProvider((pv ?: previewView).surfaceProvider)
-    pv?.display?.rotation?.let { currentPreview?.targetRotation = it }
-    emitRearScreen(mapOf("active" to (pv != null)))
-    if (pv == null) { rearWanted = false; RearBridge.onAttach = null }
   }
 
   private var faceSmoothing = 0f
@@ -483,8 +445,6 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
     provider?.unbindAll()
     setRollSensor(false)
     palm.setEnabled(false)
-    voice.setEnabled(false)
-    RearBridge.close()
     portraitProcessor?.release()
     portraitProcessor = null
     camera = null
@@ -588,9 +548,8 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
       androidx.camera.camera2.interop.Camera2Interop.Extender(b)
         .setCaptureRequestOption(CaptureRequest.LENS_OPTICAL_STABILIZATION_MODE, CaptureRequest.LENS_OPTICAL_STABILIZATION_MODE_ON)
     }
-    rearPreview?.display?.rotation?.let { b.setTargetRotation(it) }
     return b.build().also {
-      it.setSurfaceProvider((rearPreview ?: previewView).surfaceProvider)
+      it.setSurfaceProvider(previewView.surfaceProvider)
       currentPreview = it
     }
   }
@@ -855,8 +814,7 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
       .setFlashMode(flashMode())
     macroOpts(ib)
     val preview = pb.build().also {
-      rearPreview?.display?.rotation?.let { r -> it.targetRotation = r }
-      it.setSurfaceProvider((rearPreview ?: previewView).surfaceProvider)
+      it.setSurfaceProvider(previewView.surfaceProvider)
       currentPreview = it
     }
     val ic = ib.build()
@@ -1207,8 +1165,7 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
     if (mode == "video" || mode == "action") {
       try { pending = makePersistent(pending); persistentRec = true } catch (_: Throwable) {}
     }
-    // Keep the display awake for the whole recording; free the microphone from the voice shutter
-    voice.setEnabled(false)
+    // Keep the display awake for the whole recording
     palm.setEnabled(false)
     keepScreenOn = true
     rootView?.keepScreenOn = true
