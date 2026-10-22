@@ -124,7 +124,7 @@ function CameraScreen() {
   });
   const [mirrorSelfie, setMirrorSelfie] = useState(true);
   const [filter, setFilter] = useState<FilterKey>('natural');
-  const smoothing = 0; // skin smoothing removed
+  const [smoothing, setSmoothing] = useState(0);
   const [showLook, setShowLook] = useState(false);
   const [manual, setManual] = useState<ManualSettings>(AUTO_MANUAL);
   const [proVideo, setProVideo] = useState(false);
@@ -147,6 +147,7 @@ function CameraScreen() {
   const [processing, setProcessing] = useState(false);
   const [recording, setRecording] = useState(false);
   const [recSeconds, setRecSeconds] = useState(0);
+  const [paused, setPaused] = useState(false);
   const [countdown, setCountdown] = useState(0);
   const [last, setLast] = useState<Last | null>(null);
   const [toast, setToast] = useState<string | null>(null);
@@ -184,7 +185,7 @@ function CameraScreen() {
         if (v.mode) setMode(v.mode === 'pvideo' ? 'video' : v.mode); // Portrait video was removed
         if (typeof v.mirrorSelfie === 'boolean') setMirrorSelfie(v.mirrorSelfie);
         if (v.filter) setFilter(v.filter);
-        // Skin smoothing was removed
+        if (typeof v.smoothing === 'number') setSmoothing(v.smoothing);
         if (v.pip) setPip(v.pip);
         if (v.manual) setManual(v.manual);
         if (typeof v.brightness === 'number') setBrightness(v.brightness);
@@ -416,6 +417,7 @@ function CameraScreen() {
     }
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
     setRecSeconds(0);
+    setPaused(false);
     setRecording(true);
     await c.startRecording().catch((e) => {
       setRecording(false);
@@ -424,10 +426,22 @@ function CameraScreen() {
   }, [recording, flashToast]);
 
   useEffect(() => {
-    if (!recording) return;
+    if (!recording || paused) return;
     const id = setInterval(() => setRecSeconds((s) => s + 1), 1000);
     return () => clearInterval(id);
-  }, [recording]);
+  }, [recording, paused]);
+
+  const togglePause = useCallback(() => {
+    const c = cam.current;
+    if (!c || !recording) return;
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    if (paused) c.resumeRecording().catch(() => {});
+    else c.pauseRecording().catch(() => {});
+    setPaused(!paused);
+  }, [recording, paused]);
+
+  // Front/back can be switched mid-recording in Video and Action (the clip continues)
+  const canFlipWhileRecording = mode === 'video' || mode === 'action';
 
   const onShutter = useCallback(async () => {
     if (isVideoMode) return toggleRecording();
@@ -585,6 +599,7 @@ function CameraScreen() {
           fps={video.fps}
           hdrVideo={video.hdr}
           stabilization={video.stabilization}
+          faceSmoothing={smoothing}
           filterParams={(() => {
             const f = filterByKey(filter);
             return [f.sat, f.contrast, f.warmth, f.fade, f.mono, f.vignette];
@@ -618,8 +633,10 @@ function CameraScreen() {
             burstWaiter.current = null;
             w?.(e.nativeEvent);
           }}
+          onRecordingState={(e) => setPaused(e.nativeEvent.paused)}
           onRecordingFinished={async (e) => {
             setRecording(false);
+            setPaused(false);
             const { path, durationMs, slowMotion, error } = e.nativeEvent;
             if (!path) {
               flashToast(error ?? 'Recording failed', 4000);
@@ -675,7 +692,7 @@ function CameraScreen() {
               <MaterialCommunityIcons
                 name="palette-outline"
                 size={22}
-                color={showLook || filter !== 'natural' ? '#ffd76a' : '#fff'}
+                color={showLook || filter !== 'natural' || smoothing > 0.01 ? '#ffd76a' : '#fff'}
               />
             </Pressable>
           )}
@@ -718,9 +735,9 @@ function CameraScreen() {
         </Glass>
         {recording ? (
           <Glass radius={18} style={styles.recBadge} tint="rgba(255,59,48,0.55)">
-            <View style={styles.recLed} />
+            <View style={[styles.recLed, paused && { opacity: 0.4 }]} />
             <Text style={styles.recText}>
-              {mm}:{ss}
+              {paused ? 'PAUSED · ' : ''}{mm}:{ss}
             </Text>
           </Glass>
         ) : null}
@@ -756,6 +773,8 @@ function CameraScreen() {
           <LookPanel
             filter={filter}
             onFilter={setFilter}
+            smoothing={smoothing}
+            onSmoothing={setSmoothing}
             blur={mode === 'portrait' ? bokeh : undefined}
             onBlur={setBokeh}
           />
@@ -814,7 +833,11 @@ function CameraScreen() {
         <Glass radius={34} style={styles.dock}>
           <ModeCarousel mode={mode} modes={visibleModes} onChange={changeMode} disabled={recording} />
           <View style={styles.shutterRow}>
-            <Thumb uri={last?.uri} processing={processing} onPress={openLast} isVideo={!!last?.isVideo} enabled={!!last} />
+            {recording && mode !== 'slowmo' ? (
+              <IconButton icon={paused ? 'record' : 'pause'} size={56} onPress={togglePause} />
+            ) : (
+              <Thumb uri={last?.uri} processing={processing} onPress={openLast} isVideo={!!last?.isVideo} enabled={!!last} />
+            )}
             <Shutter kind={shutterKind} recording={recording} busy={busy || countdown > 0} onPress={onShutter} />
             {mode === 'dual' ? (
               <IconButton
@@ -827,7 +850,7 @@ function CameraScreen() {
                 icon="camera-flip-outline"
                 size={56}
                 onPress={() => {
-                  if (recording) return;
+                  if (recording && !canFlipWhileRecording) return;
                   Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
                   setFacing((f) => (f === 'back' ? 'front' : 'back'));
                 }}

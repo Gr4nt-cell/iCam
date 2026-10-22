@@ -233,16 +233,21 @@ function Chip({
   );
 }
 
-/* ---------------- Filters ---------------- */
+/* ---------------- Filters + face smoothing ---------------- */
 
 export function LookPanel({
   filter,
   onFilter,
+  smoothing,
+  onSmoothing,
   blur,
   onBlur,
 }: {
   filter: FilterKey;
   onFilter: (f: FilterKey) => void;
+  /** Face smoothing 0..1 (shown for photo modes) */
+  smoothing?: number;
+  onSmoothing?: (v: number) => void;
   /** Portrait background blur strength (shown only in Portrait mode) */
   blur?: number;
   onBlur?: (v: number) => void;
@@ -258,6 +263,16 @@ export function LookPanel({
         value={filter}
         onChange={(k) => onFilter(k as FilterKey)}
       />
+      {smoothing !== undefined && onSmoothing ? (
+        <View style={s.evRow}>
+          <MaterialCommunityIcons name="face-recognition" size={20} color="#fff" />
+          <Text style={s.smoothLabel}>Smooth</Text>
+          <View style={{ flex: 1 }}>
+            <Slider value={smoothing} min={0} max={1} onChange={onSmoothing} />
+          </View>
+          <Text style={s.evLabel}>{Math.round(smoothing * 100)}</Text>
+        </View>
+      ) : null}
       {blur !== undefined && onBlur ? (
         <View style={s.evRow}>
           <MaterialCommunityIcons name="blur" size={20} color="#fff" />

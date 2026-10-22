@@ -30,7 +30,7 @@ export type ShutterKind = 'photo' | 'night' | 'video';
 
 /* ---------------- Zoom pills ---------------- */
 
-const PX_PER_LOG = 120; // dial pixels per e-fold of zoom
+const PX_PER_LOG = 110; // dial pixels per e-fold of zoom
 
 export function ZoomPills({
   stops,
@@ -125,7 +125,7 @@ export function ZoomPills({
         g.current.active = false;
       }}
     >
-      <View style={{ opacity: dial ? 0 : 1 }}>
+      <View style={{ opacity: dial ? 0.35 : 1 }}>
         <Glass radius={24} style={styles.zoomBar}>
           <GlassSegmented
             items={stops.map((s) => ({ key: s.label, label: s.label }))}
@@ -149,9 +149,15 @@ export function ZoomPills({
   );
 }
 
-/** iOS-style zoom ruler: log-scale ticks scroll under a fixed centre marker. */
+/** iOS-style semicircular zoom dial: log-scale ticks turn around the arc under a fixed marker. */
+const DIAL_R = 150; // arc radius (px)
+const DIAL_K = PX_PER_LOG / DIAL_R; // radians per e-fold of zoom (finger travel = arc travel)
+
 function ZoomDial({ zoom, min, max, stops }: { zoom: number; min: number; max: number; stops: Lens[] }) {
-  const W = 300;
+  const R = DIAL_R;
+  const H = 128; // visible height of the half-disc
+  const cx = R;
+  const cy = R + 18; // circle centre (below the visible area's top)
   const ticks: { v: number; major: boolean }[] = [];
   const push = (v: number, major: boolean) => {
     if (v >= min - 1e-6 && v <= max + 1e-6) ticks.push({ v, major });
@@ -162,35 +168,47 @@ function ZoomDial({ zoom, min, max, stops }: { zoom: number; min: number; max: n
   push(100, true);
   const labels = Array.from(new Set([...stops.map((s) => s.zoom), 10, 25, 50, 100, max])).filter((v) => v >= min && v <= max);
   const lz = Math.log(zoom);
-  const xOf = (v: number) => W / 2 + (Math.log(v) - lz) * PX_PER_LOG;
+  const ang = (v: number) => (Math.log(v) - lz) * DIAL_K; // 0 = top centre, + = clockwise
+  const LIMIT = 1.45; // ~83°: keep marks on the visible half
+
+  const radial = (a: number, r: number, w: number, h: number) => ({
+    position: 'absolute' as const,
+    left: cx - w / 2,
+    top: cy - h / 2,
+    width: w,
+    height: h,
+    transform: [{ rotate: `${a}rad` }, { translateY: -r }],
+  });
+
   return (
-    <View pointerEvents="none" style={[StyleSheet.absoluteFill, { alignItems: 'center', justifyContent: 'center' }]}>
-      <Glass radius={26} style={{ width: W, height: 62, overflow: 'hidden' }}>
-        <Text style={styles.dialValue}>{zoom >= 10 ? Math.round(zoom) : zoom.toFixed(1)}×</Text>
-        <View style={{ position: 'absolute', left: 0, right: 0, bottom: 6, height: 30 }}>
-          {ticks.map((t) => {
-            const x = xOf(t.v);
-            if (x < -4 || x > W + 4) return null;
-            const d = Math.abs(x - W / 2) / (W / 2);
-            return (
-              <View
-                key={`t${t.v}`}
-                style={{ position: 'absolute', left: x - 0.75, bottom: 0, width: 1.5, height: t.major ? 14 : 8, backgroundColor: `rgba(255,255,255,${0.9 - d * 0.6})` }}
-              />
-            );
-          })}
-          {labels.map((v) => {
-            const x = xOf(v);
-            if (x < 6 || x > W - 6) return null;
-            return (
-              <Text key={`l${v}`} style={[styles.dialLabel, { left: x - 20 }]}>
-                {v < 1 ? v.toFixed(1) : Math.round(v)}
-              </Text>
-            );
-          })}
-        </View>
-        <View style={{ position: 'absolute', left: W / 2 - 1, bottom: 4, width: 2, height: 22, borderRadius: 1, backgroundColor: '#ffd76a' }} />
-      </Glass>
+    <View pointerEvents="none" style={{ position: 'absolute', bottom: -6, alignSelf: 'center', width: 2 * R, height: H, overflow: 'hidden' }}>
+      <Glass radius={R} style={{ position: 'absolute', left: 0, top: 18, width: 2 * R, height: 2 * R }} />
+      {ticks.map((t) => {
+        const a = ang(t.v);
+        if (Math.abs(a) > LIMIT) return null;
+        const fade = 1 - Math.abs(a) / LIMIT;
+        const h = t.major ? 14 : 8;
+        return (
+          <View
+            key={`t${t.v}`}
+            style={[radial(a, R - 12 - h / 2, 1.5, h), { backgroundColor: `rgba(255,255,255,${0.25 + fade * 0.7})` }]}
+          />
+        );
+      })}
+      {labels.map((v) => {
+        const a = ang(v);
+        if (Math.abs(a) > LIMIT - 0.08) return null;
+        return (
+          <View key={`l${v}`} style={[radial(a, R - 38, 40, 16), { alignItems: 'center' }]}>
+            <Text style={styles.dialLabel}>{v < 1 ? v.toFixed(1) : Math.round(v)}</Text>
+          </View>
+        );
+      })}
+      {/* fixed marker at the top */}
+      <View style={[radial(0, R - 16, 2.5, 26), { backgroundColor: '#ffd76a', borderRadius: 1.5 }]} />
+      <Text style={[styles.dialValue, { position: 'absolute', left: 0, right: 0, top: cy - R + 52 }]}>
+        {zoom >= 10 ? Math.round(zoom) : zoom.toFixed(1)}×
+      </Text>
     </View>
   );
 }
@@ -441,7 +459,7 @@ export const styles = StyleSheet.create({
   center: { alignItems: 'center', justifyContent: 'center' },
   zoomBar: { alignSelf: 'center' },
   dialValue: { color: '#ffd76a', fontSize: 14, fontWeight: '700', textAlign: 'center', marginTop: 4, fontVariant: ['tabular-nums'] },
-  dialLabel: { position: 'absolute', bottom: 15, width: 40, textAlign: 'center', color: 'rgba(255,255,255,0.85)', fontSize: 10, fontWeight: '600' },
+  dialLabel: { width: 40, textAlign: 'center', color: 'rgba(255,255,255,0.9)', fontSize: 11, fontWeight: '700' },
   zoomPill: { minWidth: 38, height: 38, borderRadius: 19, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 6 },
   zoomPillActive: { backgroundColor: 'rgba(255,255,255,0.92)' },
   zoomText: { color: '#fff', fontSize: 13, fontWeight: '600' },

@@ -107,7 +107,7 @@ class ICameraModule : Module() {
     }
 
     View(ICameraView::class) {
-      Events("onReady", "onError", "onRecordingFinished", "onPhotosCaptured", "onDualChange", "onPortraitStatus")
+      Events("onReady", "onError", "onRecordingFinished", "onPhotosCaptured", "onDualChange", "onPortraitStatus", "onRecordingState")
 
       Prop("mode") { view: ICameraView, v: String -> view.setMode(v) }
       Prop("facing") { view: ICameraView, v: String -> view.setFacing(v) }
@@ -131,6 +131,7 @@ class ICameraModule : Module() {
       Prop("nightExtension") { view: ICameraView, v: Boolean -> view.setNightExtension(v) }
       Prop("aspect") { view: ICameraView, v: String -> view.setAspect(v) }
       Prop("bokeh") { view: ICameraView, v: Double -> view.setBokeh(v.toFloat()) }
+      Prop("faceSmoothing") { view: ICameraView, v: Double -> view.setFaceSmoothing(v.toFloat()) }
       Prop("filterParams") { view: ICameraView, v: List<Double> -> view.setFilterParams(v.map { it.toFloat() }.toFloatArray()) }
       Prop("previewFit") { view: ICameraView, v: Boolean -> view.setPreviewFit(v) }
       Prop("dualPip") { view: ICameraView, v: Map<String, Any?> ->
@@ -150,6 +151,10 @@ class ICameraModule : Module() {
       AsyncFunction("startRecording") { view: ICameraView -> view.startRecording() }
         .runOnQueue(expo.modules.kotlin.functions.Queues.MAIN)
       AsyncFunction("stopRecording") { view: ICameraView -> view.stopRecording() }
+        .runOnQueue(expo.modules.kotlin.functions.Queues.MAIN)
+      AsyncFunction("pauseRecording") { view: ICameraView -> view.pauseRecording() }
+        .runOnQueue(expo.modules.kotlin.functions.Queues.MAIN)
+      AsyncFunction("resumeRecording") { view: ICameraView -> view.resumeRecording() }
         .runOnQueue(expo.modules.kotlin.functions.Queues.MAIN)
       AsyncFunction("focus") { view: ICameraView, x: Double, y: Double -> view.focusAt(x.toFloat(), y.toFloat()) }
         .runOnQueue(expo.modules.kotlin.functions.Queues.MAIN)

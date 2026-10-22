@@ -101,6 +101,9 @@ class PortraitProcessor : SurfaceProcessor {
   @Volatile var stabCrop = 1f
   /** Zoom past the hardware maximum (applied to every output). */
   @Volatile var digitalZoom = 1f
+  /** Live skin smoothing 0..1 (video). */
+  @Volatile var smoothing = 0f
+  private var digitalZoomNow = 1f
   /** Live filter [sat, contrast, warmth, fade, mono, vignette] or null. */
   @Volatile var filter: FloatArray? = null
   private val MW = 160
@@ -257,6 +260,8 @@ class PortraitProcessor : SurfaceProcessor {
       roll += d * 0.18f
     } else rollInit = false
     val stDet = stM[0] * stM[5] - stM[4] * stM[1]
+    // glide digital zoom changes (log space) so zoom past the lens is as smooth as optical zoom
+    digitalZoomNow = Math.exp(Math.log(digitalZoomNow.toDouble()) + (Math.log(digitalZoom.toDouble()) - Math.log(digitalZoomNow.toDouble())) * 0.22).toFloat()
 
     // Enhanced (non-blur) path: process the frame once into an offscreen buffer, then draw outputs from it
     val enh = !blurOn && enhance
@@ -470,7 +475,8 @@ class PortraitProcessor : SurfaceProcessor {
     GLES20.glUniform1f(GLES20.glGetUniformLocation(enhProg, "uA"), curveA)
     GLES20.glUniform1f(GLES20.glGetUniformLocation(enhProg, "uNorm"), curveNorm)
     GLES20.glUniform1f(GLES20.glGetUniformLocation(enhProg, "uTemporal"), if (havePrev) temporal else 0f)
-    GLES20.glUniform1f(GLES20.glGetUniformLocation(enhProg, "uSharp"), 0.55f)
+    GLES20.glUniform1f(GLES20.glGetUniformLocation(enhProg, "uSharp"), 0.55f * (1f - smoothing * 0.6f))
+    GLES20.glUniform1f(GLES20.glGetUniformLocation(enhProg, "uSmooth"), smoothing)
     GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
     GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
   }
@@ -484,7 +490,7 @@ class PortraitProcessor : SurfaceProcessor {
     GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, vtex[1 - cur])
     GLES20.glUniform1i(GLES20.glGetUniformLocation(outProg, "sCur"), 0)
     GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(outProg, "uStInv"), 1, false, stInv, 0)
-    GLES20.glUniform1f(GLES20.glGetUniformLocation(outProg, "uCrop"), maxOf(1f, stabCrop) * maxOf(1f, digitalZoom))
+    GLES20.glUniform1f(GLES20.glGetUniformLocation(outProg, "uCrop"), maxOf(1f, stabCrop) * maxOf(1f, digitalZoomNow))
     val f = filter
     GLES20.glUniform1f(GLES20.glGetUniformLocation(outProg, "uFilterOn"), if (f != null && f.size >= 6) 1f else 0f)
     if (f != null && f.size >= 6) {
@@ -841,6 +847,7 @@ class PortraitProcessor : SurfaceProcessor {
       uniform float uNorm;
       uniform float uTemporal;
       uniform float uSharp;
+      uniform float uSmooth;
       const vec3 LW = vec3(0.299, 0.587, 0.114);
       vec3 tone(vec3 c) {
         if (uA < 0.01) return c;
@@ -855,6 +862,25 @@ class PortraitProcessor : SurfaceProcessor {
         float dn = length(c - n);
         // flat areas: blend toward the neighbourhood (grain), edges untouched
         vec3 cs = mix(c, n, (1.0 - smoothstep(0.012, 0.05, dn)) * min(0.6, uTemporal * 1.4));
+        // Skin smoothing: edge-preserving blur limited to skin tones (YCbCr skin range)
+        if (uSmooth > 0.01) {
+          float cb = -0.1687 * c.r - 0.3313 * c.g + 0.5 * c.b;
+          float cr = 0.5 * c.r - 0.4187 * c.g - 0.0813 * c.b;
+          float skin = smoothstep(-0.02, 0.02, cr - 0.02) * (1.0 - smoothstep(0.16, 0.22, cr))
+                     * smoothstep(-0.22, -0.16, cb) * (1.0 - smoothstep(0.0, 0.05, cb));
+          vec3 acc = vec3(0.0);
+          float wsum = 0.0;
+          for (int i = 0; i < 8; i++) {
+            float a = float(i) * 0.785398;
+            vec2 o = vec2(cos(a), sin(a)) * uTexel * 4.0;
+            vec3 q = texture2D(sTex, vTex + o).rgb;
+            float wq = exp(-dot(q - c, q - c) * 60.0);
+            acc += q * wq;
+            wsum += wq;
+          }
+          vec3 sm = (acc + cs) / (wsum + 1.0);
+          cs = mix(cs, sm, skin * uSmooth * 0.85);
+        }
         vec3 t = tone(cs);
         if (uTemporal > 0.0) {
           vec3 p = texture2D(sPrev, vUv).rgb;

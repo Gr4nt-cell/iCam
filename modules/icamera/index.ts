@@ -93,6 +93,8 @@ export type ICameraProps = ViewProps & {
   fps?: number;
   hdrVideo?: boolean;
   stabilization?: 'off' | 'standard' | 'cinematic' | 'horizon';
+  /** Skin smoothing 0..1 for video (photos are smoothed when processed) */
+  faceSmoothing?: number;
   /** Live filter [sat, contrast, warmth, fade, mono, vignette] */
   filterParams?: number[];
   nightExtension?: boolean;
@@ -105,6 +107,7 @@ export type ICameraProps = ViewProps & {
   /** Portrait video background blur strength 0..1 */
   bokeh?: number;
   onPortraitStatus?: (e: NativeEvent<{ blur: boolean; reason?: string }>) => void;
+  onRecordingState?: (e: NativeEvent<{ paused: boolean }>) => void;
   onReady?: (e: NativeEvent<ReadyEvent>) => void;
   onError?: (e: NativeEvent<{ message: string }>) => void;
   onRecordingFinished?: (
@@ -126,6 +129,8 @@ export type ICameraHandle = {
   capture: (count: number, evShift: number, shortEv: number) => Promise<void>;
   startRecording: () => Promise<void>;
   stopRecording: () => Promise<void>;
+  pauseRecording: () => Promise<void>;
+  resumeRecording: () => Promise<void>;
   focus: (x: number, y: number) => Promise<void>;
   movePip: (x: number, y: number) => Promise<void>;
 };

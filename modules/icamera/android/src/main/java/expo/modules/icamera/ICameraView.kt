@@ -34,6 +34,7 @@ import androidx.camera.extensions.ExtensionMode
 import androidx.camera.extensions.ExtensionsManager
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.video.ExperimentalHighSpeedVideo
+import androidx.camera.video.ExperimentalPersistentRecording
 import androidx.camera.video.FallbackStrategy
 import androidx.camera.video.FileOutputOptions
 import androidx.camera.video.HighSpeedVideoSessionConfig
@@ -75,6 +76,7 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
   private val onPhotosCaptured by EventDispatcher()
   private val onDualChange by EventDispatcher()
   private val onPortraitStatus by EventDispatcher()
+  private val onRecordingState by EventDispatcher()
 
   companion object {
     private val PHOTO_MODES = setOf("photo", "portrait", "night", "pro")
@@ -139,6 +141,7 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
   private fun emitPhotosCaptured(m: Map<String, Any?>) = onPhotosCaptured(clean(m))
   private fun emitDualChange(m: Map<String, Any?>) = onDualChange(clean(m))
   private fun emitPortraitStatus(m: Map<String, Any?>) = onPortraitStatus(clean(m))
+  private fun emitRecordingState(m: Map<String, Any?>) = onRecordingState(clean(m))
 
   private var burstEvOffset = 0.0
 
@@ -206,6 +209,12 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
   private var filterParams = FloatArray(0)
   private fun filterActive(f: FloatArray) = f.size >= 6 &&
     (Math.abs(f[0] - 1f) > 0.001f || Math.abs(f[1] - 1f) > 0.001f || f[2] != 0f || f[3] != 0f || f[4] != 0f || f[5] != 0f)
+  private var faceSmoothing = 0f
+  fun setFaceSmoothing(v: Float) {
+    faceSmoothing = v.coerceIn(0f, 1f)
+    portraitProcessor?.smoothing = faceSmoothing
+  }
+
   fun setFilterParams(v: FloatArray) {
     val wasActive = filterActive(filterParams)
     filterParams = v
@@ -314,6 +323,7 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
   private var effectPreview = false
   /** Zoom beyond the lens/hardware maximum, done digitally (preview + recording; photos are cropped in JS). */
   private var digitalZoom = 1f
+  private var zoomAnim: android.animation.ValueAnimator? = null
 
   private fun applyZoom() {
     val cam = camera ?: return
@@ -322,7 +332,22 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
     val zMax = z?.maxZoomRatio ?: 1f
     var hw = zoom.coerceIn(zMin, zMax)
     if (horizonCrop > 1.01f) hw = maxOf(zMin, hw / horizonCrop)
-    cam.cameraControl.setZoomRatio(hw)
+    // Big jumps (tapping a lens pill) glide instead of cutting, so lens changes are smooth on video too
+    val from = z?.zoomRatio ?: hw
+    zoomAnim?.cancel()
+    if (Math.abs(Math.log((hw / from).toDouble())) > 0.2) {
+      zoomAnim = android.animation.ValueAnimator.ofFloat(0f, 1f).apply {
+        duration = 320
+        interpolator = android.view.animation.DecelerateInterpolator()
+        val lf = Math.log(from.toDouble())
+        val lt = Math.log(hw.toDouble())
+        addUpdateListener { a ->
+          val t = a.animatedValue as Float
+          camera?.cameraControl?.setZoomRatio(Math.exp(lf + (lt - lf) * t).toFloat())
+        }
+        start()
+      }
+    } else cam.cameraControl.setZoomRatio(hw)
     digitalZoom = if (mode == "dual" || mode == "slowmo") 1f else maxOf(1f, zoom / zMax)
     portraitProcessor?.digitalZoom = if (effectPreview) digitalZoom else 1f
     applyPreviewTransform()
@@ -335,8 +360,10 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
   private fun applyPreviewTransform() {
     val s = if (effectPreview) 1f else digitalZoom
     val mainFront = if (mode == "dual") dualPrimary == "front" else facing == "front"
-    previewView.scaleX = if (mainFront && !mirror) -s else s
-    previewView.scaleY = s
+    val sx = if (mainFront && !mirror) -s else s
+    // mirror flips apply instantly; zoom changes glide
+    if (Math.signum(previewView.scaleX) != Math.signum(sx)) { previewView.animate().cancel(); previewView.scaleX = sx; previewView.scaleY = s }
+    else previewView.animate().scaleX(sx).scaleY(s).setDuration(180).start()
     val pipFront = mode == "dual" && dualPrimary != "front"
     pipPreview.scaleX = if (pipFront && !mirror) -1f else 1f
   }
@@ -428,7 +455,12 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
   }
 
   private fun rebind() {
-    if (!isAttachedToWindow || recording != null) return
+    if (!isAttachedToWindow) return
+    if (recording != null) {
+      // A persistent recording keeps going while we move it to the other camera
+      if (persistentRec && (mode == "video" || mode == "action")) switchCameraWhileRecording()
+      return
+    }
     val owner = appContext.currentActivity as? LifecycleOwner
     if (owner == null) { emitError("Camera needs an active screen"); return }
     withProvider { p ->
@@ -533,6 +565,7 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
         proc.frontCamera = facing == "front"
         proc.mirrorVideo = false
         proc.filter = filterParams
+        proc.smoothing = 0f // photos are smoothed when processed
         val group = UseCaseGroup.Builder()
           .addUseCase(newPreview(false, oisSupported(p.getCameraInfo(base)), true))
           .addUseCase(ic)
@@ -591,6 +624,38 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
       )
       .setTargetVideoEncodingBitRate(bitrate)
       .build()
+
+  /** Front/back switch mid-recording: same VideoCapture (same file), re-bound to the other camera. */
+  private fun switchCameraWhileRecording() {
+    val owner = appContext.currentActivity as? LifecycleOwner ?: return
+    val vc = videoCapture ?: return
+    withProvider { p ->
+      try {
+        p.unbindAll()
+        val sel = selector(facing)
+        val info = p.getCameraInfo(sel)
+        val front = facing == "front"
+        val stab = !front && (try { Preview.getPreviewCapabilities(info).isStabilizationSupported } catch (e: Throwable) { false })
+        val preview = newPreview(stab, oisSupported(info))
+        val proc = portraitProcessor
+        camera = if (proc != null && effectPreview) {
+          proc.frontCamera = front
+          proc.horizonLock = !front && (mode == "action" || stabilization == "horizon")
+          proc.stabCrop = if (front) 1.06f else if (mode == "action") 1.16f else if (stabilization == "off") 1f else 1.12f
+          setRollSensor(proc.horizonLock)
+          val group = UseCaseGroup.Builder().addUseCase(preview).addUseCase(vc).addEffect(PortraitVideoEffect(proc)).build()
+          p.bindToLifecycle(owner, sel, group)
+        } else {
+          p.bindToLifecycle(owner, sel, preview, vc)
+        }
+        applyZoom()
+        setTorch(torch)
+        applyControls()
+      } catch (e: Throwable) {
+        emitError("Couldn't switch camera while recording: ${e.message}")
+      }
+    }
+  }
 
   private fun bindVideo(p: ProcessCameraProvider, owner: LifecycleOwner) {
     val sel = selector(facing)
@@ -655,6 +720,7 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
         proc.blurEnabled = portraitVideo
         proc.enhance = true
         proc.filter = if (filterActive(filterParams)) filterParams else null
+        proc.smoothing = faceSmoothing
         effectPreview = true
         proc.horizonLock = horizon
         proc.frontCamera = selfieVideo
@@ -1029,9 +1095,17 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
     val micGranted = ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
       PackageManager.PERMISSION_GRANTED
     if (audio && micGranted && mode != "slowmo") pending = pending.withAudioEnabled()
+    // Persistent: survives re-binding to the other camera (front/back switch while recording)
+    persistentRec = false
+    if (mode == "video" || mode == "action") {
+      try { pending = makePersistent(pending); persistentRec = true } catch (_: Throwable) {}
+    }
     recording = pending.start(executor) { event ->
+      if (event is VideoRecordEvent.Pause) emitRecordingState(mapOf("paused" to true))
+      if (event is VideoRecordEvent.Resume) emitRecordingState(mapOf("paused" to false))
       if (event is VideoRecordEvent.Finalize) {
         recording = null
+        persistentRec = false
         val ok = file.exists() && file.length() > 0
         emitRecordingFinished(
           mapOf(
@@ -1052,6 +1126,15 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
   fun stopRecording() {
     recording?.stop()
   }
+
+  private var persistentRec = false
+
+  @OptIn(ExperimentalPersistentRecording::class)
+  @androidx.annotation.OptIn(markerClass = [ExperimentalPersistentRecording::class])
+  private fun makePersistent(p: androidx.camera.video.PendingRecording) = p.asPersistentRecording()
+
+  fun pauseRecording() { recording?.pause() }
+  fun resumeRecording() { recording?.resume() }
 
   private fun emitError(message: String) {
     emitError(mapOf("message" to message))
