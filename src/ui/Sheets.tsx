@@ -124,8 +124,21 @@ export function SettingsSheet(p: SettingsProps) {
                   <Text style={s.hwLine}>Slow motion (high-speed): {p.capabilities.slowMotion ? 'yes' : 'no'}</Text>
                   <Text style={s.hwLine}>Dual front + back recording: {p.capabilities.concurrent ? 'yes' : 'no'}</Text>
                   <Text style={s.hwLine}>Phone maker Night mode: {p.capabilities.nightExtension ? 'yes' : 'no'}</Text>
+                  <Text style={s.hwLine}>Macro: {p.capabilities.macro ? `yes (${p.capabilities.macroKind}, from ${p.capabilities.macroMinFocusCm} cm)` : 'no'}</Text>
                 </View>
-              ) : (
+              ) : null}
+              {p.capabilities?.rearLenses?.length ? (
+                <View style={s.hwCard}>
+                  <Text style={s.hwTitle}>Rear lenses found: {p.capabilities.rearLenses.length}</Text>
+                  {p.capabilities.rearLenses.map((l) => (
+                    <Text key={l.id} style={s.hwLine}>
+                      {l.kind[0].toUpperCase() + l.kind.slice(1)} · {l.ratio}× ({l.focalEq} mm) · {l.mp} MP
+                      {l.minFocusCm ? ` · focus from ${l.minFocusCm} cm` : ''} · id {l.id}
+                      {l.parentId ? ` (in camera ${l.parentId})` : l.selectable ? '' : ' · not open to apps'}
+                    </Text>
+                  ))}
+                </View>
+              ) : p.capabilities ? null : (
                 <Text style={s.rowHint}>Reading camera hardware…</Text>
               )}
               {p.capabilities?.cameras.map((d) => (

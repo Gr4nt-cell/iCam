@@ -182,6 +182,7 @@ class ICameraModule : Module() {
       Prop("nightExtension") { view: ICameraView, v: Boolean -> view.setNightExtension(v) }
       Prop("aspect") { view: ICameraView, v: String -> view.setAspect(v) }
       Prop("bokeh") { view: ICameraView, v: Double -> view.setBokeh(v.toFloat()) }
+      Prop("lensId") { view: ICameraView, v: String? -> view.setLensId(v) }
       Prop("shutterSound") { view: ICameraView, v: Boolean -> view.setShutterSound(v) }
       Prop("palmShutter") { view: ICameraView, v: Boolean -> view.setPalmShutter(v) }
       Prop("faceSmoothing") { view: ICameraView, v: Double -> view.setFaceSmoothing(v.toFloat()) }
@@ -244,7 +245,7 @@ class ICameraModule : Module() {
       "minFocusDistance" to (back?.get("minFocusDistance") ?: 0.0),
       "cameras" to cameras,
       "portraitVideo" to portraitVideoCapable(ctx),
-    ) + zoomProfile(ctx, back) + macroProfile(ctx)
+    ) + zoomProfile(ctx, back) + macroProfile(ctx) + mapOf("rearLenses" to rearLenses(ctx, provider))
   }
 
   @OptIn(ExperimentalCamera2Interop::class, ExperimentalHighSpeedVideo::class, androidx.camera.core.ExperimentalSessionConfig::class)
@@ -357,6 +358,64 @@ class ICameraModule : Module() {
       mapOf("telephoto" to false, "telephotoRatio" to 1.0, "maxZoom" to 2.0, "mainFocalEq" to 0.0)
     }
   }
+
+  /**
+   * Every rear camera the phone reports — standalone cameras and the physical lenses inside a
+   * logical multi-camera — classified from lens data (35 mm-equivalent focal length vs the main
+   * lens, resolution, close focus). `selectable` = an app can open it directly by id.
+   */
+  @OptIn(ExperimentalCamera2Interop::class)
+  @androidx.annotation.OptIn(markerClass = [ExperimentalCamera2Interop::class])
+  private fun rearLenses(ctx: Context, provider: ProcessCameraProvider): List<Map<String, Any?>> = try {
+    val cm = ctx.getSystemService(Context.CAMERA_SERVICE) as android.hardware.camera2.CameraManager
+    val cxIds = provider.availableCameraInfos.mapNotNull { try { Camera2CameraInfo.from(it).cameraId } catch (_: Throwable) { null } }.toSet()
+    val ids = cm.cameraIdList.toList()
+    data class L(val id: String, val parent: String?, val eq: Double, val mp: Double, val minFocusCm: Double, val logical: Boolean)
+    val out = ArrayList<L>()
+    fun add(id: String, parent: String?) {
+      if (out.any { it.id == id }) return
+      val c = cm.getCameraCharacteristics(id)
+      if (c.get(CameraCharacteristics.LENS_FACING) != CameraMetadata.LENS_FACING_BACK) return
+      val f = c.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS)?.minOrNull() ?: return
+      val sz = c.get(CameraCharacteristics.SENSOR_INFO_PHYSICAL_SIZE) ?: return
+      val diag = Math.hypot(sz.width.toDouble(), sz.height.toDouble())
+      val px = c.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)?.getOutputSizes(android.graphics.ImageFormat.JPEG)
+        ?.maxOfOrNull { it.width.toLong() * it.height } ?: 0L
+      val pixArr = c.get(CameraCharacteristics.SENSOR_INFO_PIXEL_ARRAY_SIZE)
+      val mp = maxOf(px, (pixArr?.width?.toLong() ?: 0L) * (pixArr?.height?.toLong() ?: 0L)) / 1e6
+      val mf = c.get(CameraCharacteristics.LENS_INFO_MINIMUM_FOCUS_DISTANCE) ?: 0f
+      val caps = c.get(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES) ?: IntArray(0)
+      val logical = android.os.Build.VERSION.SDK_INT >= 28 && caps.contains(CameraMetadata.REQUEST_AVAILABLE_CAPABILITIES_LOGICAL_MULTI_CAMERA)
+      out.add(L(id, parent, if (diag > 0) f * 43.27 / diag else 0.0, mp, if (mf > 0) 100.0 / mf else 0.0, logical))
+      if (logical) try { c.physicalCameraIds.forEach { add(it, id) } } catch (_: Throwable) {}
+    }
+    ids.forEach { try { add(it, null) } catch (_: Throwable) {} }
+    val firstBack = ids.firstOrNull { try { cm.getCameraCharacteristics(it).get(CameraCharacteristics.LENS_FACING) == CameraMetadata.LENS_FACING_BACK } catch (_: Throwable) { false } }
+    val physical = out.filter { !it.logical && it.eq > 0 }
+    val mainEq = physical.filter { it.id == firstBack || it.parent == firstBack }.minByOrNull { Math.abs(it.eq - 26) }?.eq
+      ?: physical.minByOrNull { Math.abs(it.eq - 26) }?.eq ?: 26.0
+    physical.sortedBy { it.eq }.map { l ->
+      val r = l.eq / mainEq
+      val kind = when {
+        l.mp in 0.01..2.5 && l.minFocusCm == 0.0 -> "depth"
+        l.minFocusCm in 0.1..8.5 && l.mp <= 8.5 && r in 0.7..1.6 -> "macro"
+        r < 0.8 -> "ultrawide"
+        r >= 3.5 -> "periscope telephoto"
+        r >= 1.6 -> "telephoto"
+        else -> "main"
+      }
+      mapOf(
+        "id" to l.id,
+        "parentId" to (l.parent ?: ""),
+        "kind" to kind,
+        "focalEq" to Math.round(l.eq).toDouble(),
+        "ratio" to Math.round(r * 10) / 10.0,
+        "mp" to Math.round(l.mp * 10) / 10.0,
+        "minFocusCm" to Math.round(l.minFocusCm * 10) / 10.0,
+        "selectable" to (l.id in cxIds),
+      )
+    }
+  } catch (e: Throwable) { emptyList() }
 
   private fun macroProfile(ctx: Context): Map<String, Any?> {
     val m = MacroFinder.find(ctx) ?: return mapOf("macro" to false)

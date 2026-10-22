@@ -35,6 +35,20 @@ export type CameraProfile = {
   sensorOrientation: number;
 };
 
+export type RearLens = {
+  id: string;
+  /** Logical multi-camera this lens belongs to ('' = standalone camera) */
+  parentId: string;
+  kind: 'ultrawide' | 'main' | 'telephoto' | 'periscope telephoto' | 'macro' | 'depth';
+  focalEq: number;
+  /** Zoom relative to the main lens (e.g. 0.6, 1, 3) */
+  ratio: number;
+  mp: number;
+  minFocusCm: number;
+  /** Can be opened directly by an app */
+  selectable: boolean;
+};
+
 export type Capabilities = {
   concurrent: boolean;
   slowMotion: boolean;
@@ -55,6 +69,8 @@ export type Capabilities = {
   telephotoRatio?: number;
   /** Highest zoom offered (optical + digital), from the lens data */
   maxZoom?: number;
+  /** Every rear lens found (standalone cameras + lenses inside a multi-camera), widest first */
+  rearLenses?: RearLens[];
   /** Macro: dedicated macro camera or close-focusing telephoto */
   macro?: boolean;
   macroKind?: 'tele' | 'dedicated';
@@ -116,6 +132,8 @@ export type ICameraProps = ViewProps & {
   onGesture?: (e: NativeEvent<{ kind: 'palm' | 'status'; status?: string }>) => void;
   palmShutter?: boolean;
   shutterSound?: boolean;
+  /** Open this rear camera id directly (null = the default rear camera) */
+  lensId?: string | null;
 
   onReady?: (e: NativeEvent<ReadyEvent>) => void;
   onError?: (e: NativeEvent<{ message: string }>) => void;

@@ -46,7 +46,7 @@ export function ZoomPills({
   stops: Lens[];
   zoom: number;
   label: string;
-  onSelect: (z: number) => void;
+  onSelect: (z: number, stop?: Lens) => void;
   min?: number;
   max?: number;
   /** Long-press opens the zoom dial (telephoto phones) */
@@ -136,7 +136,7 @@ export function ZoomPills({
               // ignore the pills while / right after the dial was used
               if (dial || g.current.active || Date.now() - g.current.lastDial < 400) return;
               const st = stops.find((s) => s.label === k);
-              if (st) onSelect(st.zoom);
+              if (st) onSelect(st.zoom, st);
             }}
             height={38}
             fontSize={13}

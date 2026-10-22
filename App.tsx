@@ -155,6 +155,8 @@ function CameraScreen() {
   const [shutterSound, setShutterSound] = useState(true);
   // Palm shutter live state: off | none | hand | palm | error:…
   const [palmStatus, setPalmStatus] = useState('off');
+  // A rear lens opened directly (one the default camera's zoom can't reach), else null
+  const [lensId, setLensId] = useState<string | null>(null);
   // Another app asked iCam for a photo/video (iCam as the default camera)
   const [captureReq] = useState(() => getCaptureRequest());
 
@@ -271,21 +273,40 @@ function CameraScreen() {
       ? caps?.maxZoom ?? Math.min(zoomRange.max, 2)
       : Math.min(zoomRange.max, 4);
   const telephoto = facing === 'back' && !!caps?.telephoto && DIGITAL_ZOOM_MODES.includes(mode);
+  const rearLenses = caps?.rearLenses ?? [];
+  const activeLens = lensId ? rearLenses.find((l) => l.id === lensId) : undefined;
+  // zoom as the user sees it (relative to the main lens)
+  const shownZoom = activeLens ? activeLens.ratio * zoom : zoom;
   const stops = useMemo(() => {
-    const base = lensStops(zoomRange.min, Math.min(maxZoom, 2.01));
+    const base = lensStops(lensId ? 1 : zoomRange.min, Math.min(lensId ? 2.01 : maxZoom, 2.01));
+    if (facing === 'back' && DIGITAL_ZOOM_MODES.includes(mode)) {
+      const inMulti = (k: string) => rearLenses.some((l) => l.parentId && l.kind.includes(k));
+      for (const l of rearLenses) {
+        if (!l.selectable || l.parentId) continue;
+        // ultrawide not reachable by zooming out, or a telephoto that isn't part of the main multi-camera
+        const uw = l.kind === 'ultrawide' && zoomRange.min >= 0.95 && !inMulti('ultrawide');
+        const tele = l.kind.includes('telephoto') && !inMulti('telephoto') && l.ratio > zoomRange.max * 0.9;
+        if (uw || tele) base.push({ label: trim(l.ratio), zoom: l.ratio, lensId: l.id });
+      }
+      base.sort((a, b) => a.zoom - b.zoom);
+    }
     if (telephoto && caps?.telephotoRatio) {
       const t = Math.round(caps.telephotoRatio);
       if (t > 2 && t <= maxZoom) base.push({ label: String(t), zoom: t });
       if (maxZoom >= 10 && t < 8) base.push({ label: '10', zoom: 10 });
     }
     return base;
-  }, [zoomRange, maxZoom, telephoto, caps]);
+  }, [zoomRange, maxZoom, telephoto, caps, lensId, facing, mode, rearLenses]);
   // Output width/height (portrait) for the chosen aspect; 'full' matches the screen
   const aspectRatio = aspect === '4:3' ? 3 / 4 : aspect === '16:9' ? 9 / 16 : aspect === '1:1' ? 1 : win.width / win.height;
 
   useEffect(() => {
     setZoom((z) => Math.min(z, maxZoom));
   }, [maxZoom]);
+  // a directly-opened lens only applies to the back camera in photo/video modes
+  useEffect(() => {
+    if (facing !== 'back' || !DIGITAL_ZOOM_MODES.includes(mode)) setLensId(null);
+  }, [facing, mode]);
 
   useEffect(() => {
     if (captureReq === 'video') setMode('video');
@@ -656,6 +677,7 @@ function CameraScreen() {
           faceSmoothing={smoothing}
           palmShutter={palmShutter}
           shutterSound={shutterSound}
+          lensId={facing === 'back' && DIGITAL_ZOOM_MODES.includes(mode) ? lensId : null}
           onGesture={(e) => {
             const g = e.nativeEvent;
             if (g.kind === 'status') {
@@ -904,11 +926,17 @@ function CameraScreen() {
           <IconButton icon="minus" size={40} onPress={() => nudgeExposure(-1)} />
           <ZoomPills
             stops={stops}
-            zoom={zoom}
-            label={zoom >= 10 ? String(Math.round(zoom)) : trim(zoom)}
-            onSelect={(z) => {
+            zoom={shownZoom}
+            label={shownZoom >= 10 ? String(Math.round(shownZoom)) : trim(shownZoom)}
+            onSelect={(z, st) => {
               Haptics.selectionAsync();
-              setZoom(z);
+              if (st?.lensId) {
+                setLensId(st.lensId);
+                setZoom(1);
+              } else {
+                setLensId(null);
+                setZoom(z);
+              }
             }}
             min={zoomRange.min}
             max={maxZoom}

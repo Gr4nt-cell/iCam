@@ -567,8 +567,21 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
     }
   }
 
-  private fun selector(f: String) =
-    if (f == "front") CameraSelector.DEFAULT_FRONT_CAMERA else CameraSelector.DEFAULT_BACK_CAMERA
+  /** A specific rear lens chosen from the zoom pills (one the main camera's zoom can't reach). */
+  private var lensId: String? = null
+  fun setLensId(v: String?) = rebindOnChange(lensId, v?.takeIf { it.isNotEmpty() }) { lensId = it }
+
+  @OptIn(ExperimentalCamera2Interop::class)
+  @androidx.annotation.OptIn(markerClass = [ExperimentalCamera2Interop::class])
+  private fun selector(f: String): CameraSelector {
+    val id = lensId
+    if (f != "front" && id != null && mode != "dual" && mode != "macro") {
+      return CameraSelector.Builder()
+        .addCameraFilter { infos -> infos.filter { Camera2CameraInfo.from(it).cameraId == id }.ifEmpty { infos.take(0) } }
+        .build()
+    }
+    return if (f == "front") CameraSelector.DEFAULT_FRONT_CAMERA else CameraSelector.DEFAULT_BACK_CAMERA
+  }
 
   /** Optical image stabilization, when the lens has it (combined with electronic stabilization for video). */
   @OptIn(ExperimentalCamera2Interop::class)
@@ -731,16 +744,22 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
     val action = mode == "action"
     val portraitVideo = mode == "pvideo"
     val selfieVideo = facing == "front"
-    val uhd = !action && !portraitVideo && !selfieVideo && videoQuality == "uhd"
+    // The other camera (front ↔ back): video settings must suit BOTH, so the camera can be switched
+    // mid-recording without the clip's size, frame rate or stabilization becoming invalid
+    val switchable = mode == "video" || mode == "action"
+    val otherInfo = if (switchable) try { p.getCameraInfo(selector(if (selfieVideo) "back" else "front")) } catch (e: Throwable) { null } else null
+    fun bothSupport(q: Quality) = listOfNotNull(info, otherInfo).all {
+      try { Recorder.getVideoCapabilities(it).getSupportedQualities(DynamicRange.SDR).contains(q) } catch (e: Throwable) { false }
+    }
+    val uhd = !action && !portraitVideo && videoQuality == "uhd" && bothSupport(Quality.UHD)
     val targetFps = if (action) 60 else if (portraitVideo) 30 else fps
-    val recorder = if (selfieVideo) {
-      // Selfie video: 4:3 like selfie photos, so the framing (zoom) matches
-      Recorder.Builder()
-        .setQualitySelector(QualitySelector.from(Quality.FHD, FallbackStrategy.lowerQualityOrHigherThan(Quality.SD)))
-        .setAspectRatio(androidx.camera.core.AspectRatio.RATIO_4_3)
-        .setTargetVideoEncodingBitRate(20_000_000)
-        .build()
-    } else buildRecorder(if (uhd) Quality.UHD else Quality.FHD, if (uhd) 60_000_000 else 24_000_000)
+    val quality = if (uhd) Quality.UHD else if (bothSupport(Quality.FHD)) Quality.FHD else Quality.HD
+    // Same 16:9 size on front and back (strict, no per-camera fallback)
+    val recorder = Recorder.Builder()
+      .setQualitySelector(QualitySelector.from(quality, FallbackStrategy.lowerQualityOrHigherThan(Quality.SD)))
+      .setAspectRatio(androidx.camera.core.AspectRatio.RATIO_16_9)
+      .setTargetVideoEncodingBitRate(if (uhd) 60_000_000 else 24_000_000)
+      .build()
 
     // Strongest stabilization available: preview stabilization (stabilizes preview + recording,
     // "cinematic"), else video EIS; plus optical stabilization when the lens has OIS.
@@ -754,7 +773,9 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
     val wantStab = horizon || (!selfieVideo && (portraitVideo || stabilization != "off"))
     val previewStab = wantStab && (action || horizon || portraitVideo || stabilization == "cinematic") &&
       (try { Preview.getPreviewCapabilities(info).isStabilizationSupported } catch (e: Throwable) { false })
-    val videoStabOk = try { Recorder.getVideoCapabilities(info).isStabilizationSupported } catch (e: Throwable) { false }
+    val videoStabOk = listOfNotNull(info, otherInfo).all {
+      try { Recorder.getVideoCapabilities(it).isStabilizationSupported } catch (e: Throwable) { false }
+    }
     val ois = wantStab && oisSupported(info)
     // Our GL effect handles background blur, horizon lock and selfie mirroring; it mirrors the
     // recording itself, so CameraX mirroring is off whenever the effect runs
@@ -767,7 +788,8 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
 
     // Variable frame rate (e.g. 15–30 or 30–60) lets the camera expose longer in dim light instead
     // of going dark; it runs at the full rate whenever there is enough light
-    val ranges = info.supportedFrameRateRanges
+    // only frame-rate ranges both cameras support
+    val ranges = info.supportedFrameRateRanges.filter { r -> otherInfo == null || otherInfo.supportedFrameRateRanges.contains(r) }
     val minLow = if (targetFps >= 60) 30 else 15
     (ranges.filter { it.upper == targetFps && it.lower >= minLow && it.lower < targetFps }.minByOrNull { it.lower }
       ?: ranges.firstOrNull { it.lower == targetFps && it.upper == targetFps })
@@ -1201,7 +1223,20 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
       scheduleRebind()
       return
     }
-    val vc = videoCapture ?: run { emitError("Video isn't available in this mode"); return }
+    val vc0 = videoCapture ?: run { emitError("Video isn't available in this mode"); return }
+    if (recording != null || startingRec) return
+    // Start tone first, then the microphone, so the tone isn't recorded into the video
+    if (soundOn) {
+      startingRec = true
+      playSound(android.media.MediaActionSound.START_VIDEO_RECORDING)
+      postDelayed({ startingRec = false; beginRecording(videoCapture ?: vc0) }, 550)
+    } else beginRecording(vc0)
+  }
+
+  private var startingRec = false
+
+  @SuppressLint("MissingPermission")
+  private fun beginRecording(vc: VideoCapture<Recorder>) {
     if (recording != null) return
     val file = File(context.cacheDir, "iCam_${mode}_${System.currentTimeMillis()}.mp4")
     var pending = vc.output.prepareRecording(context, FileOutputOptions.Builder(file).build())
@@ -1215,7 +1250,6 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
     }
     // Keep the timeline continuous if the camera is switched mid-recording
     portraitProcessor?.let { it.resetTimeline(); it.holdTimeline = true }
-    playSound(android.media.MediaActionSound.START_VIDEO_RECORDING)
     // Keep the display awake for the whole recording
     palm.setEnabled(false)
     keepScreenOn = true

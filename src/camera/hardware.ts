@@ -17,7 +17,8 @@ export type PhotoSettings = {
   highlightBracket: boolean;
 };
 
-export type Lens = { label: string; zoom: number };
+/** A zoom pill. `lensId` = open that rear camera directly (a lens the main camera's zoom can't reach). */
+export type Lens = { label: string; zoom: number; lensId?: string };
 
 /** Zoom pills (Pixel style) from the camera's zoom-ratio range; < 1× means an ultra-wide lens is available. */
 export function lensStops(zoomMin: number, zoomMax: number): Lens[] {
