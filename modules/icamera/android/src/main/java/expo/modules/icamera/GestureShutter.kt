@@ -1,24 +1,27 @@
 package expo.modules.icamera
 
+import android.content.Context
 import android.graphics.Bitmap
 import android.os.Handler
 import android.os.Looper
-import com.google.mlkit.vision.common.InputImage
-import com.google.mlkit.vision.pose.PoseDetection
-import com.google.mlkit.vision.pose.PoseLandmark
-import com.google.mlkit.vision.pose.defaults.PoseDetectorOptions
+import com.google.mediapipe.framework.image.BitmapImageBuilder
+import com.google.mediapipe.tasks.components.containers.NormalizedLandmark
+import com.google.mediapipe.tasks.core.BaseOptions
+import com.google.mediapipe.tasks.vision.core.RunningMode
+import com.google.mediapipe.tasks.vision.gesturerecognizer.GestureRecognizer
 import java.util.concurrent.Executors
 
 /**
- * Palm shutter: a raised open hand (wrist above the shoulder, fingers up) held for a moment.
- * Runs ML Kit pose detection on small snapshots of the viewfinder ~3 times a second.
+ * Palm shutter. Fires only for a deliberate open palm shown to the camera:
+ *  - MediaPipe's gesture model must classify the hand as "Open_Palm" (palm side, confident), and
+ *  - its 21 hand landmarks must show all five fingers straight and extended, pointing up and spread,
+ *  - held for about a second (3 checks in a row).
  */
-class PalmDetector(private val onPalm: () -> Unit) {
+class PalmDetector(private val ctx: Context, private val onPalm: () -> Unit) {
   private val main = Handler(Looper.getMainLooper())
   private val worker = Executors.newSingleThreadExecutor()
-  private val detector by lazy {
-    PoseDetection.getClient(PoseDetectorOptions.Builder().setDetectorMode(PoseDetectorOptions.STREAM_MODE).build())
-  }
+  private var recognizer: GestureRecognizer? = null
+  private var failed = false
   @Volatile private var busy = false
   private var running = false
   private var hits = 0
@@ -33,28 +36,51 @@ class PalmDetector(private val onPalm: () -> Unit) {
     if (on) main.post(tick) else main.removeCallbacks(tick)
   }
 
+  private fun recognizer(): GestureRecognizer? {
+    recognizer?.let { return it }
+    if (failed) return null
+    return try {
+      val base = BaseOptions.builder().setModelAssetPath(MODEL).build()
+      val opts = GestureRecognizer.GestureRecognizerOptions.builder()
+        .setBaseOptions(base)
+        .setRunningMode(RunningMode.IMAGE)
+        .setNumHands(2)
+        .setMinHandDetectionConfidence(0.6f)
+        .setMinHandPresenceConfidence(0.6f)
+        .setMinTrackingConfidence(0.5f)
+        .build()
+      GestureRecognizer.createFromOptions(ctx, opts).also { recognizer = it }
+    } catch (e: Throwable) {
+      failed = true
+      null
+    }
+  }
+
   private val tick = object : Runnable {
     override fun run() {
       if (!running) return
       main.postDelayed(this, 330)
       if (busy || System.currentTimeMillis() - lastFire < 4000) return
       val full = try { frameSource?.invoke() } catch (e: Throwable) { null } ?: return
-      val w = 320
+      val w = 480
       val h = (full.height * w.toFloat() / full.width).toInt().coerceAtLeast(1)
       val small = Bitmap.createScaledBitmap(full, w, h, true)
       if (small !== full) full.recycle()
       busy = true
       worker.execute {
+        var palm = false
         try {
-          val pose = com.google.android.gms.tasks.Tasks.await(detector.process(InputImage.fromBitmap(small, 0)))
-          val raised = palmRaised(pose, PoseLandmark.LEFT_WRIST, PoseLandmark.LEFT_SHOULDER, PoseLandmark.LEFT_INDEX, PoseLandmark.LEFT_PINKY) ||
-            palmRaised(pose, PoseLandmark.RIGHT_WRIST, PoseLandmark.RIGHT_SHOULDER, PoseLandmark.RIGHT_INDEX, PoseLandmark.RIGHT_PINKY)
-          main.post {
-            hits = if (raised) hits + 1 else 0
-            if (hits >= 2 && running) {
-              hits = 0
-              lastFire = System.currentTimeMillis()
-              onPalm()
+          val rec = recognizer()
+          if (rec != null) {
+            val res = rec.recognize(BitmapImageBuilder(small).build())
+            val gestures = res.gestures()
+            val hands = res.landmarks()
+            for (i in hands.indices) {
+              val top = gestures.getOrNull(i)?.firstOrNull() ?: continue
+              if (top.categoryName() == "Open_Palm" && top.score() >= 0.7f && openHand(hands[i], small.width, small.height)) {
+                palm = true
+                break
+              }
             }
           }
         } catch (_: Throwable) {
@@ -62,30 +88,55 @@ class PalmDetector(private val onPalm: () -> Unit) {
           small.recycle()
           busy = false
         }
+        main.post {
+          hits = if (palm) hits + 1 else 0
+          if (hits >= 3 && running) {
+            hits = 0
+            lastFire = System.currentTimeMillis()
+            onPalm()
+          }
+        }
       }
     }
   }
 
-  private fun palmRaised(pose: com.google.mlkit.vision.pose.Pose, wristT: Int, shoulderT: Int, indexT: Int, pinkyT: Int): Boolean {
-    val wrist = pose.getPoseLandmark(wristT) ?: return false
-    val shoulder = pose.getPoseLandmark(shoulderT) ?: return false
-    val index = pose.getPoseLandmark(indexT) ?: return false
-    val pinky = pose.getPoseLandmark(pinkyT) ?: return false
-    if (wrist.inFrameLikelihood < 0.6f || shoulder.inFrameLikelihood < 0.5f || index.inFrameLikelihood < 0.5f) return false
-    val w = wrist.position
-    val s = shoulder.position
-    val i = index.position
-    val p = pinky.position
-    val handLen = Math.hypot((i.x - w.x).toDouble(), (i.y - w.y).toDouble())
-    return w.y < s.y && // hand raised above the shoulder
-      i.y < w.y && p.y < w.y && // fingers pointing up (open palm, upright)
-      handLen > 6.0
+  /** All five fingers straight, extended away from the wrist, pointing up and spread apart. */
+  private fun openHand(lm: List<NormalizedLandmark>, w: Int, h: Int): Boolean {
+    if (lm.size < 21) return false
+    val x = FloatArray(21) { lm[it].x() * w }
+    val y = FloatArray(21) { lm[it].y() * h }
+    fun d(a: Int, b: Int) = Math.hypot((x[a] - x[b]).toDouble(), (y[a] - y[b]).toDouble())
+    fun straight(a: Int, b: Int, c: Int, minCos: Double): Boolean {
+      val ux = x[b] - x[a]; val uy = y[b] - y[a]
+      val vx = x[c] - x[b]; val vy = y[c] - y[b]
+      val n = Math.hypot(ux.toDouble(), uy.toDouble()) * Math.hypot(vx.toDouble(), vy.toDouble())
+      return n > 0 && (ux * vx + uy * vy) / n >= minCos
+    }
+    val palm = d(0, 9)
+    if (palm < 0.06 * minOf(w, h)) return false // hand too small / far away to judge
+    // index, middle, ring, little: tip well beyond the middle joint, finger straight, pointing up
+    for (f in listOf(intArrayOf(5, 6, 7, 8), intArrayOf(9, 10, 11, 12), intArrayOf(13, 14, 15, 16), intArrayOf(17, 18, 19, 20))) {
+      val (mcp, pip, dip, tip) = f.toList()
+      if (d(tip, 0) < d(pip, 0) * 1.2) return false
+      if (!straight(mcp, pip, tip, 0.75) || !straight(pip, dip, tip, 0.7)) return false
+      if (y[tip] >= y[mcp]) return false
+    }
+    // thumb: out to the side, straight, tip beyond its middle joint
+    if (d(4, 5) < 0.45 * palm || d(4, 0) <= d(3, 0) || !straight(2, 3, 4, 0.6)) return false
+    // fingers fanned out (an open palm, not a pointing or "stop-sign" pinch)
+    if (d(8, 20) < 0.6 * palm) return false
+    // hand upright: fingertips above the wrist
+    if (y[12] >= y[0]) return false
+    return true
   }
 
   fun release() {
     setEnabled(false)
-    worker.execute { try { detector.close() } catch (_: Throwable) {} }
+    worker.execute { try { recognizer?.close() } catch (_: Throwable) {} }
     worker.shutdown()
   }
-}
 
+  companion object {
+    const val MODEL = "gesture_recognizer.task"
+  }
+}

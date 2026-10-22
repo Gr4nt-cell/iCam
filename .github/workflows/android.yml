@@ -77,14 +77,20 @@ jobs:
       - uses: actions/cache@v4
         id: srmodel
         with:
-          path: modules/icamera/android/src/main/assets/realesr_general_x4v3.onnx
-          key: sr-model-realesr-general-x4v3-v1
+          path: |
+            modules/icamera/android/src/main/assets/realesr_general_x4v3.onnx
+            modules/icamera/android/src/main/assets/gesture_recognizer.task
+          key: models-sr-x4v3-gesture-v2
 
       # AI zoom model: Real-ESRGAN general x4v3 (BSD-3-Clause) converted to ONNX for ONNX Runtime
       - name: Build AI zoom model
         if: steps.srmodel.outputs.cache-hit != 'true'
         run: |
           set -o pipefail
+          mkdir -p modules/icamera/android/src/main/assets
+          # Palm shutter: MediaPipe gesture recognizer model (Apache-2.0)
+          curl -sSfL -o modules/icamera/android/src/main/assets/gesture_recognizer.task \
+            https://storage.googleapis.com/mediapipe-models/gesture_recognizer/gesture_recognizer/float16/latest/gesture_recognizer.task
           pip install --quiet torch==2.5.1 --index-url https://download.pytorch.org/whl/cpu
           pip install --quiet numpy onnx onnxruntime
           curl -sSL -o "$RUNNER_TEMP/sr.pth" https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/realesr-general-x4v3.pth
@@ -181,6 +187,16 @@ jobs:
           orientv=$(echo "$man" | grep -A0 "screenOrientation" | head -2 | tr -s ' ')
           filters=$(echo "$man" | grep -c "IMAGE_CAPTURE\|VIDEO_CAPTURE\|STILL_IMAGE_CAMERA")
           echo "::notice title=Play pre-checks::$vc | $sdk | screenOrientation attrs: $orient | resizeableActivity=false: $resize | R8 classes renamed: $renamed / $total | orientation: $orientv | camera intent filters: $filters | signer: ${signer:-unsigned?}"
+
+      - name: 16 KB page size check (Play requirement)
+        id: pagesize
+        continue-on-error: true
+        run: |
+          out=$(python3 scripts/check_16kb.py out/apk/*.apk 2>&1); code=$?
+          echo "$out"
+          msg=$(echo "$out" | sed -e 's/%/%25/g' | awk '{printf "%s%%0A", $0}')
+          if [ $code -eq 0 ]; then echo "::notice title=16 KB pages::$msg"; else echo "::error title=16 KB pages::$msg"; fi
+          exit $code
 
       - uses: actions/upload-artifact@v4
         with:

@@ -11,3 +11,4 @@ dist/
 
 # generated in CI
 modules/icamera/android/src/main/assets/*.onnx
+modules/icamera/android/src/main/assets/*.task

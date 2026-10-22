@@ -214,7 +214,7 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
   /* ---------------- palm shutter ---------------- */
   private var palmOn = false
   private val palm by lazy {
-    PalmDetector { emitGesture(mapOf("kind" to "palm")) }.also { d ->
+    PalmDetector(context) { emitGesture(mapOf("kind" to "palm")) }.also { d ->
       d.frameSource = { try { previewView.bitmap } catch (e: Throwable) { null } }
     }
   }
