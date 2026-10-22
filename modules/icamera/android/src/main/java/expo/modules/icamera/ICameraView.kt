@@ -1375,6 +1375,7 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
     if (recording != null) return
     if (!continuing) {
       segments.clear()
+      segmentDurUs.clear()
       segmentMs = 0.0
       // How the phone is held when recording starts decides the video's orientation (like the
       // built-in camera app), and stays the same for every piece of a multi-camera video
@@ -1405,14 +1406,14 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
         val okPiece = file.exists() && file.length() > 0
         if (segmentSwitching) {
           // A camera switch: keep this piece, bind the other camera, then record the next piece
-          if (okPiece) { segments.add(file); segmentMs += event.recordingStats.recordedDurationNanos / 1_000_000.0 }
+          if (okPiece) { segments.add(file); segmentDurUs.add(event.recordingStats.recordedDurationNanos / 1000); segmentMs += event.recordingStats.recordedDurationNanos / 1_000_000.0 }
           rebind()
-          postDelayed({ continueAfterSwitch() }, 350)
+          post { continueAfterSwitch() }
           return@start
         }
         if (segments.isNotEmpty()) {
           // Last piece of a multi-camera video: join everything into one file
-          if (okPiece) { segments.add(file); segmentMs += event.recordingStats.recordedDurationNanos / 1_000_000.0 }
+          if (okPiece) { segments.add(file); segmentDurUs.add(event.recordingStats.recordedDurationNanos / 1000); segmentMs += event.recordingStats.recordedDurationNanos / 1_000_000.0 }
           keepScreenOn = false
           rootView?.keepScreenOn = false
           playSound(android.media.MediaActionSound.STOP_VIDEO_RECORDING)
@@ -1455,6 +1456,7 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
 
   /* ---------------- multi-camera video (switch front/back mid-recording) ---------------- */
   private val segments = ArrayList<File>()
+  private val segmentDurUs = ArrayList<Long>()
   private var segmentMs = 0.0
   private var segmentSwitching = false
   private var sessionRotation = android.view.Surface.ROTATION_0
@@ -1462,8 +1464,9 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
   /** After the other camera is bound, start the next piece (retries while the camera opens). */
   private fun continueAfterSwitch(tries: Int = 0) {
     val vc = videoCapture
-    if (vc == null || camera == null) {
-      if (tries < 20) postDelayed({ continueAfterSwitch(tries + 1) }, 200)
+    val open = camera?.cameraInfo?.cameraState?.value?.type == androidx.camera.core.CameraState.Type.OPEN
+    if (vc == null || camera == null || !open) {
+      if (tries < 100) postDelayed({ continueAfterSwitch(tries + 1) }, 40)
       else { segmentSwitching = false; finishMultiCamera() }
       return
     }
@@ -1502,9 +1505,30 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
     val out = File(context.cacheDir, "iCam_video_${System.currentTimeMillis()}.mp4")
     try {
       val present = androidx.media3.effect.Presentation.createForWidthAndHeight(w, h, androidx.media3.effect.Presentation.LAYOUT_SCALE_TO_FIT_WITH_CROP)
-      val items = parts.map { f ->
-        androidx.media3.transformer.EditedMediaItem.Builder(androidx.media3.common.MediaItem.fromUri(android.net.Uri.fromFile(f)))
-          .setEffects(androidx.media3.transformer.Effects(emptyList(), listOf(present)))
+      val durs = ArrayList(segmentDurUs)
+      segmentDurUs.clear()
+      val items = parts.mapIndexed { i, f ->
+        val first = i == 0
+        val last = i == parts.size - 1
+        // Pieces after the first lose their first ~0.1 s (the camera settling its exposure)
+        val trimUs = if (first) 0L else 100_000L
+        val durUs = maxOf(0L, (durs.getOrNull(i) ?: 0L) - trimUs)
+        val mi = androidx.media3.common.MediaItem.Builder()
+          .setUri(android.net.Uri.fromFile(f))
+          .setClippingConfiguration(
+            androidx.media3.common.MediaItem.ClippingConfiguration.Builder().setStartPositionMs(trimUs / 1000).build(),
+          )
+          .build()
+        // Fade the sound and dip the picture at each join (not at the very start or end)
+        val fadeIn = if (first) 0L else 120_000L
+        val fadeOut = if (last) 0L else 120_000L
+        val audio = listOf<androidx.media3.common.audio.AudioProcessor>(EdgeFadeAudioProcessor(fadeIn, fadeOut, durUs))
+        val video = listOf<androidx.media3.common.Effect>(
+          present,
+          EdgeDip(durUs, if (first) 0L else 150_000L, if (last) 0L else 150_000L),
+        )
+        androidx.media3.transformer.EditedMediaItem.Builder(mi)
+          .setEffects(androidx.media3.transformer.Effects(audio, video))
           .build()
       }
       val composition = androidx.media3.transformer.Composition.Builder(listOf(androidx.media3.transformer.EditedMediaItemSequence(items))).build()
