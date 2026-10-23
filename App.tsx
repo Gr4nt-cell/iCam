@@ -167,9 +167,6 @@ function CameraScreen() {
   const [focus, setFocus] = useState<{ x: number; y: number; key: number } | null>(null);
   const [showSliders, setShowSliders] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  /** Video / Action aperture (f-number, 0 = auto) and whether its value pill is open */
-  const [aperture, setAperture] = useState(0);
-  const [apertureOpen, setApertureOpen] = useState(false);
   const [viewerOpen, setViewerOpen] = useState(false);
   const [appActive, setAppActive] = useState(true);
 
@@ -700,7 +697,6 @@ function CameraScreen() {
           fps={video.fps}
           hdrVideo={false}
           antibanding={video.antibanding ?? 'country'}
-          aperture={mode === 'video' || mode === 'action' ? aperture : 0}
           stabilization={video.stabilization}
           faceSmoothing={smoothing}
           palmShutter={palmShutter}
@@ -998,23 +994,6 @@ function CameraScreen() {
             />
           </Panel>
         )}
-        {(mode === 'video' || mode === 'action') && (
-          <Panel>
-            <ApertureControl
-              open={apertureOpen}
-              value={aperture}
-              values={apertureStops(caps?.cameras.find((c) => c.position === facing)?.apertures)}
-              onToggle={() => {
-                Haptics.selectionAsync();
-                setApertureOpen((v) => !v);
-              }}
-              onChange={(f) => {
-                Haptics.selectionAsync();
-                setAperture(f);
-              }}
-            />
-          </Panel>
-        )}
         <Animated.View layout={GLIDE} style={styles.zoomRow}>
           <IconButton icon="minus" size={40} onPress={() => nudgeExposure(-1)} />
           <ZoomPills
@@ -1143,63 +1122,6 @@ function Pop({ children }: { children: React.ReactNode }) {
   );
 }
 
-/**
- * Three aperture choices: the lens's real f-numbers when it has a variable aperture, otherwise
- * simulated ones (depth blur: f/1.4 strong, f/2.8 medium, f/4 light).
- */
-function apertureStops(real?: number[]): number[] {
-  const r = Array.from(new Set((real ?? []).map((v) => Math.round(v * 10) / 10))).sort((a, b) => a - b);
-  if (r.length >= 3) return [r[0], r[Math.floor(r.length / 2)], r[r.length - 1]];
-  if (r.length === 2) return r;
-  return [1.4, 2.8, 4];
-}
-
-/** Aperture icon with a small glass pill of f-numbers beside it; tap the chosen value again for Auto */
-function ApertureControl({
-  open,
-  value,
-  values,
-  onToggle,
-  onChange,
-}: {
-  open: boolean;
-  value: number;
-  values: number[];
-  onToggle: () => void;
-  onChange: (f: number) => void;
-}) {
-  return (
-    <Animated.View layout={GLIDE} style={styles.apertureRow}>
-      <Animated.View layout={GLIDE}>
-        <Pressable hitSlop={8} onPress={onToggle}>
-          <Glass radius={18} style={styles.apertureIcon} tint={value ? 'rgba(255,215,106,0.22)' : undefined}>
-            <MaterialCommunityIcons name="camera-iris" size={20} color={value ? '#ffd76a' : '#fff'} />
-          </Glass>
-        </Pressable>
-      </Animated.View>
-      {open && (
-        <Animated.View entering={FadeIn.duration(200).delay(60)} exiting={FadeOut.duration(140)} layout={GLIDE}>
-          <Glass radius={18} style={styles.aperturePill}>
-            {values.map((f) => {
-              const on = Math.abs(f - value) < 0.05;
-              return (
-                <Pressable key={f} hitSlop={4} onPress={() => onChange(on ? 0 : f)} style={[styles.apertureItem, on && styles.apertureItemOn]}>
-                  <Text style={[styles.apertureText, on && styles.apertureTextOn]}>f/{f}</Text>
-                </Pressable>
-              );
-            })}
-          </Glass>
-        </Animated.View>
-      )}
-      {!open && value > 0 && (
-        <Animated.Text entering={FadeIn.duration(180)} exiting={FadeOut.duration(120)} style={styles.apertureBadge}>
-          f/{value}
-        </Animated.Text>
-      )}
-    </Animated.View>
-  );
-}
-
 /** Bottom panel (filters, Pro, sliders) that rises in and sinks away */
 function Panel({ children }: { children: React.ReactNode }) {
   return (
@@ -1215,14 +1137,6 @@ const styles = StyleSheet.create({
   dim: { color: 'rgba(255,255,255,0.6)' },
   top: { position: 'absolute', left: 16, right: 16, alignItems: 'center', gap: 8 },
   topPill: { alignSelf: 'stretch', flexDirection: 'row', alignItems: 'center', justifyContent: 'space-around', gap: 12, paddingHorizontal: 16, height: 44 },
-  apertureRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, alignSelf: 'center' },
-  apertureIcon: { width: 36, height: 36, alignItems: 'center', justifyContent: 'center' },
-  aperturePill: { flexDirection: 'row', alignItems: 'center', gap: 2, padding: 3, height: 36 },
-  apertureItem: { paddingHorizontal: 10, height: 30, borderRadius: 15, justifyContent: 'center' },
-  apertureItemOn: { backgroundColor: 'rgba(255,255,255,0.9)' },
-  apertureText: { color: '#fff', fontSize: 13, fontWeight: '600', fontVariant: ['tabular-nums'] },
-  apertureTextOn: { color: '#111', fontWeight: '700' },
-  apertureBadge: { color: '#ffd76a', fontSize: 13, fontWeight: '700' },
   subBar: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingLeft: 4, paddingRight: 4, height: 36, borderRadius: 18, overflow: 'hidden' },
   subBarIcon: { width: 28, height: 28, borderRadius: 14, alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(255,255,255,0.16)' },
   subBarTime: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingRight: 8 },
