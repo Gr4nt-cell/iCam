@@ -674,7 +674,8 @@ class PortraitProcessor : SurfaceProcessor {
     GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, maskTex)
     GLES20.glUniform1i(GLES20.glGetUniformLocation(bkBlurProg, "sMask"), 1)
     GLES20.glUniform1i(GLES20.glGetUniformLocation(bkBlurProg, "uRot"), rot)
-    val radiusPx = minOf(bkW, bkH) * (0.012f + bokehNow * 0.055f)
+    // subtle: a soft, natural background rather than a heavy smear
+    val radiusPx = minOf(bkW, bkH) * (0.006f + bokehNow * 0.028f)
     GLES20.glUniform2f(GLES20.glGetUniformLocation(bkBlurProg, "uRadius"), radiusPx / bkW, radiusPx / bkH)
     GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
     GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
@@ -1249,12 +1250,18 @@ class PortraitProcessor : SurfaceProcessor {
       uniform vec2 uRadius;
     """ + MASK_UV + """
       void main() {
-        float near = 0.0;
-        for (int i = 0; i < 8; i++) {
-          float a = float(i) * 0.785398;
-          near = max(near, person(vUv + vec2(cos(a), sin(a)) * uRadius * 1.5));
+        // distance to the subject (rings out to ~16% of the frame): the zone right around the
+        // person stays sharp and the blur builds up gradually further away, like a real focus plane
+        float d = 1.0;
+        for (int k = 4; k >= 1; k--) {
+          float rr = float(k) * 0.04;
+          for (int i = 0; i < 8; i++) {
+            float a = float(i) * 0.785398 + float(k) * 0.3;
+            if (person(vUv + vec2(cos(a), sin(a) * 0.5625) * rr) > 0.5) d = float(k - 1) / 4.0;
+          }
         }
-        vec2 R = uRadius * (1.0 - 0.35 * near);
+        float falloff = smoothstep(0.15, 1.0, d);
+        vec2 R = uRadius * (0.35 + 0.65 * falloff);
         vec3 acc = vec3(0.0);
         float wsum = 0.0;
         float cov = 0.0;
@@ -1265,13 +1272,14 @@ class PortraitProcessor : SurfaceProcessor {
           vec4 s = texture2D(sPrep, vUv + vec2(cos(a), sin(a)) * r * R);
           vec3 c = s.a > 0.001 ? s.rgb / s.a : vec3(0.0);
           float l = dot(c, vec3(0.299, 0.587, 0.114));
-          float hw = 1.0 + 6.0 * smoothstep(0.72, 0.98, l);
+          float hw = 1.0 + 2.5 * smoothstep(0.75, 0.98, l);
           acc += c * s.a * hw;
           wsum += s.a * hw;
           cov += s.a;
         }
         vec3 bg = wsum > 0.0001 ? acc / wsum : vec3(0.0);
-        gl_FragColor = vec4(bg, cov / 64.0);
+        // alpha = how much blur to use here (none where no background was in reach)
+        gl_FragColor = vec4(bg, falloff * smoothstep(0.0, 0.04, cov / 64.0));
       }
     """
 
@@ -1332,7 +1340,7 @@ class PortraitProcessor : SurfaceProcessor {
           vec4 bk = texture2D(sBokeh, uv);
           // the blurred layer holds background-only colour wherever any background was in reach,
           // so the background is blurred right up to the subject's edge (no sharp halo)
-          float use = (1.0 - mc) * smoothstep(0.0, 0.04, bk.a) * clamp(uBokeh * 4.0, 0.0, 1.0);
+          float use = (1.0 - mc) * bk.a * clamp(uBokeh * 4.0, 0.0, 1.0);
           col = mix(col, bk.rgb, use);
         }
         if (uFilterOn > 0.5) col = applyFilter(col, q);
