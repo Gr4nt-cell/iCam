@@ -839,15 +839,24 @@ function CameraScreen() {
             <Text style={styles.badge}>{badge}</Text>
           </Pressable>
         </Glass>
-        {recording ? (
-          <Glass radius={18} style={styles.recBadge} tint="rgba(255,59,48,0.55)">
-            <View style={[styles.recLed, paused && { opacity: 0.4 }]} />
-            <Text style={styles.recText}>
-              {paused ? 'PAUSED · ' : ''}{mm}:{ss}
-            </Text>
-          </Glass>
-        ) : null}
-        <IconButton icon="cog-outline" onPress={() => setSettingsOpen(true)} />
+        {/* Second bar: settings + recording time */}
+        <Glass
+          radius={18}
+          style={styles.subBar}
+          tint={recording ? 'rgba(255,59,48,0.45)' : undefined}
+        >
+          <Pressable hitSlop={8} onPress={() => setSettingsOpen(true)} style={styles.subBarIcon}>
+            <MaterialCommunityIcons name="cog-outline" size={18} color="#fff" />
+          </Pressable>
+          {(recording || isVideoMode) && (
+            <View style={styles.subBarTime}>
+              <View style={[styles.recLed, !recording && { backgroundColor: '#ff3b30' }, paused && { opacity: 0.4 }]} />
+              <Text style={[styles.recText, !recording && { opacity: 0.7 }]}>
+                {paused ? 'PAUSED · ' : ''}{mm}:{ss}
+              </Text>
+            </View>
+          )}
+        </Glass>
       </View>
 
       {mode === 'dual' && (
@@ -867,7 +876,7 @@ function CameraScreen() {
       )}
 
       {captureReq && (
-        <View style={{ position: 'absolute', top: insets.top + 64, alignSelf: 'center' }}>
+        <View style={{ position: 'absolute', top: insets.top + 106, alignSelf: 'center' }}>
           <Glass radius={18} style={{ flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 14, height: 36 }}>
             <Text style={{ color: '#fff', fontWeight: '700', fontSize: 13 }}>
               {captureReq === 'image' ? 'Take a photo for the app' : 'Record a video for the app'}
@@ -1045,8 +1054,11 @@ const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: '#000' },
   center: { alignItems: 'center', justifyContent: 'center' },
   dim: { color: 'rgba(255,255,255,0.6)' },
-  top: { position: 'absolute', left: 16, right: 16, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  topPill: { flexDirection: 'row', alignItems: 'center', gap: 16, paddingHorizontal: 16, height: 44 },
+  top: { position: 'absolute', left: 16, right: 16, alignItems: 'center', gap: 8 },
+  topPill: { alignSelf: 'stretch', flexDirection: 'row', alignItems: 'center', justifyContent: 'space-around', gap: 12, paddingHorizontal: 16, height: 44 },
+  subBar: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingLeft: 5, paddingRight: 5, height: 36 },
+  subBarIcon: { width: 28, height: 28, borderRadius: 14, alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(255,255,255,0.16)' },
+  subBarTime: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingRight: 8 },
   badge: { color: '#fff', fontSize: 12, fontWeight: '800', letterSpacing: 0.6 },
   recBadge: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 12, height: 32 },
   recLed: { width: 8, height: 8, borderRadius: 4, backgroundColor: '#fff' },

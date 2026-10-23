@@ -614,13 +614,30 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
       ?.contains(CaptureRequest.LENS_OPTICAL_STABILIZATION_MODE_ON) == true
   } catch (e: Throwable) { false }
 
+  /**
+   * Mains frequency of the country the phone is in. AUTO detection often misses on front cameras,
+   * so lights pulsing at 100 Hz (50 Hz mains) show up as flicker; naming the frequency fixes it.
+   */
+  private fun antibandingMode(): Int {
+    val cc = try {
+      val tm = context.getSystemService(android.content.Context.TELEPHONY_SERVICE) as? android.telephony.TelephonyManager
+      (tm?.networkCountryIso?.takeIf { it.isNotBlank() } ?: tm?.simCountryIso?.takeIf { it.isNotBlank() }
+        ?: java.util.Locale.getDefault().country).uppercase()
+    } catch (e: Throwable) { "" }
+    if (cc.isBlank()) return CaptureRequest.CONTROL_AE_ANTIBANDING_MODE_AUTO
+    val hz60 = setOf("US", "CA", "MX", "PR", "GU", "VI", "AS", "MP", "BS", "BZ", "CR", "CU", "DO", "SV", "GT", "HN",
+      "HT", "NI", "PA", "JM", "TT", "BR", "CO", "VE", "EC", "PE", "SR", "GY", "KR", "TW", "PH", "SA", "LR", "BM",
+      "KN", "LC", "AG", "AW", "KY", "MS", "TC", "VG", "FM", "MH", "PW")
+    return if (cc in hz60) CaptureRequest.CONTROL_AE_ANTIBANDING_MODE_60HZ else CaptureRequest.CONTROL_AE_ANTIBANDING_MODE_50HZ
+  }
+
   @OptIn(ExperimentalCamera2Interop::class)
   @androidx.annotation.OptIn(markerClass = [ExperimentalCamera2Interop::class])
   private fun newPreview(stabilized: Boolean = false, ois: Boolean = false, matchAspect: Boolean = false): Preview {
     val b = Preview.Builder()
     // Anti-flicker for mains-powered lights (50/60 Hz): stops banding and brightness pulsing indoors
     androidx.camera.camera2.interop.Camera2Interop.Extender(b)
-      .setCaptureRequestOption(CaptureRequest.CONTROL_AE_ANTIBANDING_MODE, CaptureRequest.CONTROL_AE_ANTIBANDING_MODE_AUTO)
+      .setCaptureRequestOption(CaptureRequest.CONTROL_AE_ANTIBANDING_MODE, antibandingMode())
     if (matchAspect) b.setResolutionSelector(resolutionSelector())
     if (stabilized) b.setPreviewStabilizationEnabled(true)
     if (ois) {
@@ -777,7 +794,9 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
       try { Recorder.getVideoCapabilities(it).getSupportedQualities(DynamicRange.SDR).contains(q) } catch (e: Throwable) { false }
     }
     val uhd = !action && !portraitVideo && videoQuality == "uhd" && bothSupport(Quality.UHD)
-    val targetFps = if (action) 60 else if (portraitVideo) 30 else fps
+    // Front cameras record at a steady 30 fps (also in Action): at 60 fps the exposure is too short to
+    // span the 100/120 Hz pulsing of indoor lights, which shows as flicker in dim rooms
+    val targetFps = if (selfieVideo) minOf(fps, 30) else if (action) 60 else if (portraitVideo) 30 else fps
     val quality = if (uhd) Quality.UHD else if (bothSupport(Quality.FHD)) Quality.FHD else Quality.HD
     // Same 16:9 size on front and back (strict, no per-camera fallback)
     val recorder = Recorder.Builder()
@@ -817,7 +836,7 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
     val ranges = info.supportedFrameRateRanges.filter { r -> otherInfo == null || otherInfo.supportedFrameRateRanges.contains(r) }
     // Front cameras flicker in the dark with a variable frame rate (exposure jumps as the rate
     // changes), so selfies keep a fixed rate; the main camera may slow down to gather light
-    val minLow = if (selfieVideo) targetFps else if (targetFps >= 60) 30 else 15
+    val minLow = if (selfieVideo) targetFps + 1 else if (targetFps >= 60) 30 else 15
     (ranges.filter { it.upper == targetFps && it.lower >= minLow && it.lower < targetFps }.minByOrNull { it.lower }
       ?: ranges.firstOrNull { it.lower == targetFps && it.upper == targetFps })
       ?.let { vb.setTargetFrameRate(it) }
