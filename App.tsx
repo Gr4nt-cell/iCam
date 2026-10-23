@@ -3,6 +3,7 @@ import * as Haptics from 'expo-haptics';
 import * as MediaLibrary from 'expo-media-library';
 import { StatusBar } from 'expo-status-bar';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import Animated, { FadeIn, FadeOut, LinearTransition } from 'react-native-reanimated';
 import { AppState, PanResponder, PermissionsAndroid, Pressable, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
@@ -840,24 +841,28 @@ function CameraScreen() {
             <Text style={styles.badge}>{badge}</Text>
           </Pressable>
         </Glass>
-        {/* Second bar: settings + recording time */}
-        <Glass
-          radius={18}
-          style={styles.subBar}
-          tint={recording ? 'rgba(255,59,48,0.45)' : undefined}
-        >
-          <Pressable hitSlop={8} onPress={() => setSettingsOpen(true)} style={styles.subBarIcon}>
-            <MaterialCommunityIcons name="cog-outline" size={18} color="#fff" />
-          </Pressable>
+        {/* Second bar: settings (centred) + recording time, which slides in beside it */}
+        <Animated.View layout={SUBBAR_MOVE} style={styles.subBar}>
+          <Glass radius={18} style={StyleSheet.absoluteFill} tint={recording ? 'rgba(255,59,48,0.45)' : undefined} />
+          <Animated.View layout={SUBBAR_MOVE}>
+            <Pressable hitSlop={8} onPress={() => setSettingsOpen(true)} style={styles.subBarIcon}>
+              <MaterialCommunityIcons name="cog-outline" size={18} color="#fff" />
+            </Pressable>
+          </Animated.View>
           {recording && (
-            <View style={styles.subBarTime}>
+            <Animated.View
+              entering={FadeIn.duration(220).delay(140)}
+              exiting={FadeOut.duration(140)}
+              layout={SUBBAR_MOVE}
+              style={styles.subBarTime}
+            >
               <View style={[styles.recLed, paused && { opacity: 0.4 }]} />
               <Text style={styles.recText}>
                 {paused ? 'PAUSED · ' : ''}{mm}:{ss}
               </Text>
-            </View>
+            </Animated.View>
           )}
-        </Glass>
+        </Animated.View>
       </View>
 
       {mode === 'dual' && (
@@ -1051,13 +1056,15 @@ function CameraScreen() {
   );
 }
 
+const SUBBAR_MOVE = LinearTransition.duration(300);
+
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: '#000' },
   center: { alignItems: 'center', justifyContent: 'center' },
   dim: { color: 'rgba(255,255,255,0.6)' },
   top: { position: 'absolute', left: 16, right: 16, alignItems: 'center', gap: 8 },
   topPill: { alignSelf: 'stretch', flexDirection: 'row', alignItems: 'center', justifyContent: 'space-around', gap: 12, paddingHorizontal: 16, height: 44 },
-  subBar: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingLeft: 5, paddingRight: 5, height: 36 },
+  subBar: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingLeft: 4, paddingRight: 4, height: 36, borderRadius: 18, overflow: 'hidden' },
   subBarIcon: { width: 28, height: 28, borderRadius: 14, alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(255,255,255,0.16)' },
   subBarTime: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingRight: 8 },
   badge: { color: '#fff', fontSize: 12, fontWeight: '800', letterSpacing: 0.6 },
