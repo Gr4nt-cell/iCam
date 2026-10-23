@@ -105,13 +105,22 @@ export function SettingsSheet(p: SettingsProps) {
                 />
               </Row>
               <Row
-                label="HDR video"
-                hint={p.supportsVideoHdr ? 'True 10-bit HDR for HDR screens. Looks dim on normal screens and skips the iCam low-light video processing and horizon lock' : 'Not supported by this camera'}
+                label="Anti-flicker"
+                hint={
+                  {
+                    country: 'Matches the power frequency of the country you are in (50 Hz or 60 Hz). Stops flicker and banding under indoor lights',
+                    auto: "Lets the camera detect the light's frequency itself",
+                    '50': 'For 50 Hz power: Africa, Europe, most of Asia, Australia',
+                    '60': 'For 60 Hz power: North America, Brazil, Korea, Taiwan, Philippines, Saudi Arabia',
+                    off: 'No anti-flicker. Indoor lights may pulse or show bands',
+                  }[p.video.antibanding ?? 'country']
+                }
               >
-                <Toggle
-                  value={p.video.hdr && p.supportsVideoHdr}
-                  disabled={!p.supportsVideoHdr}
-                  onChange={(v) => p.onVideo({ ...p.video, hdr: v })}
+                <Segmented
+                  options={['country', 'auto', '50', '60', 'off']}
+                  labels={['Region', 'Auto', '50 Hz', '60 Hz', 'Off']}
+                  value={p.video.antibanding ?? 'country'}
+                  onChange={(v) => p.onVideo({ ...p.video, antibanding: v as VideoSettings['antibanding'] })}
                 />
               </Row>
             </Section>
@@ -166,7 +175,6 @@ export function SettingsSheet(p: SettingsProps) {
                   ) : null}
                   <Text style={s.hwLine}>
                     {[
-                      d.videoHdr && 'HDR video',
                       d.previewStabilization && 'cinematic stabilization',
                       d.videoStabilization && 'video stabilization',
                       d.slowMotion && 'slow motion',

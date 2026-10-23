@@ -195,7 +195,7 @@ function CameraScreen() {
         setRemember(true);
         if (v.photo) setPhoto((p) => ({ ...p, ...v.photo }));
         // v2: HDR video now defaults off (it looked dark on normal screens and bypasses iCam's video processing)
-        if (v.video) setVideo((x) => ({ ...x, ...v.video, hdr: v.videoV2 ? !!v.video?.hdr : false }));
+        if (v.video) setVideo((x) => ({ ...x, ...v.video, hdr: false }));
         if (v.mode) setMode(v.mode === 'pvideo' ? 'video' : v.mode); // Portrait video was removed
         if (typeof v.mirrorSelfie === 'boolean') setMirrorSelfie(v.mirrorSelfie);
         if (v.filter === 'natural' || v.filter === 'mono') setFilter(v.filter);
@@ -646,7 +646,7 @@ function CameraScreen() {
               ? 'DUAL'
               : mode === 'action'
                 ? 'ACTION · HORIZON LOCK'
-                : `${video.resolution === '4k' ? '4K' : '1080p'} · ${video.fps}${video.hdr ? ' · HDR' : ''}${video.stabilization === 'horizon' ? ' · LOCK' : ''}`;
+                : `${video.resolution === '4k' ? '4K' : '1080p'} · ${video.fps}${video.stabilization === 'horizon' ? ' · LOCK' : ''}`;
 
   return (
     <View style={styles.root}>
@@ -673,7 +673,8 @@ function CameraScreen() {
           active={appActive && !viewerOpen}
           videoQuality={video.resolution === '4k' ? 'uhd' : 'fhd'}
           fps={video.fps}
-          hdrVideo={video.hdr}
+          hdrVideo={false}
+          antibanding={video.antibanding ?? 'country'}
           stabilization={video.stabilization}
           faceSmoothing={smoothing}
           palmShutter={palmShutter}

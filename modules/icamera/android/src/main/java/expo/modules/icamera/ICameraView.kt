@@ -201,6 +201,8 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
   fun setVideoQuality(v: String) = rebindOnChange(videoQuality, v) { videoQuality = it }
   fun setFps(v: Int) = rebindOnChange(fps, v) { fps = it }
   fun setHdrVideo(v: Boolean) = rebindOnChange(hdrVideo, v) { hdrVideo = it }
+  private var antibanding = "country"
+  fun setAntibanding(v: String) = rebindOnChange(antibanding, v) { antibanding = it }
   fun setStabilization(v: String) = rebindOnChange(stabilization, v) { stabilization = it }
   fun setNightExtension(v: Boolean) = rebindOnChange(nightExtension, v) { nightExtension = it }
   fun setAudio(v: Boolean) { audio = v }
@@ -619,6 +621,12 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
    * so lights pulsing at 100 Hz (50 Hz mains) show up as flicker; naming the frequency fixes it.
    */
   private fun antibandingMode(): Int {
+    when (antibanding) {
+      "auto" -> return CaptureRequest.CONTROL_AE_ANTIBANDING_MODE_AUTO
+      "50" -> return CaptureRequest.CONTROL_AE_ANTIBANDING_MODE_50HZ
+      "60" -> return CaptureRequest.CONTROL_AE_ANTIBANDING_MODE_60HZ
+      "off" -> return CaptureRequest.CONTROL_AE_ANTIBANDING_MODE_OFF
+    }
     val cc = try {
       val tm = context.getSystemService(android.content.Context.TELEPHONY_SERVICE) as? android.telephony.TelephonyManager
       (tm?.networkCountryIso?.takeIf { it.isNotBlank() } ?: tm?.simCountryIso?.takeIf { it.isNotBlank() }

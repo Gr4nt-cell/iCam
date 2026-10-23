@@ -113,6 +113,8 @@ export type ICameraProps = ViewProps & {
   videoQuality?: 'uhd' | 'fhd';
   fps?: number;
   hdrVideo?: boolean;
+  /** 'country' | 'auto' | '50' | '60' | 'off' */
+  antibanding?: string;
   stabilization?: 'off' | 'standard' | 'cinematic' | 'horizon';
   /** Skin smoothing 0..1 for video (photos are smoothed when processed) */
   faceSmoothing?: number;

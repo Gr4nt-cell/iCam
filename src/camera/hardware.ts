@@ -6,6 +6,8 @@ export type VideoSettings = {
   resolution: '4k' | '1080p';
   fps: 30 | 60;
   hdr: boolean;
+  /** Anti-flicker for indoor lights: by country, camera auto, 50 Hz, 60 Hz or off */
+  antibanding?: 'country' | 'auto' | '50' | '60' | 'off';
   stabilization: 'cinematic' | 'standard' | 'off' | 'horizon';
 };
 
