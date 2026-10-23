@@ -11,6 +11,17 @@ import {
   View,
 } from 'react-native';
 import * as Haptics from 'expo-haptics';
+import RAnimated, {
+  FadeIn,
+  FadeInDown,
+  FadeOut,
+  FadeOutDown,
+  ZoomIn,
+  useAnimatedStyle,
+  useSharedValue,
+  withSpring,
+  withTiming,
+} from 'react-native-reanimated';
 import type { CaptureMode, Lens } from '../camera/hardware';
 import { Glass, GlassCircle } from './Glass';
 import { GlassSegmented } from './GlassSegmented';
@@ -126,7 +137,7 @@ export function ZoomPills({
         g.current.active = false;
       }}
     >
-      <View style={{ opacity: dial ? 0.35 : 1 }}>
+      <DimView dim={dial}>
         <Glass radius={24} style={styles.zoomBar}>
           <GlassSegmented
             items={stops.map((s) => ({ key: s.label, label: s.label }))}
@@ -144,10 +155,29 @@ export function ZoomPills({
             minItemWidth={38}
           />
         </Glass>
-      </View>
-      {dial && <ZoomDial zoom={zoom} min={min} max={max} stops={stops} />}
+      </DimView>
+      {dial && (
+        <RAnimated.View
+          pointerEvents="none"
+          entering={FadeInDown.duration(220)}
+          exiting={FadeOutDown.duration(180)}
+          style={{ position: 'absolute', bottom: 0, left: 0, right: 0, alignItems: 'center' }}
+        >
+          <ZoomDial zoom={zoom} min={min} max={max} stops={stops} />
+        </RAnimated.View>
+      )}
     </View>
   );
+}
+
+/** Fades its content down while the zoom dial is up */
+function DimView({ dim, children }: { dim: boolean; children: React.ReactNode }) {
+  const o = useSharedValue(1);
+  useEffect(() => {
+    o.value = withTiming(dim ? 0.35 : 1, { duration: 200 });
+  }, [dim, o]);
+  const st = useAnimatedStyle(() => ({ opacity: o.value }));
+  return <RAnimated.View style={st}>{children}</RAnimated.View>;
 }
 
 /** iOS-style semicircular zoom dial: log-scale ticks turn around the arc under a fixed marker. */
@@ -271,7 +301,7 @@ export function Shutter({
       <Animated.View style={[styles.shutterOuter, { transform: [{ scale }] }]}>
         <Glass radius={42} style={StyleSheet.absoluteFill} tint="rgba(255,255,255,0.04)" />
         {isVideo ? (
-          <View style={[styles.recDot, recording && styles.recSquare]} />
+          <RecMorph recording={recording} />
         ) : (
           <View style={[styles.shutterInner, kind === 'night' && styles.shutterNight]}>
             {kind === 'night' && <MaterialCommunityIcons name="weather-night" size={26} color="#1b1b1f" />}
@@ -280,6 +310,19 @@ export function Shutter({
       </Animated.View>
     </Pressable>
   );
+}
+
+/** Red record dot that smoothly morphs into the stop square */
+function RecMorph({ recording }: { recording: boolean }) {
+  const t = useSharedValue(recording ? 1 : 0);
+  useEffect(() => {
+    t.value = withSpring(recording ? 1 : 0, { damping: 18, stiffness: 260 });
+  }, [recording, t]);
+  const st = useAnimatedStyle(() => {
+    const size = 62 - 32 * t.value;
+    return { width: size, height: size, borderRadius: 31 - 23 * t.value };
+  });
+  return <RAnimated.View style={[{ backgroundColor: '#ff3b30' }, st]} />;
 }
 
 /* ---------------- Thumbnail ---------------- */
@@ -301,16 +344,22 @@ export function Thumb({
     <Pressable onPress={onPress} disabled={!uri && !enabled}>
       <Glass radius={28} style={styles.thumb}>
         {uri ? (
-          <Image source={{ uri }} style={styles.thumbImg} />
+          <RAnimated.View key={uri} entering={ZoomIn.duration(260)} style={StyleSheet.absoluteFill}>
+            <Image source={{ uri }} style={styles.thumbImg} />
+          </RAnimated.View>
         ) : isVideo ? (
           <View style={[StyleSheet.absoluteFill, styles.center]}>
             <MaterialCommunityIcons name="play-circle-outline" size={28} color="#fff" />
           </View>
         ) : null}
         {processing && (
-          <View style={[StyleSheet.absoluteFill, styles.center, { backgroundColor: 'rgba(0,0,0,0.14)' }]}>
+          <RAnimated.View
+            entering={FadeIn.duration(150)}
+            exiting={FadeOut.duration(200)}
+            style={[StyleSheet.absoluteFill, styles.center, { backgroundColor: 'rgba(0,0,0,0.14)' }]}
+          >
             <ActivityIndicator color="#fff" />
-          </View>
+          </RAnimated.View>
         )}
       </Glass>
     </Pressable>
@@ -450,9 +499,11 @@ export function FocusRing({ x, y }: { x: number; y: number }) {
 export function Toast({ text }: { text: string | null }) {
   if (!text) return null;
   return (
-    <Glass radius={18} style={styles.toast}>
-      <Text style={styles.toastText}>{text}</Text>
-    </Glass>
+    <RAnimated.View entering={FadeInDown.duration(200)} exiting={FadeOut.duration(180)} style={{ alignSelf: 'center' }}>
+      <Glass radius={18} style={styles.toast}>
+        <Text style={styles.toastText}>{text}</Text>
+      </Glass>
+    </RAnimated.View>
   );
 }
 

@@ -3,7 +3,7 @@ import * as Haptics from 'expo-haptics';
 import * as MediaLibrary from 'expo-media-library';
 import { StatusBar } from 'expo-status-bar';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import Animated, { FadeIn, FadeOut, LinearTransition } from 'react-native-reanimated';
+import Animated, { FadeIn, FadeInDown, FadeOut, FadeOutDown, LinearTransition, ZoomIn, ZoomOut } from 'react-native-reanimated';
 import { AppState, PanResponder, PermissionsAndroid, Pressable, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
@@ -778,60 +778,75 @@ function CameraScreen() {
       {/* Top bar */}
       <View style={[styles.top, { top: insets.top + 10 }]} pointerEvents="box-none">
         <Glass radius={24} style={styles.topPill}>
+          <Animated.View layout={GLIDE}>
           <Pressable hitSlop={8} onPress={() => setFlash((f) => (f === 'off' ? 'auto' : f === 'auto' ? 'on' : 'off'))}>
             <MaterialCommunityIcons name={flashIcon} size={22} color={ready?.hasFlash === false ? 'rgba(255,255,255,0.35)' : '#fff'} />
           </Pressable>
+          </Animated.View>
           {mode !== 'dual' && (
-            <Pressable hitSlop={8} onPress={() => setTimer((t) => (t === 0 ? 3 : t === 3 ? 10 : 0))}>
-              <MaterialCommunityIcons name={timerIcon} size={22} color="#fff" />
-            </Pressable>
+            <Pop>
+              <Pressable hitSlop={8} onPress={() => setTimer((t) => (t === 0 ? 3 : t === 3 ? 10 : 0))}>
+                <MaterialCommunityIcons name={timerIcon} size={22} color="#fff" />
+              </Pressable>
+            </Pop>
           )}
           {(isPhotoShot || mode === 'video' || mode === 'action') && (
-            <Pressable hitSlop={8} onPress={() => setShowLook((v) => !v)}>
-              <MaterialCommunityIcons
-                name="palette-outline"
-                size={22}
-                color={showLook || filter !== 'natural' || smoothing > 0.01 ? '#ffd76a' : '#fff'}
-              />
-            </Pressable>
+            <Pop>
+              <Pressable hitSlop={8} onPress={() => setShowLook((v) => !v)}>
+                <MaterialCommunityIcons
+                  name="palette-outline"
+                  size={22}
+                  color={showLook || filter !== 'natural' || smoothing > 0.01 ? '#ffd76a' : '#fff'}
+                />
+              </Pressable>
+            </Pop>
           )}
           {isPhotoShot && (
-            <Pressable
-              hitSlop={8}
-              onPress={() => {
-                Haptics.selectionAsync();
-                setAspect((a) => ASPECTS[(ASPECTS.indexOf(a) + 1) % ASPECTS.length]);
-              }}
-            >
-              <Text style={styles.aspectChip}>{aspect === 'full' ? 'FULL' : aspect}</Text>
-            </Pressable>
+            <Pop>
+              <Pressable
+                hitSlop={8}
+                onPress={() => {
+                  Haptics.selectionAsync();
+                  setAspect((a) => ASPECTS[(ASPECTS.indexOf(a) + 1) % ASPECTS.length]);
+                }}
+              >
+                <Text style={styles.aspectChip}>{aspect === 'full' ? 'FULL' : aspect}</Text>
+              </Pressable>
+            </Pop>
           )}
           {mode === 'video' && facing === 'back' && (
-            <Pressable
-              hitSlop={8}
-              onPress={() => {
-                const on = video.stabilization !== 'horizon';
-                setVideo((v) => ({ ...v, stabilization: on ? 'horizon' : 'cinematic' }));
-                flashToast(on ? 'Horizon lock on' : 'Horizon lock off');
-              }}
-            >
-              <MaterialCommunityIcons name="rotate-left" size={22} color={video.stabilization === 'horizon' ? '#ffd76a' : '#fff'} />
-            </Pressable>
+            <Pop>
+              <Pressable
+                hitSlop={8}
+                onPress={() => {
+                  const on = video.stabilization !== 'horizon';
+                  setVideo((v) => ({ ...v, stabilization: on ? 'horizon' : 'cinematic' }));
+                  flashToast(on ? 'Horizon lock on' : 'Horizon lock off');
+                }}
+              >
+                <MaterialCommunityIcons name="rotate-left" size={22} color={video.stabilization === 'horizon' ? '#ffd76a' : '#fff'} />
+              </Pressable>
+            </Pop>
           )}
           {palmShutter && palmStatus !== 'off' && (
-            <MaterialCommunityIcons
-              name="hand-back-right-outline"
-              size={20}
-              color={
-                palmStatus === 'palm' ? '#ffd76a' : palmStatus === 'hand' ? '#fff' : palmStatus.startsWith('error') ? '#ff6b5f' : 'rgba(255,255,255,0.35)'
-              }
-            />
+            <Pop>
+              <MaterialCommunityIcons
+                name="hand-back-right-outline"
+                size={20}
+                color={
+                  palmStatus === 'palm' ? '#ffd76a' : palmStatus === 'hand' ? '#fff' : palmStatus.startsWith('error') ? '#ff6b5f' : 'rgba(255,255,255,0.35)'
+                }
+              />
+            </Pop>
           )}
           {(facing === 'front' || mode === 'dual') && (
-            <Pressable hitSlop={8} onPress={() => setMirrorSelfie((v) => !v)}>
-              <MaterialCommunityIcons name="flip-horizontal" size={22} color={mirrorSelfie ? '#ffd76a' : '#fff'} />
-            </Pressable>
+            <Pop>
+              <Pressable hitSlop={8} onPress={() => setMirrorSelfie((v) => !v)}>
+                <MaterialCommunityIcons name="flip-horizontal" size={22} color={mirrorSelfie ? '#ffd76a' : '#fff'} />
+              </Pressable>
+            </Pop>
           )}
+          <Animated.View layout={GLIDE}>
           <Pressable
             hitSlop={8}
             onPress={() =>
@@ -840,6 +855,7 @@ function CameraScreen() {
           >
             <Text style={styles.badge}>{badge}</Text>
           </Pressable>
+          </Animated.View>
         </Glass>
         {/* Second bar: settings (centred) + recording time, which slides in beside it */}
         <Animated.View layout={SUBBAR_MOVE} style={styles.subBar}>
@@ -882,7 +898,7 @@ function CameraScreen() {
       )}
 
       {captureReq && (
-        <View style={{ position: 'absolute', top: insets.top + 106, alignSelf: 'center' }}>
+        <Animated.View entering={FadeIn.duration(220)} exiting={FadeOut.duration(180)} style={{ position: 'absolute', top: insets.top + 106, alignSelf: 'center' }}>
           <Glass radius={18} style={{ flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 14, height: 36 }}>
             <Text style={{ color: '#fff', fontWeight: '700', fontSize: 13 }}>
               {captureReq === 'image' ? 'Take a photo for the app' : 'Record a video for the app'}
@@ -891,12 +907,14 @@ function CameraScreen() {
               <MaterialCommunityIcons name="close" size={18} color="#fff" />
             </Pressable>
           </Glass>
-        </View>
+        </Animated.View>
       )}
 
       {countdown > 0 && (
         <View style={[StyleSheet.absoluteFill, styles.center]} pointerEvents="none">
-          <Text style={styles.countdown}>{countdown}</Text>
+          <Animated.Text key={countdown} entering={ZoomIn.duration(260)} exiting={FadeOut.duration(200)} style={styles.countdown}>
+            {countdown}
+          </Animated.Text>
         </View>
       )}
 
@@ -904,50 +922,58 @@ function CameraScreen() {
       <View style={[styles.bottom, { paddingBottom: insets.bottom + 14 }]} pointerEvents="box-none">
         <Toast text={toast} />
         {showLook && (isPhotoShot || mode === 'video' || mode === 'action') && (
-          <LookPanel
-            filter={filter}
-            onFilter={setFilter}
-            smoothing={smoothing}
-            onSmoothing={setSmoothing}
-            blur={mode === 'portrait' ? bokeh : undefined}
-            onBlur={setBokeh}
-          />
+          <Panel>
+            <LookPanel
+              filter={filter}
+              onFilter={setFilter}
+              smoothing={smoothing}
+              onSmoothing={setSmoothing}
+              blur={mode === 'portrait' ? bokeh : undefined}
+              onBlur={setBokeh}
+            />
+          </Panel>
         )}
         {mode === 'pvideo' && !weakGpu && (
-          <Glass radius={22} style={styles.blurRow}>
-            <MaterialCommunityIcons name="blur" size={20} color="#fff" />
-            <Text style={styles.blurLabel}>Blur</Text>
-            <View style={{ flex: 1 }}>
-              <Slider value={bokeh} min={0} max={1} onChange={setBokeh} />
-            </View>
-            <Text style={styles.blurLabel}>{Math.round(bokeh * 100)}</Text>
-          </Glass>
+          <Panel>
+            <Glass radius={22} style={styles.blurRow}>
+              <MaterialCommunityIcons name="blur" size={20} color="#fff" />
+              <Text style={styles.blurLabel}>Blur</Text>
+              <View style={{ flex: 1 }}>
+                <Slider value={bokeh} min={0} max={1} onChange={setBokeh} />
+              </View>
+              <Text style={styles.blurLabel}>{Math.round(bokeh * 100)}</Text>
+            </Glass>
+          </Panel>
         )}
         {mode === 'pro' && !showLook && (
-          <ProPanel
-            value={manual}
-            onChange={setManual}
-            caps={caps}
-            video={proVideo}
-            onToggleVideo={() => !recording && setProVideo((v) => !v)}
-          />
+          <Panel>
+            <ProPanel
+              value={manual}
+              onChange={setManual}
+              caps={caps}
+              video={proVideo}
+              onToggleVideo={() => !recording && setProVideo((v) => !v)}
+            />
+          </Panel>
         )}
         {showSliders && mode !== 'pro' && (
-          <ToneSliders
-            brightness={brightness}
-            shadows={shadows}
-            showShadows={isPhotoShot}
-            onBrightness={(v) => {
-              setBrightness(v);
-              pokeSliders();
-            }}
-            onShadows={(v) => {
-              setShadows(v);
-              pokeSliders();
-            }}
-          />
+          <Panel>
+            <ToneSliders
+              brightness={brightness}
+              shadows={shadows}
+              showShadows={isPhotoShot}
+              onBrightness={(v) => {
+                setBrightness(v);
+                pokeSliders();
+              }}
+              onShadows={(v) => {
+                setShadows(v);
+                pokeSliders();
+              }}
+            />
+          </Panel>
         )}
-        <View style={styles.zoomRow}>
+        <Animated.View layout={GLIDE} style={styles.zoomRow}>
           <IconButton icon="minus" size={40} onPress={() => nudgeExposure(-1)} />
           <ZoomPills
             stops={stops}
@@ -969,14 +995,19 @@ function CameraScreen() {
             onDial={setZoom}
           />
           <IconButton icon="plus" size={40} onPress={() => nudgeExposure(1)} />
-        </View>
+        </Animated.View>
+        <Animated.View layout={GLIDE}>
         <Glass radius={34} style={styles.dock}>
           <ModeCarousel mode={mode} modes={visibleModes} onChange={changeMode} disabled={recording} />
           <View style={styles.shutterRow}>
             {recording && mode !== 'slowmo' ? (
-              <IconButton icon={paused ? 'record' : 'pause'} size={56} onPress={togglePause} />
+              <Animated.View key="pause" entering={ZoomIn.duration(220)} exiting={ZoomOut.duration(160)}>
+                <IconButton icon={paused ? 'record' : 'pause'} size={56} onPress={togglePause} />
+              </Animated.View>
             ) : (
-              <Thumb uri={last?.uri} processing={processing} onPress={openLast} isVideo={!!last?.isVideo} enabled={!!last} />
+              <Animated.View key="thumb" entering={ZoomIn.duration(220)} exiting={ZoomOut.duration(160)}>
+                <Thumb uri={last?.uri} processing={processing} onPress={openLast} isVideo={!!last?.isVideo} enabled={!!last} />
+              </Animated.View>
             )}
             <Shutter kind={shutterKind} recording={recording} busy={busy || countdown > 0} onPress={onShutter} />
             {mode === 'dual' ? (
@@ -998,6 +1029,7 @@ function CameraScreen() {
             )}
           </View>
         </Glass>
+        </Animated.View>
       </View>
 
       <SettingsSheet
@@ -1057,6 +1089,26 @@ function CameraScreen() {
 }
 
 const SUBBAR_MOVE = LinearTransition.duration(300);
+/** Shared motion: things that move glide; things that appear fade/scale in */
+const GLIDE = LinearTransition.springify().damping(22).stiffness(220);
+
+/** Small top-bar control that pops in/out while its neighbours glide aside */
+function Pop({ children }: { children: React.ReactNode }) {
+  return (
+    <Animated.View entering={ZoomIn.duration(200)} exiting={ZoomOut.duration(150)} layout={GLIDE}>
+      {children}
+    </Animated.View>
+  );
+}
+
+/** Bottom panel (filters, Pro, sliders) that rises in and sinks away */
+function Panel({ children }: { children: React.ReactNode }) {
+  return (
+    <Animated.View entering={FadeInDown.duration(240)} exiting={FadeOutDown.duration(180)} layout={GLIDE}>
+      {children}
+    </Animated.View>
+  );
+}
 
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: '#000' },

@@ -2,8 +2,8 @@ import { MaterialCommunityIcons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { LinearGradient } from 'expo-linear-gradient';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
+import Animated, { useAnimatedStyle, useSharedValue, withSpring, withTiming } from 'react-native-reanimated';
 import {
-  Animated,
   PanResponder,
   Pressable,
   ScrollView,
@@ -37,6 +37,9 @@ type Props = {
 };
 
 const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
+/** Soft glide with a hint of overshoot; runs on the UI thread so camera work never stutters it */
+const GLIDE = { damping: 22, stiffness: 240, mass: 0.9 };
+const PRESS = { damping: 18, stiffness: 320 };
 
 /**
  * Liquid-glass segmented selector. The selection pill is a rounded, translucent glass lens that
@@ -57,10 +60,15 @@ export function GlassSegmented({
 }: Props) {
   const PAD = 4;
   const layouts = useRef<Record<string, { x: number; w: number }>>({});
-  const x = useRef(new Animated.Value(0)).current;
-  const w = useRef(new Animated.Value(0)).current;
-  const opacity = useRef(new Animated.Value(0)).current;
-  const scale = useRef(new Animated.Value(1)).current;
+  const x = useSharedValue(0);
+  const w = useSharedValue(0);
+  const opacity = useSharedValue(0);
+  const scale = useSharedValue(1);
+  const pillStyle = useAnimatedStyle(() => ({
+    width: w.value,
+    opacity: opacity.value,
+    transform: [{ translateX: x.value }, { scaleY: scale.value }, { scaleX: scale.value }],
+  }));
   const [hover, setHover] = useState<string | null>(null);
   const hoverRef = useRef<string | null>(null);
   const dragging = useRef(false);
@@ -74,17 +82,16 @@ export function GlassSegmented({
   const live = useRef({ value, items, disabled, onChange });
   live.current = { value, items, disabled, onChange };
 
-  const spring = (v: Animated.Value, to: number) =>
-    Animated.spring(v, { toValue: to, useNativeDriver: false, speed: 22, bounciness: 7 });
-
   const moveTo = (k: string, animate = true) => {
     const l = layouts.current[k];
     if (!l) return;
-    opacity.setValue(1);
-    if (animate) Animated.parallel([spring(x, l.x), spring(w, l.w)]).start();
-    else {
-      x.setValue(l.x);
-      w.setValue(l.w);
+    if (animate && opacity.value > 0) {
+      x.value = withSpring(l.x, GLIDE);
+      w.value = withSpring(l.w, GLIDE);
+    } else {
+      x.value = l.x;
+      w.value = l.w;
+      opacity.value = withTiming(1, { duration: 180 });
     }
   };
 
@@ -142,7 +149,7 @@ export function GlassSegmented({
           dragging.current = true;
           dragStart.current = l?.x ?? 0;
           hoverRef.current = live.current.value;
-          Animated.spring(scale, { toValue: 1.08, useNativeDriver: false, speed: 30 }).start();
+          scale.value = withSpring(1.08, PRESS);
         },
         onPanResponderMove: (_, g) => {
           const keys = live.current.items.map((i) => i.key).filter((k) => layouts.current[k]);
@@ -152,12 +159,12 @@ export function GlassSegmented({
           const cur = layouts.current[live.current.value];
           const pillW = cur?.w ?? first.w;
           const nx = clamp(dragStart.current + g.dx, first.x, last.x + last.w - pillW);
-          x.setValue(nx);
+          x.value = nx;
           const k = nearest(nx + pillW / 2);
           if (k && k !== hoverRef.current) {
             hoverRef.current = k;
             setHover(k);
-            spring(w, layouts.current[k].w).start();
+            w.value = withSpring(layouts.current[k].w, GLIDE);
             Haptics.selectionAsync();
           }
         },
@@ -170,7 +177,7 @@ export function GlassSegmented({
 
   const finishDrag = (wasTap: boolean) => {
     dragging.current = false;
-    Animated.spring(scale, { toValue: 1, useNativeDriver: false, speed: 30 }).start();
+    scale.value = withSpring(1, PRESS);
     const k = wasTap ? live.current.value : hoverRef.current ?? live.current.value;
     hoverRef.current = null;
     setHover(null);
@@ -190,10 +197,8 @@ export function GlassSegmented({
             top: PAD,
             height,
             borderRadius: height / 2,
-            width: w,
-            opacity,
-            transform: [{ translateX: x }, { scaleY: scale }, { scaleX: scale }],
           },
+          pillStyle,
         ]}
       >
         <LinearGradient
