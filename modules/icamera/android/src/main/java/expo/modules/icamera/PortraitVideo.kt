@@ -892,12 +892,14 @@ class PortraitProcessor : SurfaceProcessor {
           for (k in -R..R) { val yy = (y + k).coerceIn(0, mh - 1); val v = tmp[yy * mw + x]; if (v > m) m = v }
           arr[y * mw + x] = m
         }
+        closeSilhouette(arr, mw, mh)
         if (input !== flipped) input.recycle()
         flipped.recycle()
         handler.post {
           val prev = mask
           if (prev != null && prev.size == arr.size && (useRot == rot || fixedRotation >= 0)) {
-            for (i in arr.indices) arr[i] = arr[i] * 0.8f + prev[i] * 0.2f // light temporal smoothing (less lag)
+            // light smoothing; leaning toward "person" so a one-frame dropout never blurs the body
+            for (i in arr.indices) arr[i] = arr[i] * 0.7f + maxOf(arr[i], prev[i]) * 0.3f
           }
           rot = useRot
           mask = arr; maskW = mw; maskH = mh; maskDirty = true
@@ -905,6 +907,32 @@ class PortraitProcessor : SurfaceProcessor {
         }
       } catch (e: Throwable) {
         segBusy = false
+      }
+    }
+  }
+
+  /**
+   * Fills holes the segmenter leaves in a body (busy patterns like checked shirts, bags, straps):
+   * each row is filled between the person's outer edges, and when the body runs off the bottom of
+   * the frame (selfies, half-body shots) everything below the person's outline is person too.
+   */
+  private fun closeSilhouette(a: FloatArray, w: Int, h: Int) {
+    val th = 0.5f
+    var bottom = -1
+    for (y in 0 until h) {
+      var l = -1; var r = -1
+      for (x in 0 until w) if (a[y * w + x] > th) { if (l < 0) l = x; r = x }
+      if (l >= 0) {
+        bottom = y
+        for (x in l..r) if (a[y * w + x] < 0.9f) a[y * w + x] = 0.9f
+      }
+    }
+    if (bottom >= (h * 0.85f).toInt()) {
+      for (x in 0 until w) {
+        var top = -1
+        for (y in 0 until h) if (a[y * w + x] > th) { top = y; break }
+        // only columns where the body is in the lower part (not a raised hand alone)
+        if (top >= 0 && top < h - 1) for (y in top until h) if (a[y * w + x] < 0.9f) a[y * w + x] = 0.9f
       }
     }
   }
@@ -1302,8 +1330,9 @@ class PortraitProcessor : SurfaceProcessor {
           }
           float mc = smoothstep(0.2, 0.8, acc / max(ws, 0.0001));
           vec4 bk = texture2D(sBokeh, uv);
-          // where the blurred layer has little background (just beside the subject) keep it sharp
-          float use = (1.0 - mc) * smoothstep(0.05, 0.35, bk.a) * clamp(uBokeh * 4.0, 0.0, 1.0);
+          // the blurred layer holds background-only colour wherever any background was in reach,
+          // so the background is blurred right up to the subject's edge (no sharp halo)
+          float use = (1.0 - mc) * smoothstep(0.0, 0.04, bk.a) * clamp(uBokeh * 4.0, 0.0, 1.0);
           col = mix(col, bk.rgb, use);
         }
         if (uFilterOn > 0.5) col = applyFilter(col, q);
