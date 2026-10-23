@@ -1,11 +1,28 @@
 {
-  "cli": { "appVersionSource": "local" },
+  "cli": {
+    "version": ">= 16.0.0",
+    "appVersionSource": "local"
+  },
   "build": {
-    "preview": {
-      "android": { "buildType": "apk" }
+    "apk": {
+      "env": {
+        "ICAM_VERSION_CODE": "170"
+      },
+      "android": {
+        "buildType": "apk",
+        "credentialsSource": "local",
+        "image": "latest"
+      }
     },
     "production": {
-      "android": { "buildType": "app-bundle" }
+      "env": {
+        "ICAM_VERSION_CODE": "170"
+      },
+      "android": {
+        "buildType": "app-bundle",
+        "credentialsSource": "local",
+        "image": "latest"
+      }
     }
   }
 }
