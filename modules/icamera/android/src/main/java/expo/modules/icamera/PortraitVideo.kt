@@ -207,6 +207,7 @@ class PortraitProcessor : SurfaceProcessor {
   private var bkPrepProg = 0
   private var bkBlurProg = 0
   private var segDrawn = false
+  private var heldMasks = 0
 
   private val quadPos: FloatBuffer = floatBuffer(floatArrayOf(-1f, -1f, 1f, -1f, -1f, 1f, 1f, 1f))
   private val quadTex: FloatBuffer = floatBuffer(floatArrayOf(0f, 0f, 1f, 0f, 0f, 1f, 1f, 1f))
@@ -675,7 +676,7 @@ class PortraitProcessor : SurfaceProcessor {
     GLES20.glUniform1i(GLES20.glGetUniformLocation(bkBlurProg, "sMask"), 1)
     GLES20.glUniform1i(GLES20.glGetUniformLocation(bkBlurProg, "uRot"), rot)
     // subtle: a soft, natural background rather than a heavy smear
-    val radiusPx = minOf(bkW, bkH) * (0.006f + bokehNow * 0.028f)
+    val radiusPx = minOf(bkW, bkH) * (0.0042f + bokehNow * 0.0196f)
     GLES20.glUniform2f(GLES20.glGetUniformLocation(bkBlurProg, "uRadius"), radiusPx / bkW, radiusPx / bkH)
     GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
     GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
@@ -899,8 +900,18 @@ class PortraitProcessor : SurfaceProcessor {
         handler.post {
           val prev = mask
           if (prev != null && prev.size == arr.size && (useRot == rot || fixedRotation >= 0)) {
-            // light smoothing; leaning toward "person" so a one-frame dropout never blurs the body
-            for (i in arr.indices) arr[i] = arr[i] * 0.7f + maxOf(arr[i], prev[i]) * 0.3f
+            // Jitter guard: the segmenter sometimes loses the person for a frame or two (head turned,
+            // fast move). A sudden big drop in the person's area is ignored (the last mask is held),
+            // and the person fades out of the mask slowly, so the subject never flickers into blur.
+            var nNew = 0; var nPrev = 0
+            for (i in arr.indices) { if (arr[i] > 0.5f) nNew++; if (prev[i] > 0.5f) nPrev++ }
+            if (nPrev > arr.size / 50 && nNew < nPrev * 0.6f && heldMasks < 8) {
+              heldMasks++
+              System.arraycopy(prev, 0, arr, 0, arr.size)
+            } else {
+              heldMasks = 0
+              for (i in arr.indices) arr[i] = maxOf(arr[i] * 0.75f + prev[i] * 0.25f, prev[i] * 0.8f)
+            }
           }
           rot = useRot
           mask = arr; maskW = mw; maskH = mh; maskDirty = true
