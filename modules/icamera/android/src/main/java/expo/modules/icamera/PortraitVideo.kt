@@ -198,6 +198,16 @@ class PortraitProcessor : SurfaceProcessor {
   private var maskDirty = false
   private var maskReady = false
 
+  // Lens-style bokeh (aperture): smoothed strength (animates like an iris opening/closing) + buffers
+  private var bokehNow = 0f
+  private var bkW = 0
+  private var bkH = 0
+  private val bkTex = IntArray(2)
+  private val bkFbo = IntArray(2)
+  private var bkPrepProg = 0
+  private var bkBlurProg = 0
+  private var segDrawn = false
+
   private val quadPos: FloatBuffer = floatBuffer(floatArrayOf(-1f, -1f, 1f, -1f, -1f, 1f, 1f, 1f))
   private val quadTex: FloatBuffer = floatBuffer(floatArrayOf(0f, 0f, 1f, 0f, 0f, 1f, 1f, 1f))
 
@@ -282,9 +292,15 @@ class PortraitProcessor : SurfaceProcessor {
     var outTs = rawTs + tsOffset
     if (holdTimeline && lastOutTs > 0L && outTs <= lastOutTs) outTs = lastOutTs + 1_000_000L
     lastOutTs = outTs
-    val blurOn = blurEnabled && !blurDisabled
-    if (blurOn && frame % 3L == 0L && !segBusy) captureForSegmentation()
+    val wantBlur = blurEnabled && !blurDisabled
+    // fresh person mask every frame the segmenter is free (less lag behind movement)
+    if (wantBlur) captureForSegmentation() else segDrawn = false
     uploadMask()
+    // the iris animates: blur grows / shrinks smoothly when the aperture changes
+    val bokehTarget = if (wantBlur && maskReady && rot >= 0) strength else 0f
+    bokehNow += (bokehTarget - bokehNow) * 0.12f
+    if (Math.abs(bokehTarget - bokehNow) < 0.003f) bokehNow = bokehTarget
+    val blurOn = bokehNow > 0.004f
 
     // Smooth the roll (gravity is already low-noise; this removes hand tremor) with angle wrap
     if (horizonLock) {
@@ -299,11 +315,12 @@ class PortraitProcessor : SurfaceProcessor {
     digitalZoomNow = Math.exp(Math.log(digitalZoomNow.toDouble()) + (Math.log(digitalZoom.toDouble()) - Math.log(digitalZoomNow.toDouble())) * 0.22).toFloat()
 
     // Enhanced (non-blur) path: process the frame once into an offscreen buffer, then draw outputs from it
-    val enh = !blurOn && enhance
+    val enh = enhance || blurOn
     if (enh) {
       if (frame % 6L == 1L) updateStats()
       if (stabCrop > 1.001f) updateMotion(s.timestamp) else { shiftX = 0f; shiftY = 0f; prevLuma = null; motDrawn = false }
       processFrame()
+      if (blurOn) drawBokeh(cur)
       cur = 1 - cur
       havePrev = true
     }
@@ -337,7 +354,7 @@ class PortraitProcessor : SurfaceProcessor {
         zoomK = maxOf(1f, k)
       }
       xform = floatArrayOf(size.width.toFloat(), size.height.toFloat(), angle, zoomK, if (flip) 1f else 0f)
-      if (blurOn) drawBlur(outM) else if (enh) drawOut(outM) else drawCopy(outM)
+      if (enh) drawOut(outM, blurOn) else drawCopy(outM)
       EGLExt.eglPresentationTimeANDROID(display, es, outTs)
       EGL14.eglSwapBuffers(display, es)
     }
@@ -345,7 +362,7 @@ class PortraitProcessor : SurfaceProcessor {
     drawEncoder(stDet, enh, blurOn)
 
     // Runtime check: if blurring keeps us under ~22 fps for ~2 s, switch it off
-    if (blurOn && maskReady && frame > 30) {
+    if (false) { // bokeh now runs at quarter size: no need to switch it off for speed
       val ms = (System.nanoTime() - t0) / 1_000_000.0
       slowFrames = if (ms > 45.0) slowFrames + 1 else maxOf(0, slowFrames - 1)
       if (slowFrames > 45) disableBlur("Background blur was too slow on this phone and has been turned off")
@@ -430,7 +447,7 @@ class PortraitProcessor : SurfaceProcessor {
       zoomK = maxOf(1f, encCrop)
     }
     xform = floatArrayOf(ew, eh, angle, zoomK, 0f)
-    if (blurOn) drawBlur(encM) else if (enh) drawOut(encM) else drawCopy(encM)
+    if (enh) drawOut(encM, blurOn) else drawCopy(encM)
     EGLExt.eglPresentationTimeANDROID(display, encSurf, pts)
     EGL14.eglSwapBuffers(display, encSurf)
   }
@@ -598,9 +615,84 @@ class PortraitProcessor : SurfaceProcessor {
     GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
   }
 
+  private fun ensureBokehFbos() {
+    // quarter size: the blur is soft anyway, and 16× fewer pixels lets it use many taps
+    val w = maxOf(16, inW / 4)
+    val h = maxOf(16, inH / 4)
+    if (bkW == w && bkH == h && bkFbo[0] != 0) return
+    if (bkFbo[0] != 0) { GLES20.glDeleteFramebuffers(2, bkFbo, 0); GLES20.glDeleteTextures(2, bkTex, 0) }
+    GLES20.glGenTextures(2, bkTex, 0)
+    GLES20.glGenFramebuffers(2, bkFbo, 0)
+    for (i in 0..1) {
+      GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, bkTex[i])
+      GLES20.glTexImage2D(GLES20.GL_TEXTURE_2D, 0, GLES20.GL_RGBA, w, h, 0, GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE, null)
+      GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR)
+      GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR)
+      GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_CLAMP_TO_EDGE)
+      GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE)
+      GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, bkFbo[i])
+      GLES20.glFramebufferTexture2D(GLES20.GL_FRAMEBUFFER, GLES20.GL_COLOR_ATTACHMENT0, GLES20.GL_TEXTURE_2D, bkTex[i], 0)
+    }
+    GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
+    bkW = w; bkH = h
+  }
+
+  /**
+   * Lens bokeh of the processed frame vtex[src]: (1) quarter-size copy with the person cut out
+   * (premultiplied, so their colours never bleed into the background), (2) large disc blur with
+   * highlights blooming into round bokeh balls, softer right next to the subject for a natural falloff.
+   */
+  private fun drawBokeh(src: Int) {
+    ensureBokehFbos()
+    if (bkPrepProg == 0) {
+      bkPrepProg = program(ENH_VERTEX, BK_PREP_FRAGMENT)
+      bkBlurProg = program(ENH_VERTEX, BK_BLUR_FRAGMENT)
+    }
+    val ident = FloatArray(16).also { android.opengl.Matrix.setIdentityM(it, 0) }
+    // (1) prep
+    GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, bkFbo[0])
+    GLES20.glViewport(0, 0, bkW, bkH)
+    GLES20.glUseProgram(bkPrepProg)
+    bindQuad(bkPrepProg, ident)
+    GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
+    GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, vtex[src])
+    GLES20.glUniform1i(GLES20.glGetUniformLocation(bkPrepProg, "sCur"), 0)
+    GLES20.glActiveTexture(GLES20.GL_TEXTURE1)
+    GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, maskTex)
+    GLES20.glUniform1i(GLES20.glGetUniformLocation(bkPrepProg, "sMask"), 1)
+    GLES20.glUniform1i(GLES20.glGetUniformLocation(bkPrepProg, "uRot"), rot)
+    GLES20.glUniform2f(GLES20.glGetUniformLocation(bkPrepProg, "uTexel"), 1f / inW, 1f / inH)
+    GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
+    // (2) disc blur; radius follows the (animated) aperture
+    GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, bkFbo[1])
+    GLES20.glUseProgram(bkBlurProg)
+    bindQuad(bkBlurProg, ident)
+    GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
+    GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, bkTex[0])
+    GLES20.glUniform1i(GLES20.glGetUniformLocation(bkBlurProg, "sPrep"), 0)
+    GLES20.glActiveTexture(GLES20.GL_TEXTURE1)
+    GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, maskTex)
+    GLES20.glUniform1i(GLES20.glGetUniformLocation(bkBlurProg, "sMask"), 1)
+    GLES20.glUniform1i(GLES20.glGetUniformLocation(bkBlurProg, "uRot"), rot)
+    val radiusPx = minOf(bkW, bkH) * (0.012f + bokehNow * 0.055f)
+    GLES20.glUniform2f(GLES20.glGetUniformLocation(bkBlurProg, "uRadius"), radiusPx / bkW, radiusPx / bkH)
+    GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
+    GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
+  }
+
   /** Draws the processed frame (written before the swap, so now vtex[1 - cur]) to an output. */
-  private fun drawOut(texMatrix: FloatArray) {
+  private fun drawOut(texMatrix: FloatArray, bokeh: Boolean = false) {
     GLES20.glUseProgram(outProg)
+    GLES20.glUniform1f(GLES20.glGetUniformLocation(outProg, "uBokeh"), if (bokeh) bokehNow else 0f)
+    if (bokeh) {
+      GLES20.glActiveTexture(GLES20.GL_TEXTURE2)
+      GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, bkTex[1])
+      GLES20.glUniform1i(GLES20.glGetUniformLocation(outProg, "sBokeh"), 2)
+      GLES20.glActiveTexture(GLES20.GL_TEXTURE3)
+      GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, maskTex)
+      GLES20.glUniform1i(GLES20.glGetUniformLocation(outProg, "sMask"), 3)
+      GLES20.glUniform1i(GLES20.glGetUniformLocation(outProg, "uRot"), rot)
+    }
     bindQuad(outProg, texMatrix)
     applyXform(outProg, xform)
     GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
@@ -739,6 +831,14 @@ class PortraitProcessor : SurfaceProcessor {
   private fun captureForSegmentation() {
     val w = 384
     val h = maxOf(48, (384f * inH / inW).toInt())
+    // Read the copy drawn on the previous frame (already finished: no GPU stall), then draw this one
+    val ready = !segBusy && segDrawn && fbo != 0 && fboW == w && fboH == h
+    var buf: ByteBuffer? = null
+    if (ready) {
+      GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, fbo)
+      buf = ByteBuffer.allocateDirect(w * h * 4).order(ByteOrder.nativeOrder())
+      GLES20.glReadPixels(0, 0, w, h, GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE, buf)
+    }
     ensureFbo(w, h)
     GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, fbo)
     GLES20.glViewport(0, 0, w, h)
@@ -749,9 +849,9 @@ class PortraitProcessor : SurfaceProcessor {
     GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, oesTex)
     GLES20.glUniform1i(GLES20.glGetUniformLocation(copyProg, "sTex"), 0)
     GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
-    val buf = ByteBuffer.allocateDirect(w * h * 4).order(ByteOrder.nativeOrder())
-    GLES20.glReadPixels(0, 0, w, h, GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE, buf)
+    segDrawn = true
     GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
+    if (buf == null) return
     buf.rewind()
     // Bitmap row 0 = top; glReadPixels row 0 = bottom → bitmap y = (1 - v) * h (the shader assumes this)
     val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
@@ -777,13 +877,27 @@ class PortraitProcessor : SurfaceProcessor {
         val mh = m.height
         val fb = m.buffer
         fb.rewind()
-        val arr = FloatArray(mw * mh) { fb.getFloat() }
+        val raw = FloatArray(mw * mh) { fb.getFloat() }
+        // grow the person a little (max filter) so hair/edges never get blurred while moving
+        val tmp = FloatArray(raw.size)
+        val R = maxOf(1, mw / 90)
+        for (y in 0 until mh) for (x in 0 until mw) {
+          var m = 0f
+          for (k in -R..R) { val xx = (x + k).coerceIn(0, mw - 1); val v = raw[y * mw + xx]; if (v > m) m = v }
+          tmp[y * mw + x] = m
+        }
+        val arr = FloatArray(raw.size)
+        for (y in 0 until mh) for (x in 0 until mw) {
+          var m = 0f
+          for (k in -R..R) { val yy = (y + k).coerceIn(0, mh - 1); val v = tmp[yy * mw + x]; if (v > m) m = v }
+          arr[y * mw + x] = m
+        }
         if (input !== flipped) input.recycle()
         flipped.recycle()
         handler.post {
           val prev = mask
           if (prev != null && prev.size == arr.size && (useRot == rot || fixedRotation >= 0)) {
-            for (i in arr.indices) arr[i] = arr[i] * 0.65f + prev[i] * 0.35f // temporal smoothing
+            for (i in arr.indices) arr[i] = arr[i] * 0.8f + prev[i] * 0.2f // light temporal smoothing (less lag)
           }
           rot = useRot
           mask = arr; maskW = mw; maskH = mh; maskDirty = true
@@ -1067,10 +1181,80 @@ class PortraitProcessor : SurfaceProcessor {
       }
     """
 
+    // shared: processed-frame coords (v) -> coords of the upright image the person mask was made from
+    private const val MASK_UV = """
+      vec2 maskUV(vec2 v) {
+        vec2 b = vec2(v.x, 1.0 - v.y);
+        if (uRot == 1) return vec2(1.0 - b.y, b.x);
+        if (uRot == 2) return vec2(1.0 - b.x, 1.0 - b.y);
+        if (uRot == 3) return vec2(b.y, 1.0 - b.x);
+        return b;
+      }
+      float person(vec2 v) { return smoothstep(0.25, 0.65, texture2D(sMask, maskUV(v)).r); }
+    """
+
+    // Quarter-size background layer: person removed (premultiplied: rgb * bg, a = bg)
+    private const val BK_PREP_FRAGMENT = """
+      precision highp float;
+      varying vec2 vUv;
+      uniform sampler2D sCur;
+      uniform sampler2D sMask;
+      uniform int uRot;
+      uniform vec2 uTexel;
+    """ + MASK_UV + """
+      void main() {
+        vec3 c = (texture2D(sCur, vUv + uTexel * vec2(-1.0, -1.0)).rgb + texture2D(sCur, vUv + uTexel * vec2(1.0, -1.0)).rgb +
+                  texture2D(sCur, vUv + uTexel * vec2(-1.0, 1.0)).rgb + texture2D(sCur, vUv + uTexel * vec2(1.0, 1.0)).rgb) * 0.25;
+        float bg = 1.0 - person(vUv);
+        gl_FragColor = vec4(c * bg, bg);
+      }
+    """
+
+    // Disc bokeh: 64-tap golden-angle disc; bright points weigh more so they bloom into round
+    // bokeh balls; the radius eases off right next to the subject (natural focus falloff, no halo)
+    private const val BK_BLUR_FRAGMENT = """
+      precision highp float;
+      varying vec2 vUv;
+      uniform sampler2D sPrep;
+      uniform sampler2D sMask;
+      uniform int uRot;
+      uniform vec2 uRadius;
+    """ + MASK_UV + """
+      void main() {
+        float near = 0.0;
+        for (int i = 0; i < 8; i++) {
+          float a = float(i) * 0.785398;
+          near = max(near, person(vUv + vec2(cos(a), sin(a)) * uRadius * 1.5));
+        }
+        vec2 R = uRadius * (1.0 - 0.35 * near);
+        vec3 acc = vec3(0.0);
+        float wsum = 0.0;
+        float cov = 0.0;
+        for (int i = 0; i < 64; i++) {
+          float fi = float(i);
+          float a = fi * 2.39996;
+          float r = sqrt((fi + 0.5) / 64.0);
+          vec4 s = texture2D(sPrep, vUv + vec2(cos(a), sin(a)) * r * R);
+          vec3 c = s.a > 0.001 ? s.rgb / s.a : vec3(0.0);
+          float l = dot(c, vec3(0.299, 0.587, 0.114));
+          float hw = 1.0 + 6.0 * smoothstep(0.72, 0.98, l);
+          acc += c * s.a * hw;
+          wsum += s.a * hw;
+          cov += s.a;
+        }
+        vec3 bg = wsum > 0.0001 ? acc / wsum : vec3(0.0);
+        gl_FragColor = vec4(bg, cov / 64.0);
+      }
+    """
+
     private const val OUT_FRAGMENT = """
       precision highp float;
       varying vec2 vTex;
       uniform sampler2D sCur;
+      uniform sampler2D sBokeh;
+      uniform sampler2D sMask;
+      uniform int uRot;
+      uniform float uBokeh;
       uniform mat4 uStInv;
       uniform float uCrop;
       uniform vec2 uShift;
@@ -1078,6 +1262,7 @@ class PortraitProcessor : SurfaceProcessor {
       uniform vec2 uSrcTexel;
       uniform vec4 uF1; // sat, contrast, warmth, fade
       uniform vec2 uF2; // mono, vignette
+    """ + MASK_UV + """
       vec3 applyFilter(vec3 c, vec2 q) {
         float l = dot(c, vec3(0.2126, 0.7152, 0.0722));
         c = mix(vec3(l), c, uF1.x);
@@ -1101,6 +1286,25 @@ class PortraitProcessor : SurfaceProcessor {
           float d = dot(col - nb, vec3(0.299, 0.587, 0.114));
           float cd = sign(d) * max(abs(d) - 0.01, 0.0);
           col = clamp(col + clamp(cd, -0.06, 0.06) * min(1.6, (uCrop - 1.0) * 0.8), 0.0, 1.0);
+        }
+        if (uBokeh > 0.001) {
+          // edge refined by colour: neighbours that look like this pixel share its subject/background label
+          float acc = 0.0;
+          float ws = 0.0;
+          for (int y = -1; y <= 1; y++) {
+            for (int x = -1; x <= 1; x++) {
+              vec2 o = uv + vec2(float(x), float(y)) * uSrcTexel * 4.0;
+              vec3 d = texture2D(sCur, o).rgb - col;
+              float w = exp(-dot(d, d) * 30.0);
+              acc += person(o) * w;
+              ws += w;
+            }
+          }
+          float mc = smoothstep(0.2, 0.8, acc / max(ws, 0.0001));
+          vec4 bk = texture2D(sBokeh, uv);
+          // where the blurred layer has little background (just beside the subject) keep it sharp
+          float use = (1.0 - mc) * smoothstep(0.05, 0.35, bk.a) * clamp(uBokeh * 4.0, 0.0, 1.0);
+          col = mix(col, bk.rgb, use);
         }
         if (uFilterOn > 0.5) col = applyFilter(col, q);
         gl_FragColor = vec4(col, 1.0);
