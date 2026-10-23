@@ -183,6 +183,7 @@ class ICameraModule : Module() {
       Prop("nightExtension") { view: ICameraView, v: Boolean -> view.setNightExtension(v) }
       Prop("aspect") { view: ICameraView, v: String -> view.setAspect(v) }
       Prop("bokeh") { view: ICameraView, v: Double -> view.setBokeh(v.toFloat()) }
+      Prop("aperture") { view: ICameraView, v: Double -> view.setAperture(v.toFloat()) }
       Prop("lensId") { view: ICameraView, v: String? -> view.setLensId(v) }
       Prop("shutterSound") { view: ICameraView, v: Boolean -> view.setShutterSound(v) }
       Prop("palmShutter") { view: ICameraView, v: Boolean -> view.setPalmShutter(v) }
@@ -293,6 +294,7 @@ class ICameraModule : Module() {
       "hardwareLevel" to level,
       "physicalCameras" to physical,
       "focalLengths" to focal.map { it.toDouble() },
+      "apertures" to ((ch(CameraCharacteristics.LENS_INFO_AVAILABLE_APERTURES) as? FloatArray)?.map { it.toDouble() }?.sorted() ?: emptyList<Double>()),
       "maxPhotoMp" to (maxPx / 100_000L) / 10.0,
       "videoQualities" to qualities,
       "videoHdr" to hdr,

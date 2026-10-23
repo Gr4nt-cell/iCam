@@ -11,6 +11,8 @@ export type CameraProfile = {
   hardwareLevel: string;
   physicalCameras: number;
   focalLengths: number[];
+  /** Lens f-numbers the camera can physically use (one value = fixed aperture) */
+  apertures?: number[];
   maxPhotoMp: number;
   videoQualities: string[];
   videoHdr: boolean;
@@ -113,6 +115,8 @@ export type ICameraProps = ViewProps & {
   videoQuality?: 'uhd' | 'fhd';
   fps?: number;
   hdrVideo?: boolean;
+  /** Video/Action f-number (0 = automatic); simulated with depth blur on fixed-aperture lenses */
+  aperture?: number;
   /** 'country' | 'auto' | '50' | '60' | 'off' */
   antibanding?: string;
   stabilization?: 'off' | 'standard' | 'cinematic' | 'horizon';

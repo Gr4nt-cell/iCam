@@ -302,7 +302,7 @@ class PortraitProcessor : SurfaceProcessor {
     val enh = !blurOn && enhance
     if (enh) {
       if (frame % 6L == 1L) updateStats()
-      if (stabCrop > 1.001f) updateMotion(s.timestamp) else { shiftX = 0f; shiftY = 0f; prevLuma = null }
+      if (stabCrop > 1.001f) updateMotion(s.timestamp) else { shiftX = 0f; shiftY = 0f; prevLuma = null; motDrawn = false }
       processFrame()
       cur = 1 - cur
       havePrev = true
@@ -510,9 +510,19 @@ class PortraitProcessor : SurfaceProcessor {
   }
 
   /** Reads a tiny copy of the frame and adapts brightness / denoise strength to the scene. */
+  private var statDrawn = false
+  private val statBuf: ByteBuffer by lazy { ByteBuffer.allocateDirect(64 * 36 * 4).order(ByteOrder.nativeOrder()) }
   private fun updateStats() {
     val w = 64
     val h = 36
+    // Read back the copy drawn last time (finished long ago, so the GPU isn't stalled), then draw a new one
+    var haveRead = false
+    if (statFbo != 0 && statDrawn) {
+      GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, statFbo)
+      statBuf.clear()
+      GLES20.glReadPixels(0, 0, w, h, GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE, statBuf)
+      haveRead = true
+    }
     if (statFbo == 0) {
       val t = IntArray(1); GLES20.glGenTextures(1, t, 0); statTex = t[0]
       GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, statTex)
@@ -532,9 +542,10 @@ class PortraitProcessor : SurfaceProcessor {
     GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, oesTex)
     GLES20.glUniform1i(GLES20.glGetUniformLocation(copyProg, "sTex"), 0)
     GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
-    val buf = ByteBuffer.allocateDirect(w * h * 4).order(ByteOrder.nativeOrder())
-    GLES20.glReadPixels(0, 0, w, h, GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE, buf)
+    statDrawn = true
     GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
+    if (!haveRead) return
+    val buf = statBuf
     var sum = 0.0
     val n = w * h
     for (i in 0 until n) {
@@ -610,7 +621,21 @@ class PortraitProcessor : SurfaceProcessor {
 
   /* ---------------- image-based stabilization ---------------- */
 
+  private var motDrawn = false
+  private var motDrawnTs = 0L
+  private val motBuf: ByteBuffer by lazy { ByteBuffer.allocateDirect(MW * MH * 4).order(ByteOrder.nativeOrder()) }
   private fun updateMotion(ts: Long) {
+    // Read the previous frame's small copy first: the GPU finished it a frame ago, so this doesn't stall
+    // the pipeline (a same-frame read made the CPU wait for the GPU every frame and dropped frames)
+    var luma: IntArray? = null
+    var lumaTs = 0L
+    if (motFbo != 0 && motDrawn) {
+      GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, motFbo)
+      motBuf.clear()
+      GLES20.glReadPixels(0, 0, MW, MH, GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE, motBuf)
+      luma = IntArray(MW * MH) { motBuf.get(it * 4).toInt() and 0xff }
+      lumaTs = motDrawnTs
+    }
     if (motFbo == 0) {
       val t = IntArray(1); GLES20.glGenTextures(1, t, 0); motTex = t[0]
       GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, motTex)
@@ -632,15 +657,15 @@ class PortraitProcessor : SurfaceProcessor {
     GLES20.glUniform1i(GLES20.glGetUniformLocation(downProg, "sTex"), 0)
     GLES20.glUniform2f(GLES20.glGetUniformLocation(downProg, "uStep"), 1f / MW / 4f, 1f / MH / 4f)
     GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
-    val buf = ByteBuffer.allocateDirect(MW * MH * 4).order(ByteOrder.nativeOrder())
-    GLES20.glReadPixels(0, 0, MW, MH, GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE, buf)
+    motDrawn = true
+    motDrawnTs = ts
     GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
-    val luma = IntArray(MW * MH) { buf.get(it * 4).toInt() and 0xff }
+    if (luma == null) return
 
     val prev = prevLuma
     prevLuma = luma
-    val dt = if (lastTs > 0L && ts > lastTs) ((ts - lastTs) / 1e9).coerceIn(0.005, 0.1) else 1.0 / 30
-    lastTs = ts
+    val dt = if (lastTs > 0L && lumaTs > lastTs) ((lumaTs - lastTs) / 1e9).coerceIn(0.005, 0.1) else 1.0 / 30
+    lastTs = lumaTs
     if (prev == null) { trajX = 0.0; trajY = 0.0; smoothX = 0.0; smoothY = 0.0; return }
 
     val m = estimateShift(prev, luma)
@@ -684,17 +709,17 @@ class PortraitProcessor : SurfaceProcessor {
       var best = Int.MAX_VALUE; var bdx = 0; var bdy = 0
       for (dy in -R..R) for (dx in -R..R) {
         var acc = 0
-        for (y in by until by + bh) {
+        for (y in by until by + bh step 2) {
           val py = y * MW
           val cy = (y + dy).coerceIn(0, MH - 1) * MW
-          for (x in bx until bx + bw) {
+          for (x in bx until bx + bw step 2) {
             acc += Math.abs(cur[cy + (x + dx).coerceIn(0, MW - 1)] - prev[py + x])
           }
         }
         sad[(dy + R) * (2 * R + 1) + (dx + R)] = acc
         if (acc < best) { best = acc; bdx = dx; bdy = dy }
       }
-      if (best > bw * bh * 22) continue // poor match (occlusion / big change)
+      if (best > (bw / 2) * (bh / 2) * 22) continue // poor match (occlusion / big change)
       if (Math.abs(bdx) == R || Math.abs(bdy) == R) continue // at the search edge: unreliable
       // sub-pixel refinement (parabola through the neighbours)
       fun sub(a: Int, b: Int, c: Int): Double { val d = a - 2.0 * b + c; return if (d > 0) 0.5 * (a - c) / d else 0.0 }

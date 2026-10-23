@@ -181,8 +181,24 @@ jobs:
           sdk=$("$BT/aapt2" dump badging "$APK" 2>/dev/null | grep -E "targetSdkVersion|sdkVersion" | tr '\n' ' ')
           maplines=$(wc -l < out/aab/mapping-*.txt 2>/dev/null || echo 0)
           # share of app classes renamed by R8 (a, b, c... names)
-          total=$(grep -c " -> " out/aab/mapping-*.txt 2>/dev/null || echo 0)
-          renamed=$(grep -E "^[^ ].* -> [a-zA-Z0-9_.$]*\.?[a-z]{1,3}:$" out/aab/mapping-*.txt 2>/dev/null | wc -l)
+          # classes and methods R8 renamed (what Play's "DEX obfuscation" percentage looks at)
+          read total renamed mtotal mrenamed < <(python3 - out/aab/mapping-*.txt <<'PY'
+          import sys, re
+          ct = cr = mt = mr = 0
+          for line in open(sys.argv[1], encoding="utf-8", errors="ignore"):
+              if line.startswith("#") or " -> " not in line: continue
+              if not line.startswith(" "):
+                  a, b = line.rstrip().rstrip(":").split(" -> ")
+                  ct += 1; cr += a != b
+              else:
+                  m = re.match(r"\s+(?:\d+:\d+:)?\S+ (\S+)\(.*\)(?::\d+(?::\d+)?)? -> (\S+)$", line)
+                  if m:
+                      mt += 1; mr += m.group(1) != m.group(2)
+          print(ct, cr, mt, mr)
+          PY
+          )
+          cpct=$(( total > 0 ? renamed * 100 / total : 0 )); mpct=$(( mtotal > 0 ? mrenamed * 100 / mtotal : 0 ))
+          renamed="$renamed ($cpct%) · methods $mrenamed / $mtotal ($mpct%)"
           signer=$(keytool -printcert -jarfile out/aab/*.aab 2>/dev/null | grep -m1 -E "Owner|SHA256")
           orientv=$(echo "$man" | grep -A0 "screenOrientation" | head -2 | tr -s ' ')
           filters=$(echo "$man" | grep -c "IMAGE_CAPTURE\|VIDEO_CAPTURE\|STILL_IMAGE_CAMERA")

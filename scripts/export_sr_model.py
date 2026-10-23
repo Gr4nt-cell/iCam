@@ -51,6 +51,15 @@ def main(pth, out):
     print(f"exported {out}: output {y.shape}, max abs diff vs torch {err:.2e}")
     assert y.shape == (1, 3, 256, 256) and err < 1e-3
 
+    # Fixed-shape copy (208×208 tiles) for the phone's accelerator (NNAPI needs static shapes)
+    fixed = out.replace(".onnx", "_208.onnx")
+    xf = torch.rand(1, 3, 208, 208)
+    torch.onnx.export(model, xf, fixed, opset_version=17, input_names=["input"], output_names=["output"], dynamo=False)
+    yf = ort.InferenceSession(fixed, providers=["CPUExecutionProvider"]).run(None, {"input": xf.numpy()})[0]
+    errf = float(np.abs(yf - model(xf).detach().numpy()).max())
+    print(f"exported {fixed}: output {yf.shape}, max abs diff vs torch {errf:.2e}")
+    assert yf.shape == (1, 3, 832, 832) and errf < 1e-3
+
 
 if __name__ == "__main__":
     main(sys.argv[1], sys.argv[2])

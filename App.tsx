@@ -167,6 +167,9 @@ function CameraScreen() {
   const [focus, setFocus] = useState<{ x: number; y: number; key: number } | null>(null);
   const [showSliders, setShowSliders] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  /** Video / Action aperture (f-number, 0 = auto) and whether its value pill is open */
+  const [aperture, setAperture] = useState(0);
+  const [apertureOpen, setApertureOpen] = useState(false);
   const [viewerOpen, setViewerOpen] = useState(false);
   const [appActive, setAppActive] = useState(true);
 
@@ -373,6 +376,11 @@ function CameraScreen() {
   const needsFlip = (jpegMirrored?: number) =>
     facing === 'front' && (jpegMirrored === 1 ? !mirrorSelfie : mirrorSelfie);
 
+  // Photos are processed one after another in the background, so the shutter is free again as soon
+  // as the camera has the frame (shot-to-shot no longer waits for processing and saving)
+  const procQueue = useRef<Promise<void>>(Promise.resolve());
+  const pendingJobs = useRef(0);
+
   const shootPhoto = useCallback(async () => {
     if (busy || !ready) return;
     const night = mode === 'night';
@@ -389,72 +397,88 @@ function CameraScreen() {
       paths = res.paths;
       meta0 = res.meta?.[0];
       if (!paths.length) throw new Error(res.error ?? 'No photo captured');
-
-      const original = `file://${paths[0]}`;
-      setLast({ uri: original, original, isVideo: false });
-      setProcessing(true);
-      await sleep(16);
-
-      const look = [filter !== 'natural' && filterByKey(filter).label, smoothing > 0.01 && 'smoothed']
-        .filter(Boolean)
-        .join(' · ');
-      let portrait: { maskPath: string; strength: number } | undefined;
-      if (mode === 'portrait' && ext !== 'bokeh') {
-        // No hardware depth bokeh on this phone: blur the background from a person/subject mask
-        const mask = await segmentPerson(paths[0]);
-        if (mask && mask.coverage > 0.02) portrait = { maskPath: mask.maskPath, strength: bokeh };
-        else flashToast('No subject found — saved without background blur', 3000);
-      }
-      if (facing === 'back' && zoom > zoomRange.max * 1.5) setToast('AI zoom · rebuilding detail…');
-      const uri = await processSingle(paths[0], {
-        smoothing,
-        filter,
-        aspect: aspectRatio,
-        meta: res.meta?.[0],
-        portrait,
-        // Mirror selfie: flip only if the JPEG isn't already the way the user wants it
-        mirror: needsFlip(res.meta?.[0]?.jpegMirrored),
-        enhance: pro ? 0.3 : ext ? 0.45 : 1,
-        digitalZoom: facing === 'back' ? zoom / Math.max(1, zoomRange.max) : 1,
-        // Beyond the lens (≥1.5× digital): rebuild detail with the on-device AI model
-        aiZoom: facing === 'back' && zoom > zoomRange.max * 1.5,
-      });
-      const info = mode === 'macro'
-        ? `Macro${caps?.macroKind === 'tele' ? ' (telephoto)' : ''}`
-        : pro
-        ? 'Pro'
-        : night
-          ? ext === 'night' ? 'Night (phone)' : 'Night'
-          : mode === 'portrait'
-            ? ext === 'bokeh' ? 'Portrait (depth)' : portrait ? 'Portrait (subject mask)' : 'Portrait'
-            : ext === 'hdr' ? 'Photo (phone HDR)' : ext === 'auto' ? 'Photo (phone Auto)' : 'Photo';
-      const zoomNote = facing === 'back' && zoom > zoomRange.max * 1.01 ? ` · ${Math.round(zoom)}× ${zoom > zoomRange.max * 1.5 ? 'AI zoom' : 'detail zoom'}` : '';
-      if (captureReq === 'image') {
-        // Requested by another app: hand the photo back instead of saving it to the gallery
-        flashToast('Sending photo…');
-        if (await finishCapture(uri, false)) return;
-      }
-      const assetId = await saveToGallery(uri);
-      setLast({ uri, original, isVideo: false, info: (look ? `${info} · ${look}` : info) + zoomNote, assetId });
-      flashToast('Saved');
     } catch (e: any) {
-      if (paths[0]) {
+      flashToast(String(e?.message ?? e).slice(0, 80), 4000);
+      setBusy(false);
+      return;
+    }
+
+    const original = `file://${paths[0]}`;
+    setLast({ uri: original, original, isVideo: false });
+    // everything the job needs is fixed now (later setting changes don't affect this shot)
+    const shot = { mode, facing, zoom, zoomMax: zoomRange.max, smoothing, filter, aspectRatio, bokeh, captureReq, macroKind: caps?.macroKind };
+    const flip = needsFlip(meta0?.jpegMirrored);
+
+    const job = async () => {
+      try {
+        const look = [shot.filter !== 'natural' && filterByKey(shot.filter).label, shot.smoothing > 0.01 && 'smoothed']
+          .filter(Boolean)
+          .join(' · ');
+        let portrait: { maskPath: string; strength: number } | undefined;
+        if (shot.mode === 'portrait' && ext !== 'bokeh') {
+          // No hardware depth bokeh on this phone: blur the background from a person/subject mask
+          const mask = await segmentPerson(paths[0]);
+          if (mask && mask.coverage > 0.02) portrait = { maskPath: mask.maskPath, strength: shot.bokeh };
+          else flashToast('No subject found — saved without background blur', 3000);
+        }
+        const back = shot.facing === 'back';
+        const ai = back && shot.zoom > shot.zoomMax * 1.5;
+        if (ai) setToast('AI zoom · rebuilding detail…');
+        const uri = await processSingle(paths[0], {
+          smoothing: shot.smoothing,
+          filter: shot.filter,
+          aspect: shot.aspectRatio,
+          meta: meta0,
+          portrait,
+          // Mirror selfie: flip only if the JPEG isn't already the way the user wants it
+          mirror: flip,
+          enhance: pro ? 0.3 : ext ? 0.45 : 1,
+          digitalZoom: back ? shot.zoom / Math.max(1, shot.zoomMax) : 1,
+          // Beyond the lens (≥1.5× digital): rebuild detail with the on-device AI model
+          aiZoom: ai,
+        });
+        const info = shot.mode === 'macro'
+          ? `Macro${shot.macroKind === 'tele' ? ' (telephoto)' : ''}`
+          : pro
+          ? 'Pro'
+          : night
+            ? ext === 'night' ? 'Night (phone)' : 'Night'
+            : shot.mode === 'portrait'
+              ? ext === 'bokeh' ? 'Portrait (depth)' : portrait ? 'Portrait (subject mask)' : 'Portrait'
+              : ext === 'hdr' ? 'Photo (phone HDR)' : ext === 'auto' ? 'Photo (phone Auto)' : 'Photo';
+        const zoomNote = back && shot.zoom > shot.zoomMax * 1.01 ? ` · ${Math.round(shot.zoom)}× ${ai ? 'AI zoom' : 'detail zoom'}` : '';
+        if (shot.captureReq === 'image') {
+          // Requested by another app: hand the photo back instead of saving it to the gallery
+          flashToast('Sending photo…');
+          if (await finishCapture(uri, false)) return;
+        }
+        const assetId = await saveToGallery(uri);
+        setLast({ uri, original, isVideo: false, info: (look ? `${info} · ${look}` : info) + zoomNote, assetId });
+        flashToast('Saved');
+      } catch (e: any) {
         // Minimal fallback that still honours selfie mirroring and aspect ratio
         const fallback = await processSingle(paths[0], {
           smoothing: 0,
           filter: 'natural',
-          aspect: aspectRatio,
+          aspect: shot.aspectRatio,
           meta: meta0,
-          mirror: needsFlip(meta0?.jpegMirrored),
-        }).catch(() => `file://${paths[0]}`);
+          mirror: flip,
+        }).catch(() => original);
         await saveToGallery(fallback).catch(() => {});
+        flashToast(`Saved original — ${String(e?.message ?? e).slice(0, 80)}`, 4000);
       }
-      flashToast(`${paths[0] ? 'Saved original — ' : ''}${String(e?.message ?? e).slice(0, 80)}`, 4000);
-    } finally {
-      setProcessing(false);
-      setBusy(false);
-    }
-  }, [busy, ready, mode, facing, mirrorSelfie, captureReq, zoom, zoomRange, smoothing, filter, aspectRatio, bokeh, captureBurst, saveToGallery, flashToast]);
+    };
+
+    pendingJobs.current += 1;
+    setProcessing(true);
+    procQueue.current = procQueue.current.then(job).finally(() => {
+      pendingJobs.current -= 1;
+      if (pendingJobs.current === 0) setProcessing(false);
+    });
+    // a photo requested by another app finishes before anything else can happen
+    if (captureReq === 'image') await procQueue.current;
+    setBusy(false);
+  }, [busy, ready, mode, facing, mirrorSelfie, captureReq, zoom, zoomRange, smoothing, filter, aspectRatio, bokeh, caps, captureBurst, saveToGallery, flashToast]);
 
   /* ---------- capture: video ---------- */
   const toggleRecording = useCallback(async () => {
@@ -676,6 +700,7 @@ function CameraScreen() {
           fps={video.fps}
           hdrVideo={false}
           antibanding={video.antibanding ?? 'country'}
+          aperture={mode === 'video' || mode === 'action' ? aperture : 0}
           stabilization={video.stabilization}
           faceSmoothing={smoothing}
           palmShutter={palmShutter}
@@ -973,6 +998,23 @@ function CameraScreen() {
             />
           </Panel>
         )}
+        {(mode === 'video' || mode === 'action') && (
+          <Panel>
+            <ApertureControl
+              open={apertureOpen}
+              value={aperture}
+              values={apertureStops(caps?.cameras.find((c) => c.position === facing)?.apertures)}
+              onToggle={() => {
+                Haptics.selectionAsync();
+                setApertureOpen((v) => !v);
+              }}
+              onChange={(f) => {
+                Haptics.selectionAsync();
+                setAperture(f);
+              }}
+            />
+          </Panel>
+        )}
         <Animated.View layout={GLIDE} style={styles.zoomRow}>
           <IconButton icon="minus" size={40} onPress={() => nudgeExposure(-1)} />
           <ZoomPills
@@ -1101,6 +1143,63 @@ function Pop({ children }: { children: React.ReactNode }) {
   );
 }
 
+/**
+ * Three aperture choices: the lens's real f-numbers when it has a variable aperture, otherwise
+ * simulated ones (depth blur: f/1.4 strong, f/2.8 medium, f/4 light).
+ */
+function apertureStops(real?: number[]): number[] {
+  const r = Array.from(new Set((real ?? []).map((v) => Math.round(v * 10) / 10))).sort((a, b) => a - b);
+  if (r.length >= 3) return [r[0], r[Math.floor(r.length / 2)], r[r.length - 1]];
+  if (r.length === 2) return r;
+  return [1.4, 2.8, 4];
+}
+
+/** Aperture icon with a small glass pill of f-numbers beside it; tap the chosen value again for Auto */
+function ApertureControl({
+  open,
+  value,
+  values,
+  onToggle,
+  onChange,
+}: {
+  open: boolean;
+  value: number;
+  values: number[];
+  onToggle: () => void;
+  onChange: (f: number) => void;
+}) {
+  return (
+    <Animated.View layout={GLIDE} style={styles.apertureRow}>
+      <Animated.View layout={GLIDE}>
+        <Pressable hitSlop={8} onPress={onToggle}>
+          <Glass radius={18} style={styles.apertureIcon} tint={value ? 'rgba(255,215,106,0.22)' : undefined}>
+            <MaterialCommunityIcons name="camera-iris" size={20} color={value ? '#ffd76a' : '#fff'} />
+          </Glass>
+        </Pressable>
+      </Animated.View>
+      {open && (
+        <Animated.View entering={FadeIn.duration(200).delay(60)} exiting={FadeOut.duration(140)} layout={GLIDE}>
+          <Glass radius={18} style={styles.aperturePill}>
+            {values.map((f) => {
+              const on = Math.abs(f - value) < 0.05;
+              return (
+                <Pressable key={f} hitSlop={4} onPress={() => onChange(on ? 0 : f)} style={[styles.apertureItem, on && styles.apertureItemOn]}>
+                  <Text style={[styles.apertureText, on && styles.apertureTextOn]}>f/{f}</Text>
+                </Pressable>
+              );
+            })}
+          </Glass>
+        </Animated.View>
+      )}
+      {!open && value > 0 && (
+        <Animated.Text entering={FadeIn.duration(180)} exiting={FadeOut.duration(120)} style={styles.apertureBadge}>
+          f/{value}
+        </Animated.Text>
+      )}
+    </Animated.View>
+  );
+}
+
 /** Bottom panel (filters, Pro, sliders) that rises in and sinks away */
 function Panel({ children }: { children: React.ReactNode }) {
   return (
@@ -1116,6 +1215,14 @@ const styles = StyleSheet.create({
   dim: { color: 'rgba(255,255,255,0.6)' },
   top: { position: 'absolute', left: 16, right: 16, alignItems: 'center', gap: 8 },
   topPill: { alignSelf: 'stretch', flexDirection: 'row', alignItems: 'center', justifyContent: 'space-around', gap: 12, paddingHorizontal: 16, height: 44 },
+  apertureRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, alignSelf: 'center' },
+  apertureIcon: { width: 36, height: 36, alignItems: 'center', justifyContent: 'center' },
+  aperturePill: { flexDirection: 'row', alignItems: 'center', gap: 2, padding: 3, height: 36 },
+  apertureItem: { paddingHorizontal: 10, height: 30, borderRadius: 15, justifyContent: 'center' },
+  apertureItemOn: { backgroundColor: 'rgba(255,255,255,0.9)' },
+  apertureText: { color: '#fff', fontSize: 13, fontWeight: '600', fontVariant: ['tabular-nums'] },
+  apertureTextOn: { color: '#111', fontWeight: '700' },
+  apertureBadge: { color: '#ffd76a', fontSize: 13, fontWeight: '700' },
   subBar: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingLeft: 4, paddingRight: 4, height: 36, borderRadius: 18, overflow: 'hidden' },
   subBarIcon: { width: 28, height: 28, borderRadius: 14, alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(255,255,255,0.16)' },
   subBarTime: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingRight: 8 },

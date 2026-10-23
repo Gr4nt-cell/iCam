@@ -207,6 +207,53 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
   fun setNightExtension(v: Boolean) = rebindOnChange(nightExtension, v) { nightExtension = it }
   fun setAudio(v: Boolean) { audio = v }
   fun setAspect(v: String) = rebindOnChange(aspect, v) { aspect = it }
+  /**
+   * Video / Action aperture: f-number to use (0 = automatic). Lenses with a real variable aperture
+   * get it set directly; on fixed-aperture lenses it's simulated with depth blur (lower f = more blur).
+   */
+  private var aperture = 0f
+  fun setAperture(v: Float) {
+    aperture = v
+    applyAperture()
+  }
+
+  @OptIn(ExperimentalCamera2Interop::class)
+  @androidx.annotation.OptIn(markerClass = [ExperimentalCamera2Interop::class])
+  private fun applyAperture() {
+    val videoish = mode == "video" || mode == "action"
+    val cam = camera
+    val real = cam?.let {
+      try {
+        Camera2CameraInfo.from(it.cameraInfo)
+          .getCameraCharacteristic(android.hardware.camera2.CameraCharacteristics.LENS_INFO_AVAILABLE_APERTURES)
+      } catch (e: Throwable) { null }
+    }
+    val proc = portraitProcessor
+    if (videoish && real != null && real.size > 1) {
+      // physical aperture: nearest supported f-number (automatic = widest)
+      val f = if (aperture > 0f) real.minByOrNull { Math.abs(it - aperture) }!! else real.minOrNull()!!
+      try {
+        androidx.camera.camera2.interop.Camera2CameraControl.from(cam.cameraControl).addCaptureRequestOptions(
+          androidx.camera.camera2.interop.CaptureRequestOptions.Builder()
+            .setCaptureRequestOption(CaptureRequest.LENS_APERTURE, f)
+            .build(),
+        )
+      } catch (_: Throwable) {}
+      proc?.blurEnabled = false
+      return
+    }
+    if (videoish && proc != null) {
+      // simulated depth of field: f/1.4 strong … f/4 light background blur
+      if (aperture > 0f) {
+        proc.strength = (1.25f - aperture * 0.25f).coerceIn(0.15f, 1f)
+        proc.blurEnabled = true
+      } else {
+        proc.blurEnabled = false
+        proc.strength = bokeh
+      }
+    }
+  }
+
   fun setBokeh(v: Float) {
     bokeh = v.coerceIn(0f, 1f)
     portraitProcessor?.strength = bokeh
@@ -927,6 +974,7 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
         videoCapture = vc
         // Horizon lock crops only as much as the current tilt needs, so normal framing is kept
         setRollSensor(horizon)
+        applyAperture()
         return
       } catch (e: Throwable) {
         p.unbindAll()
@@ -1531,14 +1579,32 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
       return
     }
     emitRecordingState(mapOf("merging" to true))
+    val durs0 = ArrayList(segmentDurUs)
+    segmentDurUs.clear()
+    val rot = sessionRotation
+    // Fast path: copy the pieces' video as-is (no re-encode) and only re-encode the sound with fades
+    Thread({
+      val fastOut = File(context.cacheDir, "iCam_video_${System.currentTimeMillis()}.mp4")
+      val ok = try { FastJoin.join(parts, fastOut) } catch (e: Throwable) { false }
+      post {
+        if (ok) {
+          parts.forEach { try { it.delete() } catch (_: Throwable) {} }
+          emitRecordingFinished(mapOf("path" to fastOut.absolutePath, "durationMs" to dur, "slowMotion" to false))
+        } else {
+          transformJoin(parts, durs0, dur, rot)
+        }
+      }
+    }, "iCamJoin").start()
+  }
+
+  /** Full join (decode → effects → encode); used when the pieces can't simply be copied together. */
+  private fun transformJoin(parts: List<File>, durs: List<Long>, dur: Double, sessionRotation: Int) {
     val portrait = sessionRotation == android.view.Surface.ROTATION_0 || sessionRotation == android.view.Surface.ROTATION_180
     val w = if (portrait) 1080 else 1920
     val h = if (portrait) 1920 else 1080
     val out = File(context.cacheDir, "iCam_video_${System.currentTimeMillis()}.mp4")
     try {
       val present = androidx.media3.effect.Presentation.createForWidthAndHeight(w, h, androidx.media3.effect.Presentation.LAYOUT_SCALE_TO_FIT_WITH_CROP)
-      val durs = ArrayList(segmentDurUs)
-      segmentDurUs.clear()
       val items = parts.mapIndexed { i, f ->
         val first = i == 0
         val last = i == parts.size - 1

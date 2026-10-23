@@ -611,39 +611,147 @@ function adaptiveDenoise(img: SkImage, sigma: number): SkImage {
 }
 
 export async function processSingle(path: string, o: SingleOptions): Promise<string> {
-  let img = await loadUpright(path, o.meta);
-  // Noise cleanup first (every mode, every zoom), then detail on what's left
-  const sigma = measureNoise(img);
-  try {
-    img = adaptiveDenoise(img, sigma);
-  } catch {}
-  await yieldFrame();
-  const core = Math.max(0.004, sigma * 2.5);
-  if (o.enhance) {
-    await yieldFrame();
+  // Pass 1: decode → upright → noise cleanup, in one GPU draw (noise measured on the raw pixels)
+  let img = await loadDenoised(path, o.meta);
+  const core = Math.max(0.004, lastSigma * 2.5);
+  const zoomed = !!(o.digitalZoom && o.digitalZoom > 1.01);
+  const extraSteps = zoomed || !!o.portrait || o.smoothing > 0.01;
+  const enhanceAmt = o.enhance ?? 0;
+
+  if (extraSteps) {
+    // Rarer paths (zoom / portrait / smoothing) keep their own passes, in the original order
+    if (enhanceAmt > 0.01) {
+      try {
+        img = enhance(img, enhanceAmt, undefined, core);
+      } catch {}
+    }
+    if (o.portrait) img = await applyPortrait(img, o.portrait.maskPath, o.portrait.strength);
+    img = finishLook(img, o.smoothing, 'natural');
+    if (zoomed) {
+      try {
+        const ai = o.aiZoom ? await aiZoomCrop(img, o.digitalZoom!).catch(() => null) : null;
+        img = ai ?? zoomCrop(img, o.digitalZoom!);
+      } catch {}
+    }
+    img = finalPass(img, { filter: o.filter, mirror: o.mirror, aspect: o.aspect });
+  } else {
+    // Common path, pass 2: detail + clarity + vibrance + colour filter + mirror + crop in one draw
     try {
-      img = enhance(img, o.enhance, undefined, core);
+      img = finalPass(img, { enhance: enhanceAmt, core, filter: o.filter, mirror: o.mirror, aspect: o.aspect });
     } catch {
-      // keep the unenhanced photo rather than failing (and losing mirroring etc.)
+      img = finalPass(img, { filter: o.filter, mirror: o.mirror, aspect: o.aspect });
     }
   }
-  if (o.portrait) img = await applyPortrait(img, o.portrait.maskPath, o.portrait.strength);
-  img = finishLook(img, o.smoothing, o.filter);
-  if (o.digitalZoom && o.digitalZoom > 1.01) {
-    await yieldFrame();
-    try {
-      const ai = o.aiZoom ? await aiZoomCrop(img, o.digitalZoom).catch(() => null) : null;
-      img = ai ?? zoomCrop(img, o.digitalZoom);
-    } catch {
-      // keep the un-zoomed photo rather than failing
-    }
-  }
-  if (o.mirror) img = flipH(img);
-  img = cropToAspect(img, o.aspect);
   const file = new File(Paths.cache, `iCam_${Date.now()}.jpg`);
   file.create({ overwrite: true });
-  file.write(img.encodeToBytes(ImageFormat.JPEG, 97));
+  file.write(img.encodeToBytes(ImageFormat.JPEG, 95));
   return file.uri;
+}
+
+/** Noise level measured by the last [loadDenoised] call */
+let lastSigma = 0.008;
+
+/**
+ * Decode + EXIF rotation/mirroring + downscale to ≤ MAX_EDGE + adaptive denoise, as ONE GPU pass
+ * (the denoise shader reads the decoded photo directly through the orientation transform).
+ */
+async function loadDenoised(path: string, meta?: PhotoMeta): Promise<SkImage> {
+  const uri = path.startsWith('file://') ? path : `file://${path}`;
+  const bytes = await new File(uri).bytes();
+  const raw = Skia.Image.MakeImageFromEncoded(Skia.Data.fromBytes(bytes));
+  if (!raw) throw new Error('Could not decode photo');
+  const w = raw.width();
+  const h = raw.height();
+  const o = meta?.orientation ?? 1;
+  if (meta && o >= 5 && o <= 8 && meta.width !== meta.height && meta.width > 0) {
+    skiaAppliesExif = w === meta.height && h === meta.width;
+  }
+  const apply = o > 1 && o <= 8 && skiaAppliesExif !== true;
+  const swap = apply && o >= 5;
+  const s = Math.min(1, MAX_EDGE / Math.max(w, h));
+  const ow = Math.round((swap ? h : w) * s);
+  const oh = Math.round((swap ? w : h) * s);
+
+  // noise on the raw pixels (a CPU read of a small patch: no GPU round trip); downscaling averages some away
+  lastSigma = measureNoise(raw) * Math.sqrt(s);
+  const luma = Math.min(0.7, Math.max(0.06, lastSigma * 28));
+  const radius = Math.max(2, Math.min(ow, oh) / 900) / s; // in source pixels
+  const fx = effect('denoise', DENOISE_SKSL);
+  const child = raw.makeShaderOptions(TileMode.Clamp, TileMode.Clamp, FilterMode.Linear, MipmapMode.None);
+  const paint = Skia.Paint();
+  paint.setShader(fx.makeShaderWithChildren([0.9, luma, radius, Math.max(0.0004, 9 * lastSigma * lastSigma)], [child]));
+
+  const surf = surface(ow, oh);
+  const c = surf.getCanvas();
+  c.save();
+  c.scale(s, s);
+  if (apply) applyOrientation(c, o, w, h);
+  c.drawRect(Skia.XYWHRect(0, 0, w, h), paint);
+  c.restore();
+  return snapshot(surf);
+}
+
+/**
+ * Last pass: optional detail/clarity/vibrance, colour filter, selfie mirror and aspect crop, drawn
+ * once. Point-wise steps are chained as shaders; mirror and crop are just the drawing transform.
+ */
+function finalPass(
+  img: SkImage,
+  o: { enhance?: number; core?: number; filter: FilterKey; mirror?: boolean; aspect?: number },
+): SkImage {
+  const W = img.width();
+  const H = img.height();
+  const opt = (i: SkImage, m?: ReturnType<typeof Skia.Matrix>) =>
+    i.makeShaderOptions(TileMode.Clamp, TileMode.Clamp, FilterMode.Linear, MipmapMode.None, m);
+  let shader = opt(img);
+  const amount = o.enhance ?? 0;
+  if (amount > 0.01) {
+    // low-frequency base at 1/8 size, sampled straight from the small image (no full-size upscale pass)
+    const sw = Math.max(8, Math.round(W / 8));
+    const sh = Math.max(8, Math.round(H / 8));
+    const small = resized(img, sw, sh, 2);
+    const up = Skia.Matrix();
+    up.scale(W / sw, H / sh);
+    const k = Math.min(1.5, amount);
+    shader = effect('enhance', ENHANCE_SKSL).makeShaderWithChildren(
+      [0.7 * k, 0.28 * k, 0.45, Math.max(1, Math.min(W, H) / 2000), o.core ?? 0.006],
+      [shader, opt(small, up)],
+    );
+  }
+  const f = filterByKey(o.filter);
+  if (f.key !== 'natural') {
+    shader = effect('filter', FILTER_SKSL).makeShaderWithChildren(
+      [f.sat, f.contrast, f.warmth, f.fade, f.mono, f.vignette, W, H],
+      [shader],
+    );
+  }
+  // output size after the aspect crop (centre crop, keeping the photo's orientation)
+  let cw = W;
+  let ch = H;
+  if (o.aspect) {
+    const r = W > H ? 1 / o.aspect : o.aspect;
+    cw = W;
+    ch = Math.round(W / r);
+    if (ch > H) {
+      ch = H;
+      cw = Math.round(H * r);
+    }
+    if (Math.abs(cw - W) < 4 && Math.abs(ch - H) < 4) {
+      cw = W;
+      ch = H;
+    }
+  }
+  const surf = surface(cw, ch);
+  const c = surf.getCanvas();
+  if (o.mirror) {
+    c.translate(cw, 0);
+    c.scale(-1, 1);
+  }
+  c.translate(-(W - cw) / 2, -(H - ch) / 2);
+  const paint = Skia.Paint();
+  paint.setShader(shader);
+  c.drawRect(Skia.XYWHRect(0, 0, W, H), paint);
+  return snapshot(surf);
 }
 
 /**
