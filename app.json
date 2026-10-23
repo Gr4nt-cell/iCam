@@ -60,6 +60,11 @@
       "./plugins/withDefaultCamera"
     ],
     "icon": "./assets/icon.png",
-    "owner": "gr4nt"
+    "owner": "gr4nt",
+    "extra": {
+      "eas": {
+        "projectId": "219a83e1-48d1-4df5-9d66-50c93dc15876"
+      }
+    }
   }
 }
