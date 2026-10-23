@@ -849,10 +849,10 @@ function CameraScreen() {
           <Pressable hitSlop={8} onPress={() => setSettingsOpen(true)} style={styles.subBarIcon}>
             <MaterialCommunityIcons name="cog-outline" size={18} color="#fff" />
           </Pressable>
-          {(recording || isVideoMode) && (
+          {recording && (
             <View style={styles.subBarTime}>
-              <View style={[styles.recLed, !recording && { backgroundColor: '#ff3b30' }, paused && { opacity: 0.4 }]} />
-              <Text style={[styles.recText, !recording && { opacity: 0.7 }]}>
+              <View style={[styles.recLed, paused && { opacity: 0.4 }]} />
+              <Text style={styles.recText}>
                 {paused ? 'PAUSED · ' : ''}{mm}:{ss}
               </Text>
             </View>
