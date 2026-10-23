@@ -1,0 +1,45 @@
+# Codemagic build: signed release APK (to install) + AAB (for Google Play)
+workflows:
+  android-release:
+    name: iCam Android release
+    instance_type: mac_mini_m2
+    max_build_duration: 90
+    environment:
+      node: 22
+      java: 17
+    triggering:
+      events: [push]
+      branch_patterns:
+        - pattern: main
+    scripts:
+      - name: Install dependencies
+        script: npm install --legacy-peer-deps --no-audit --no-fund
+      - name: Align Expo package versions
+        script: npx expo install --fix -- --legacy-peer-deps
+      - name: Palm shutter model
+        script: bash scripts/eas-pre-install.sh
+      - name: Signing + version
+        script: |
+          # versionCode keeps increasing past the earlier GitHub builds (Play needs a higher number every upload)
+          echo "ICAM_VERSION_CODE=$((300 + BUILD_NUMBER))" >> $CM_ENV
+          echo "ICAM_UPLOAD_STORE_FILE=$CM_BUILD_DIR/signing/icam-upload.jks" >> $CM_ENV
+          echo "ICAM_UPLOAD_STORE_PASSWORD=$(sed -n 's/^storePassword=//p' signing/upload.properties)" >> $CM_ENV
+          echo "ICAM_UPLOAD_KEY_ALIAS=$(sed -n 's/^keyAlias=//p' signing/upload.properties)" >> $CM_ENV
+          echo "ICAM_UPLOAD_KEY_PASSWORD=$(sed -n 's/^keyPassword=//p' signing/upload.properties)" >> $CM_ENV
+      - name: Generate native Android project
+        script: npx expo prebuild --platform android --clean --no-install
+      - name: Build release APK + AAB
+        script: |
+          cd android
+          echo "org.gradle.jvmargs=-Xmx6g -XX:MaxMetaspaceSize=1g" >> gradle.properties
+          ./gradlew assembleRelease bundleRelease --no-daemon -PreactNativeArchitectures=armeabi-v7a,arm64-v8a,x86_64
+      - name: Name outputs
+        script: |
+          mkdir -p out
+          cp android/app/build/outputs/apk/release/app-release.apk "out/iCam-$ICAM_VERSION_CODE.apk"
+          cp android/app/build/outputs/bundle/release/app-release.aab "out/iCam-$ICAM_VERSION_CODE.aab"
+          cp android/app/build/outputs/mapping/release/mapping.txt "out/mapping-$ICAM_VERSION_CODE.txt" || true
+    artifacts:
+      - out/*.apk
+      - out/*.aab
+      - out/*.txt
