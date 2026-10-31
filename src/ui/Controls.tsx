@@ -33,6 +33,7 @@ export const MODES: { key: CaptureMode; label: string }[] = [
   { key: 'portrait', label: 'Portrait' },
   { key: 'macro', label: 'Macro' },
   { key: 'video', label: 'Video' },
+  { key: 'pvideo', label: 'Portrait video' },
   { key: 'slowmo', label: 'Slo-mo' },
   { key: 'dual', label: 'Dual' },
   { key: 'action', label: 'Action' },
