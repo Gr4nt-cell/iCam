@@ -202,7 +202,7 @@ export function GlassSegmented({
         ]}
       >
         <LinearGradient
-          colors={['rgba(255,230,190,0.34)', 'rgba(255,159,81,0.14)', 'rgba(255,218,163,0.24)']}
+          colors={['rgba(255,255,255,0.30)', 'rgba(255,255,255,0.06)', 'rgba(255,255,255,0.14)']}
           locations={[0, 0.55, 1]}
           style={[StyleSheet.absoluteFill, { borderRadius: height / 2 }]}
         />
@@ -212,10 +212,10 @@ export function GlassSegmented({
             {
               borderRadius: height / 2,
               borderWidth: 1,
-              borderTopColor: 'rgba(255,248,231,0.60)',
-              borderLeftColor: 'rgba(255,229,193,0.36)',
-              borderRightColor: 'rgba(255,207,160,0.26)',
-              borderBottomColor: 'rgba(255,198,144,0.18)',
+              borderTopColor: 'rgba(255,255,255,0.55)',
+              borderLeftColor: 'rgba(255,255,255,0.30)',
+              borderRightColor: 'rgba(255,255,255,0.22)',
+              borderBottomColor: 'rgba(255,255,255,0.14)',
             },
           ]}
         />
@@ -286,15 +286,15 @@ const s = StyleSheet.create({
   pill: {
     position: 'absolute',
     left: 0,
-    backgroundColor: 'rgba(255,184,112,0.18)',
+    backgroundColor: 'rgba(255,255,255,0.16)',
     overflow: 'hidden',
   },
   item: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 4 },
   text: { color: 'rgba(255,255,255,0.78)', fontWeight: '600' },
   textActive: {
-    color: '#ffe0a8',
+    color: '#fff',
     fontWeight: '700',
-    textShadowColor: 'rgba(255,148,65,0.45)',
+    textShadowColor: 'rgba(0,0,0,0.45)',
     textShadowRadius: 4,
     textShadowOffset: { width: 0, height: 1 },
   },

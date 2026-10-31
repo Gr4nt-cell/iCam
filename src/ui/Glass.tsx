@@ -15,7 +15,7 @@ type Props = {
 /**
  * Liquid Glass surface: frosted blur + specular top highlight + inner rim light.
  */
-export function Glass({ style, radius = 26, intensity = 18, tint = 'rgba(67,46,36,0.22)', children }: Props) {
+export function Glass({ style, radius = 26, intensity = 18, tint = 'rgba(28,28,32,0.128)', children }: Props) {
   return (
     <View style={[{ borderRadius: radius, overflow: 'hidden' }, style]}>
       <BlurView
@@ -27,7 +27,7 @@ export function Glass({ style, radius = 26, intensity = 18, tint = 'rgba(67,46,3
       <View style={[StyleSheet.absoluteFill, { backgroundColor: tint }]} />
       <LinearGradient
         pointerEvents="none"
-        colors={['rgba(255,247,231,0.17)', 'rgba(255,228,198,0.035)', 'rgba(255,221,181,0.018)', 'rgba(255,194,136,0.07)']}
+        colors={['rgba(255,255,255,0.104)', 'rgba(255,255,255,0.02)', 'rgba(255,255,255,0.008)', 'rgba(255,255,255,0.048)']}
         locations={[0, 0.35, 0.7, 1]}
         style={StyleSheet.absoluteFill}
       />
@@ -38,10 +38,10 @@ export function Glass({ style, radius = 26, intensity = 18, tint = 'rgba(67,46,3
           {
             borderRadius: radius,
             borderWidth: 1,
-            borderTopColor: 'rgba(255,247,231,0.32)',
-            borderLeftColor: 'rgba(255,238,213,0.18)',
-            borderRightColor: 'rgba(255,223,190,0.13)',
-            borderBottomColor: 'rgba(255,220,186,0.09)',
+            borderTopColor: 'rgba(255,255,255,0.22)',
+            borderLeftColor: 'rgba(255,255,255,0.112)',
+            borderRightColor: 'rgba(255,255,255,0.072)',
+            borderBottomColor: 'rgba(255,255,255,0.048)',
           },
         ]}
       />
@@ -56,7 +56,7 @@ export function GlassCircle({ size = 44, children, active }: { size?: number; ch
     <Glass
       radius={size / 2}
       style={{ width: size, height: size, alignItems: 'center', justifyContent: 'center' }}
-      tint={active ? 'rgba(255,185,111,0.32)' : 'rgba(67,46,36,0.22)'}
+      tint={active ? 'rgba(255,255,255,0.34)' : 'rgba(28,28,32,0.128)'}
     >
       {children}
     </Glass>
