@@ -15,20 +15,23 @@ type Props = {
 /**
  * Liquid Glass surface: frosted blur + specular top highlight + inner rim light.
  */
-export function Glass({ style, radius = 26, intensity = 24, tint = 'rgba(13,18,22,0.24)', children }: Props) {
+export function Glass({ style, radius = 26, intensity = 32, tint = 'rgba(15,24,34,0.56)', children }: Props) {
   return (
     <View style={[{ borderRadius: radius, overflow: 'hidden' }, style]}>
       <BlurView
         intensity={intensity}
         tint="dark"
+        pointerEvents="none"
         experimentalBlurMethod="dimezisBlurView"
         style={StyleSheet.absoluteFill}
       />
-      <View style={[StyleSheet.absoluteFill, { backgroundColor: tint }]} />
+      <View pointerEvents="none" style={[StyleSheet.absoluteFill, { backgroundColor: tint }]} />
       <LinearGradient
         pointerEvents="none"
-        colors={['rgba(255,255,255,0.15)', 'rgba(255,255,255,0.035)', 'rgba(255,255,255,0.012)', 'rgba(255,255,255,0.065)']}
-        locations={[0, 0.35, 0.7, 1]}
+        colors={['rgba(221,241,255,0.24)', 'rgba(255,255,255,0.065)', 'rgba(255,255,255,0.018)', 'rgba(162,209,255,0.10)']}
+        locations={[0, 0.32, 0.72, 1]}
+        start={{ x: 0, y: 0 }}
+        end={{ x: 1, y: 1 }}
         style={StyleSheet.absoluteFill}
       />
       <View
@@ -38,10 +41,10 @@ export function Glass({ style, radius = 26, intensity = 24, tint = 'rgba(13,18,2
           {
             borderRadius: radius,
             borderWidth: 1,
-            borderTopColor: 'rgba(255,255,255,0.30)',
-            borderLeftColor: 'rgba(255,255,255,0.16)',
-            borderRightColor: 'rgba(255,255,255,0.10)',
-            borderBottomColor: 'rgba(255,255,255,0.07)',
+            borderTopColor: 'rgba(255,255,255,0.50)',
+            borderLeftColor: 'rgba(221,241,255,0.28)',
+            borderRightColor: 'rgba(221,241,255,0.16)',
+            borderBottomColor: 'rgba(221,241,255,0.12)',
           },
         ]}
       />
@@ -56,7 +59,7 @@ export function GlassCircle({ size = 44, children, active }: { size?: number; ch
     <Glass
       radius={size / 2}
       style={{ width: size, height: size, alignItems: 'center', justifyContent: 'center' }}
-      tint={active ? 'rgba(229,210,155,0.32)' : 'rgba(13,18,22,0.24)'}
+      tint={active ? 'rgba(185,226,255,0.54)' : 'rgba(15,24,34,0.56)'}
     >
       {children}
     </Glass>

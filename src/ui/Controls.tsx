@@ -236,7 +236,7 @@ function ZoomDial({ zoom, min, max, stops }: { zoom: number; min: number; max: n
         );
       })}
       {/* fixed marker at the top */}
-      <View style={[radial(0, R - 16, 2.5, 26), { backgroundColor: '#ffd76a', borderRadius: 1.5 }]} />
+      <View style={[radial(0, R - 16, 2.5, 26), { backgroundColor: '#c2e9ff', borderRadius: 1.5 }]} />
       <Text style={[styles.dialValue, { position: 'absolute', left: 0, right: 0, top: cy - R + 52 }]}>
         {zoom >= 10 ? Math.round(zoom) : zoom.toFixed(1)}×
       </Text>
@@ -258,7 +258,7 @@ export function ModeCarousel({
   disabled?: boolean;
 }) {
   return (
-    <Glass radius={24} style={styles.modeBar}>
+    <View style={styles.modeBar}>
       <GlassSegmented
         items={modes}
         value={mode}
@@ -266,10 +266,10 @@ export function ModeCarousel({
         scrollable
         disabled={disabled}
         height={36}
-        fontSize={14}
+        fontSize={13}
         paddingH={13}
       />
-    </Glass>
+    </View>
   );
 }
 
@@ -293,6 +293,9 @@ export function Shutter({
 
   return (
     <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={recording ? 'Stop recording' : kind === 'video' ? 'Start recording' : 'Take photo'}
+      accessibilityState={{ busy, disabled: busy && !recording }}
       onPressIn={() => press(0.9)}
       onPressOut={() => press(1)}
       onPress={onPress}
@@ -341,8 +344,8 @@ export function Thumb({
   enabled?: boolean;
 }) {
   return (
-    <Pressable onPress={onPress} disabled={!uri && !enabled}>
-      <Glass radius={28} style={styles.thumb}>
+    <Pressable accessibilityRole="button" accessibilityLabel="Open latest capture" onPress={onPress} disabled={!uri && !enabled}>
+      <Glass radius={18} style={styles.thumb}>
         {uri ? (
           <RAnimated.View key={uri} entering={ZoomIn.duration(260)} style={StyleSheet.absoluteFill}>
             <Image source={{ uri }} style={styles.thumbImg} />
@@ -351,7 +354,7 @@ export function Thumb({
           <View style={[StyleSheet.absoluteFill, styles.center]}>
             <MaterialCommunityIcons name="play-circle-outline" size={28} color="#fff" />
           </View>
-        ) : null}
+        ) : <MaterialCommunityIcons name="image-outline" size={23} color="rgba(255,255,255,0.7)" />}
         {processing && (
           <RAnimated.View
             entering={FadeIn.duration(150)}
@@ -380,7 +383,7 @@ export function IconButton({
   size?: number;
 }) {
   return (
-    <Pressable onPress={onPress} hitSlop={8}>
+    <Pressable accessibilityRole="button" accessibilityLabel={icon === "camera-flip-outline" ? "Switch camera" : icon === "swap-horizontal" ? "Swap dual cameras" : icon === "pause" ? "Pause recording" : icon === "record" ? "Resume recording" : icon.replace(/-/g, " ")} onPress={onPress} hitSlop={8}>
       <GlassCircle size={size} active={active}>
         <MaterialCommunityIcons name={icon} size={size * 0.48} color={active ? '#111' : '#fff'} />
       </GlassCircle>
@@ -510,7 +513,7 @@ export function Toast({ text }: { text: string | null }) {
 export const styles = StyleSheet.create({
   center: { alignItems: 'center', justifyContent: 'center' },
   zoomBar: { alignSelf: 'center' },
-  dialValue: { color: '#ffd76a', fontSize: 14, fontWeight: '700', textAlign: 'center', marginTop: 4, fontVariant: ['tabular-nums'] },
+  dialValue: { color: '#c2e9ff', fontSize: 14, fontWeight: '700', textAlign: 'center', marginTop: 4, fontVariant: ['tabular-nums'] },
   dialLabel: { width: 40, textAlign: 'center', color: 'rgba(255,255,255,0.9)', fontSize: 11, fontWeight: '700' },
   zoomPill: { minWidth: 38, height: 38, borderRadius: 19, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 6 },
   zoomPillActive: { backgroundColor: 'rgba(255,255,255,0.92)' },
@@ -521,19 +524,19 @@ export const styles = StyleSheet.create({
   modeChipActive: { backgroundColor: 'rgba(214,228,255,0.95)' },
   modeText: { color: 'rgba(255,255,255,0.85)', fontSize: 14, fontWeight: '600' },
   modeTextActive: { color: '#0b1f44' },
-  shutterOuter: { width: 84, height: 84, borderRadius: 42, alignItems: 'center', justifyContent: 'center' },
-  shutterInner: { width: 66, height: 66, borderRadius: 33, backgroundColor: '#fff', alignItems: 'center', justifyContent: 'center' },
+  shutterOuter: { width: 84, height: 84, borderRadius: 42, borderWidth: 1.5, borderColor: 'rgba(255,255,255,0.9)', alignItems: 'center', justifyContent: 'center' },
+  shutterInner: { width: 66, height: 66, borderRadius: 33, backgroundColor: '#f1f8ff', alignItems: 'center', justifyContent: 'center' },
   shutterNight: { backgroundColor: '#e9e6ff' },
   recDot: { width: 62, height: 62, borderRadius: 31, backgroundColor: '#ff3b30' },
   recSquare: { width: 30, height: 30, borderRadius: 8 },
-  thumb: { width: 56, height: 56 },
+  thumb: { width: 52, height: 52 },
   thumbImg: { width: '100%', height: '100%' },
   sliderCard: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 14, height: 52, gap: 12, alignSelf: 'center', width: 300 },
   sliderTabs: { flexDirection: 'row', gap: 12 },
   sliderTrackWrap: { flex: 1, height: 44, justifyContent: 'center' },
   sliderTrack: { height: 4, borderRadius: 2, backgroundColor: 'rgba(255,255,255,0.18)' },
   sliderCenterTick: { position: 'absolute', left: '50%', width: 2, height: 12, marginLeft: -1, backgroundColor: 'rgba(255,255,255,0.7)' },
-  sliderKnob: { position: 'absolute', width: 22, height: 22, borderRadius: 11, backgroundColor: '#ffd76a', borderWidth: 2, borderColor: '#fff' },
+  sliderKnob: { position: 'absolute', width: 22, height: 22, borderRadius: 11, backgroundColor: '#c2e9ff', borderWidth: 2, borderColor: '#fff' },
   focusRing: { position: 'absolute', width: 72, height: 72, borderRadius: 36, borderWidth: 2, borderColor: 'rgba(255,255,255,0.95)' },
   toast: { alignSelf: 'center', paddingHorizontal: 16, paddingVertical: 9 },
   toastText: { color: '#fff', fontSize: 13, fontWeight: '600' },

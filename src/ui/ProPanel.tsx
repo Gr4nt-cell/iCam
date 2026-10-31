@@ -288,7 +288,7 @@ export function LookPanel({
 }
 
 const s = StyleSheet.create({
-  card: { marginHorizontal: 12, paddingVertical: 10, gap: 8 },
+  card: { alignSelf: 'center', width: '92%', maxWidth: 520, paddingVertical: 14, gap: 12 },
   header: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 14, gap: 10 },
   readout: { flex: 1, color: '#fff', fontSize: 12, fontWeight: '700', letterSpacing: 0.3, fontVariant: ['tabular-nums'] },
   capToggle: { flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: 'rgba(255,255,255,0.16)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.4)', borderRadius: 14, paddingHorizontal: 10, height: 28 },
@@ -299,8 +299,8 @@ const s = StyleSheet.create({
   tabText: { color: 'rgba(255,255,255,0.7)', fontSize: 13, fontWeight: '600' },
   tabTextActive: { color: '#fff' },
   chips: { paddingHorizontal: 10, gap: 6, alignItems: 'center' },
-  chip: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 12, height: 34, borderRadius: 17, backgroundColor: 'rgba(255,255,255,0.04)' },
-  chipActive: { backgroundColor: 'rgba(214,228,255,0.95)' },
+  chip: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 12, height: 34, borderRadius: 17, borderWidth: 1, borderColor: 'rgba(221,241,255,0.16)', backgroundColor: 'rgba(255,255,255,0.06)' },
+  chipActive: { backgroundColor: 'rgba(194,233,255,0.90)' },
   chipText: { color: '#fff', fontSize: 13, fontWeight: '600' },
   chipTextActive: { color: '#0b1f44' },
   evRow: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 14 },
@@ -308,5 +308,5 @@ const s = StyleSheet.create({
   smoothLabel: { color: '#fff', fontSize: 13, fontWeight: '600' },
   note: { color: 'rgba(255,255,255,0.7)', fontSize: 12, paddingHorizontal: 14, paddingVertical: 8 },
   reset: { alignSelf: 'center' },
-  resetText: { color: '#8ab4f8', fontSize: 12, fontWeight: '600' },
+  resetText: { color: '#c2e9ff', fontSize: 12, fontWeight: '600' },
 });

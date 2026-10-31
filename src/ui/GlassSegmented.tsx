@@ -286,13 +286,13 @@ const s = StyleSheet.create({
   pill: {
     position: 'absolute',
     left: 0,
-    backgroundColor: 'rgba(255,255,255,0.16)',
+    backgroundColor: 'rgba(185,226,255,0.21)',
     overflow: 'hidden',
   },
   item: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 4 },
   text: { color: 'rgba(255,255,255,0.78)', fontWeight: '600' },
   textActive: {
-    color: '#fff',
+    color: '#d7f1ff',
     fontWeight: '700',
     textShadowColor: 'rgba(0,0,0,0.45)',
     textShadowRadius: 4,

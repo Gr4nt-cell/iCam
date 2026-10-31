@@ -34,10 +34,18 @@ export function SettingsSheet(p: SettingsProps) {
     <Modal visible={p.visible} transparent animationType="slide" onRequestClose={p.onClose} statusBarTranslucent>
       <Pressable style={StyleSheet.absoluteFill} onPress={p.onClose} />
       <View style={[s.sheetWrap, { paddingBottom: p.bottomInset + 8 }]}>
-        <Glass radius={32} style={s.sheet} tint="rgba(20,20,24,0.72)" intensity={70}>
+        <Glass radius={32} style={s.sheet} tint="rgba(12,22,34,0.91)" intensity={70}>
           <View style={s.grabber} />
           <ScrollView contentContainerStyle={{ padding: 20, paddingTop: 8, gap: 18 }}>
-            <Text style={s.title}>Settings</Text>
+            <View style={s.sheetHeader}>
+              <View style={{ flex: 1 }}>
+                <Text style={s.eyebrow}>ICAM · PREFERENCES</Text>
+                <Text style={s.title}>Make it yours.</Text>
+              </View>
+              <Pressable accessibilityRole="button" accessibilityLabel="Close settings" onPress={p.onClose} style={s.closeButton}>
+                <MaterialCommunityIcons name="close" size={22} color="#fff" />
+              </Pressable>
+            </View>
 
             <Section title="Photo processing">
               <Row label="Processing" hint="Single full-quality shot processed by your phone's own image engine (HDR, depth Portrait, Night) where available — no multi-frame merging" >
@@ -197,7 +205,7 @@ export function SettingsSheet(p: SettingsProps) {
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
-    <View style={{ gap: 10 }}>
+    <View style={s.sectionCard}>
       <Text style={s.section}>{title}</Text>
       {children}
     </View>
@@ -207,7 +215,7 @@ function Section({ title, children }: { title: string; children: React.ReactNode
 function Row({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
   return (
     <View style={s.row}>
-      <View style={{ flex: 1, paddingRight: 10 }}>
+      <View style={{ flex: 1, minWidth: 140, paddingRight: 10 }}>
         <Text style={s.rowLabel}>{label}</Text>
         {hint ? <Text style={s.rowHint}>{hint}</Text> : null}
       </View>
@@ -222,7 +230,7 @@ function Toggle({ value, onChange, disabled }: { value: boolean; onChange: (v: b
       value={value}
       disabled={disabled}
       onValueChange={onChange}
-      trackColor={{ false: 'rgba(255,255,255,0.18)', true: '#8ab4f8' }}
+      trackColor={{ false: 'rgba(255,255,255,0.18)', true: '#c2e9ff' }}
       thumbColor="#fff"
     />
   );
@@ -242,6 +250,7 @@ function Segmented({
   return (
     <View style={s.seg}>
       <GlassSegmented
+        scrollable
         items={options.map((o, i) => ({ key: o, label: labels?.[i] ?? o }))}
         value={value}
         onChange={onChange}
@@ -292,7 +301,7 @@ export function Viewer({
       <View style={s.viewer}>
         {isVideo ? (
           <View style={[StyleSheet.absoluteFill, { alignItems: 'center', justifyContent: 'center', gap: 12 }]}>
-            <MaterialCommunityIcons name="check-circle-outline" size={64} color="#8ab4f8" />
+            <MaterialCommunityIcons name="check-circle-outline" size={64} color="#c2e9ff" />
             <Text style={s.viewerText}>Video saved to your gallery</Text>
           </View>
         ) : (
@@ -357,7 +366,7 @@ export function PermissionGate({ onGrant, missing }: { onGrant: () => void; miss
   return (
     <View style={[StyleSheet.absoluteFill, { backgroundColor: '#000', alignItems: 'center', justifyContent: 'center', padding: 24 }]}>
       <Glass radius={32} style={{ padding: 24, gap: 14, width: '100%', maxWidth: 380 }} tint="rgba(40,40,48,0.6)">
-        <MaterialCommunityIcons name="camera-iris" size={44} color="#8ab4f8" />
+        <MaterialCommunityIcons name="camera-iris" size={44} color="#c2e9ff" />
         <Text style={s.title}>iCam needs access</Text>
         <Text style={s.rowHint}>
           To use every lens, record sound and save to your gallery, allow: {missing.join(', ')}.
@@ -371,15 +380,19 @@ export function PermissionGate({ onGrant, missing }: { onGrant: () => void; miss
 }
 
 const s = StyleSheet.create({
-  sheetWrap: { position: 'absolute', left: 8, right: 8, bottom: 0, maxHeight: '82%' },
+  sheetWrap: { position: 'absolute', alignSelf: 'center', width: '96%', maxWidth: 600, bottom: 0, maxHeight: '88%' },
   sheet: { flexShrink: 1 },
+  sheetHeader: { flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 6 },
+  eyebrow: { color: '#c2e9ff', fontSize: 10, fontWeight: '700', letterSpacing: 2, marginBottom: 6 },
+  closeButton: { width: 44, height: 44, borderRadius: 22, backgroundColor: 'rgba(221,241,255,0.12)', borderWidth: 1, borderColor: 'rgba(221,241,255,0.24)', alignItems: 'center', justifyContent: 'center' },
+  sectionCard: { gap: 14, padding: 16, borderRadius: 24, backgroundColor: 'rgba(221,241,255,0.055)', borderWidth: StyleSheet.hairlineWidth, borderColor: 'rgba(221,241,255,0.18)' },
   grabber: { alignSelf: 'center', width: 40, height: 5, borderRadius: 3, backgroundColor: 'rgba(255,255,255,0.4)', marginTop: 10 },
-  title: { color: '#fff', fontSize: 22, fontWeight: '700' },
-  section: { color: '#8ab4f8', fontSize: 13, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 0.8 },
-  row: { flexDirection: 'row', alignItems: 'center', minHeight: 44 },
+  title: { color: '#fff', fontSize: 30, fontWeight: '600', letterSpacing: -0.8 },
+  section: { color: '#c2e9ff', fontSize: 11, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 1.4 },
+  row: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', minHeight: 48, gap: 8 },
   rowLabel: { color: '#fff', fontSize: 15, fontWeight: '600' },
-  rowHint: { color: 'rgba(255,255,255,0.6)', fontSize: 12, marginTop: 2 },
-  seg: { backgroundColor: 'rgba(255,255,255,0.06)', borderRadius: 19 },
+  rowHint: { color: 'rgba(232,243,255,0.7)', fontSize: 12, lineHeight: 18, marginTop: 4 },
+  seg: { maxWidth: '100%', backgroundColor: 'rgba(255,255,255,0.06)', borderRadius: 19 },
   segItem: { paddingHorizontal: 10, paddingVertical: 6, borderRadius: 11 },
   segActive: { backgroundColor: 'rgba(214,228,255,0.95)' },
   segText: { color: '#fff', fontSize: 13, fontWeight: '600' },
@@ -403,6 +416,6 @@ const s = StyleSheet.create({
   viewerText: { color: '#fff', fontSize: 13, fontWeight: '600' },
   resetBtn: { alignSelf: 'flex-start', paddingVertical: 8 },
   resetText: { color: '#ff9f8f', fontSize: 14, fontWeight: '600' },
-  cta: { backgroundColor: '#8ab4f8', borderRadius: 22, height: 46, alignItems: 'center', justifyContent: 'center', marginTop: 6 },
+  cta: { backgroundColor: '#c2e9ff', borderRadius: 22, height: 46, alignItems: 'center', justifyContent: 'center', marginTop: 6 },
   ctaText: { color: '#0b1f44', fontSize: 16, fontWeight: '700' },
 });
