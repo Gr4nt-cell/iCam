@@ -1,0 +1,16 @@
+const fs=require('fs'),ts=require('typescript'),Module=require('module'),assert=require('assert/strict');
+const filename=require('path').resolve('src/processing/skinSettings.ts');
+const m=new Module(filename,module);
+m._compile(ts.transpileModule(fs.readFileSync(filename,'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS}}).outputText,filename);
+const {restorePhotoSmoothing,captureSmoothing}=m.exports;
+assert.equal(restorePhotoSmoothing(),.45);
+assert.equal(restorePhotoSmoothing(undefined,.7),.7);
+assert.equal(restorePhotoSmoothing(0,.7),0,'An explicitly saved Off setting must stay off');
+assert.equal(restorePhotoSmoothing(4),1);
+assert.equal(restorePhotoSmoothing(NaN),.45);
+for(const mode of ['photo','portrait'])assert.equal(captureSmoothing(mode,.45,0),.45);
+for(const mode of ['video','action','pro','night'])assert.equal(captureSmoothing(mode,.45,0),0);
+const app=fs.readFileSync('App.tsx','utf8');
+assert(app.includes('smoothing: captureSmoothing(mode, photoSmoothing, smoothing)'),'Photo capture must use the shared setting');
+assert(!app.includes("facing === 'front' ? photoSmoothing"),'Rear faces must get the same treatment');
+console.log('PASS: Photo and Portrait share face smoothing; saved Off and separate video settings are preserved.');

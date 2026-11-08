@@ -107,7 +107,7 @@ export function SettingsSheet(p: SettingsProps) {
               </Row>
               <Row
                 label="Stabilization"
-                hint={p.video.stabilization === 'horizon' ? 'Keeps the horizon level; extra crop is applied only as needed for rotation.' : 'Selfie video uses a small crop to keep a wide view. Off preserves the widest framing; Action reserves more room for movement.'}
+                hint={p.video.stabilization === 'horizon' ? 'Keeps the horizon level; extra crop is applied only as needed for rotation.' : 'Supported rear cameras use phone stabilization. Other clips are stabilized after recording; selfies keep a smaller crop. Off keeps the widest view.'}
               >
                 <Segmented
                   options={['off', 'standard', 'cinematic', 'horizon']}

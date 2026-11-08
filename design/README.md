@@ -9,11 +9,13 @@ Pro's photo/video toggle remains available. All spring animations and overshoot 
 
 ## Stabilization and framing
 
-Both SDR and HDR disable CameraX electronic preview/video stabilization to avoid stacking a camera crop with the processing crop. Optical stabilization can still assist. Front-camera processing reserves are smaller: 1.02x standard/cinematic/Horizon, 1.08x Action, with extra geometry only when required by roll. Camera flips reset manual zoom to 1x; Dual does not force a selfie zoom.
+Ordinary rear SDR video now uses CameraX electronic stabilization when the selected camera supports it. That path receives no second processing crop. If hardware EIS cannot bind, the exporter provides a software fallback. Front capture stays wide without hardware EIS; it uses a small processing margin (1.06x Standard, 1.08x Cinema, 1.12x Action). Rear software reserves are 1.10x Standard, 1.16x Cinema, 1.28x Action. Horizon may need more crop to keep rotated corners covered.
 
-SDR processing happens live in PortraitProcessor. HDR capture stays wide and records HLG or HDR10. After recording, disposable 160x90 proxies measure motion; the full-resolution HDR frames are transformed through Media3's HDR pipeline and exported as HEVC with HDR_MODE_KEEP_HDR. Proxy pixels never become output video pixels. Gravity samples for Action/Horizon use the recorded timeline with pauses excluded. Transforms interpolate at the original frame rate. Cropping accounts for both translation and roll to avoid black corners.
+Software stabilization runs after stop for both SDR and HDR. Aspect-correct proxies feed corner selection, pyramidal optical flow, backward verification and robust affine consensus. Full-resolution output uses only rigid translation / roll and a constant crop, avoiding affine stretching. Offline symmetric smoothing uses future frames; brief tracking gaps do not reset the path. Normal roll comes from the recorded gravity trace, since image-only roll is ambiguous during perspective pans. Action/Horizon use gravity for absolute leveling. Clips with too few reliable tracks retain the original.
 
-HDR processing needs Android 13+ and a compatible HDR decoder, GPU and HEVC encoder. Unsupported HDR exports, tone-mapping fallbacks, processing errors, or mismatched output colour metadata/resolution retain the original recording and show a message. No automatic conversion to SDR is accepted. HDR processing occurs after stop, so its viewfinder shows the uncropped capture rather than the final stabilized framing. Recording is disabled while that export completes.
+SDR exports as AVC. HDR stays HLG/HDR10 through Media3's high-precision pipeline and HEVC export; unsupported HDR editing retains the original. Export runs after stop with the existing processing indicator. Captured frames and their measurement proxies stay separate.
+
+Photo and Portrait now share a separate adjustable face-smoothing setting on both front and rear cameras. Its initial strength is 45%; an existing positive skin setting migrates, and an explicitly saved new Off setting is preserved. This setting does not alter video, Pro, Night or Macro defaults. Both modes use the same detected-face smoothing shader; Portrait additionally adds depth blur.
 
 ## Per-phone hardware tuning
 

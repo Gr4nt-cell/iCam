@@ -8,17 +8,19 @@ internal object VideoStabilityPolicy {
     // Selfie sensors have less field of view to spare. Avoid a full second EIS crop
     // when the phone already stabilizes; retain a small reserve for software motion.
     if (frontCamera) return when {
-      mode == "action" -> if (hardwareStabilized) 1.04f else 1.08f
+      mode == "action" -> if (hardwareStabilized) 1.04f else 1.12f
       stabilization == "off" -> 1f
       hardwareStabilized -> 1f
-      else -> 1.02f
+      stabilization == "standard" -> 1.06f
+      else -> 1.08f
     }
+    if (hardwareStabilized && mode != "action" && stabilization != "horizon") return 1f
     return when {
       mode == "action" -> 1.28f
       stabilization == "off" -> 1f
       stabilization == "horizon" -> 1.24f
       stabilization == "standard" -> 1.10f
-      else -> 1.20f
+      else -> 1.16f
     }
   }
   fun rotationCrop(width: Float, height: Float, angle: Float, previous: Float): Float {

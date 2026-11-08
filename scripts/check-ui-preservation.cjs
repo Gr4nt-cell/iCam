@@ -5,10 +5,13 @@ const hdr=process.argv.includes('--allow-hdr-processing');
 const grouped=process.argv.includes('--allow-mode-grouping');
 const motion=process.argv.includes('--allow-static-motion');
 const hardware=process.argv.includes('--allow-hardware-tuning');
+const photoSkin=process.argv.includes('--allow-photo-smoothing');
 const files=['App.tsx','src/ui/Controls.tsx','src/ui/GlassSegmented.tsx','src/ui/ProPanel.tsx','src/ui/Sheets.tsx'];
 const printer=ts.createPrinter({removeComments:true});
 function parse(code,file){return ts.createSourceFile(file,code,ts.ScriptTarget.Latest,true,ts.ScriptKind.TSX);}
 function normalized(node,source){
+ if(photoSkin&&ts.isJsxAttribute(node)&&node.name.text==='smoothing'&&node.getText(source).includes('captureSmoothing'))return 'smoothing={smoothing}';
+ if(photoSkin&&ts.isJsxAttribute(node)&&node.name.text==='onSmoothing'&&node.getText(source).includes('setPhotoSmoothing'))return 'onSmoothing={setSmoothing}';
  if(hdr&&ts.isJsxAttribute(node)&&['onRecordingState','onRecordingFinished'].includes(node.name.text))return node.name.text;
  if(hardware&&ts.isJsxAttribute(node)&&node.name.text==='hdrVideo')return node.name.text;
  if(hardware&&ts.isJsxAttribute(node)&&node.name.text==='onPress'&&node.getText(source).includes('setDualPrimary'))return 'onPress:resetDualZoomAndSwap';
@@ -27,13 +30,14 @@ for(const file of files){
 if(ts.isJsxAttribute(n)&&(/^on[A-Z]/.test(n.name.text)||['disabled','value','min','max','items','modes','stops','options'].includes(n.name.text)))list.push(normalized(n,src).replace(/setZoom\(1\);\s*setLensId\(null\);\s*(?=setFacing)/g, ''));ts.forEachChild(n,walk);}walk(src);return list;}
  const current=attrs(after);for(const old of attrs(before)){const i=current.indexOf(old);assert(i>=0,`${file}: lost or changed control binding ${old}`);current.splice(i,1);handlers++;}
  if(file==='App.tsx'){
-  function state(code){let prefix=code.slice(0,code.indexOf('  if (perms.camera === null)'));if(motion)prefix=prefix.replace(', ZoomIn, ZoomOut','');if(hardware)prefix=prefix.replace(/^\s*\/\/ (v2: HDR video|HDR defaults off,)[^\n]*\n/gm,'').replace('...v.video, hdr: false','...v.video');if(hdr)prefix=prefix.replace('if (!c || busy) return;','if (!c) return;').replace('}, [recording, busy, flashToast]);','}, [recording, flashToast]);');return hdr?prefix.replace(/const canFlipWhileRecording = [^;]+;/,'const canFlipWhileRecording = HDR_RESTRICTED;'):prefix;}
+  function state(code){let prefix=code.slice(0,code.indexOf('  if (perms.camera === null)'));if(photoSkin)prefix=prefix.replace(/^import \{ DEFAULT_PHOTO_SMOOTHING[^\n]+\n/m,'').replace(/^  const \[photoSmoothing[^\n]+\n/m,'').replace(/^    photoSmoothing\?: number;\n/m,'').replace(/^        setPhotoSmoothing[^\n]+\n/m,'').replace(/, photoSmoothing(?=, pip|, filter)/g,'').replace('smoothing: captureSmoothing(mode, photoSmoothing, smoothing)','smoothing');if(motion)prefix=prefix.replace(', ZoomIn, ZoomOut','');if(hardware)prefix=prefix.replace(/^\s*\/\/ (v2: HDR video|HDR defaults off,)[^\n]*\n/gm,'').replace('...v.video, hdr: false','...v.video');if(hdr)prefix=prefix.replace('if (!c || busy) return;','if (!c) return;').replace('}, [recording, busy, flashToast]);','}, [recording, flashToast]);');return hdr?prefix.replace(/const canFlipWhileRecording = [^;]+;/,'const canFlipWhileRecording = HDR_RESTRICTED;'):prefix;}
   assert.equal(state(after),state(before),'Unreviewed camera state or capture logic changed');
   function camera(code){const src=parse(code,file);let out;function walk(n){if(ts.isJsxSelfClosingElement(n)&&n.tagName.getText(src)==='ICameraView')out=n.attributes.properties.filter(p=>!(hardware&&ts.isJsxAttribute(p)&&p.name.text==='manualControls')).map(p=>normalized(p,src)).join("\n");ts.forEachChild(n,walk);}walk(src);return out;}
   assert.equal(camera(after),camera(before),'Native camera props changed');
  }
 }
 const quality=process.argv.includes('--allow-capture-quality');
+const offline=process.argv.includes('--allow-offline-stabilization');
 const reviewed=new Set([
  'modules/icamera/android/build.gradle',
  'modules/icamera/android/src/main/java/expo/modules/icamera/VideoTuning.kt',
@@ -41,6 +45,8 @@ const reviewed=new Set([
  'modules/icamera/android/src/main/java/expo/modules/icamera/PortraitVideo.kt',
  'modules/icamera/android/src/test/java/expo/modules/icamera/VideoTuningTest.kt',
  'src/processing/pipeline.ts','src/processing/shaders.ts',
+ ...(photoSkin ? ['src/processing/skinSettings.ts'] : []),
+ ...(offline ? ['modules/icamera/android/src/main/java/expo/modules/icamera/OfflineVideoMotion.kt','modules/icamera/android/src/test/java/expo/modules/icamera/OfflineVideoMotionTest.kt'] : []),
  ...(hdr ? ['modules/icamera/android/src/main/java/expo/modules/icamera/HdrVideoStabilizer.kt','modules/icamera/android/src/main/java/expo/modules/icamera/VideoProcessingTransform.kt','modules/icamera/android/src/test/java/expo/modules/icamera/VideoProcessingTransformTest.kt'] : []),
  ...(grouped ? ['src/camera/modeGroups.ts'] : []),
  ...(hardware ? ['modules/icamera/android/src/main/java/expo/modules/icamera/ICameraModule.kt','modules/icamera/index.ts','modules/icamera/android/src/main/java/expo/modules/icamera/PhoneCameraPolicy.kt','modules/icamera/android/src/main/java/expo/modules/icamera/PhoneCameraTuning.kt','modules/icamera/android/src/test/java/expo/modules/icamera/PhoneCameraPolicyTest.kt'] : []),

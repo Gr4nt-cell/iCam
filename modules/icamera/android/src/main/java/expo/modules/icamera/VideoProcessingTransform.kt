@@ -44,7 +44,7 @@ internal class RecordingRollTrace(private val reverseRoll: Boolean) {
 internal data class VideoProcessingSample(val timeUs: Long, val x: Float, val y: Float, val roll: Float)
 
 /** Immutable and seek-safe; an export may ask for timestamps in any order. */
-internal class VideoProcessingTimeline(private val samples: List<VideoProcessingSample>) {
+internal class VideoProcessingTimeline(private val samples: List<VideoProcessingSample>, val crop: Float? = null) {
   init { require(samples.isNotEmpty()); require(samples.zipWithNext().all { it.first.timeUs <= it.second.timeUs }) }
   fun at(timeUs: Long): VideoProcessingSample {
     if (timeUs <= samples.first().timeUs) return samples.first()
@@ -65,12 +65,15 @@ internal object VideoProcessingGeometry {
     val c = cos(sample.roll.toDouble()).toFloat(); val s = sin(sample.roll.toDouble()).toFloat()
     val aspect = width.toFloat() / height
     val x = sample.x.coerceIn(-.45f, .45f); val y = sample.y.coerceIn(-.45f, .45f)
-    // Inverse-map every output corner inside the source, including translation AND roll.
-    val required = max((abs(c) + abs(s) / aspect) / (1 - 2 * abs(x)),
-                       (abs(c) + abs(s) * aspect) / (1 - 2 * abs(y)))
-    val k = max(reserve, required * 1.01f)
+    val k = max(reserve, requiredCrop(sample,width,height))
     val a = k*c; val b = -k*s/aspect; val d = k*s*aspect; val e = k*c
     // Bitmap analysis y points down, while Media3 normalized-device y points up.
     return floatArrayOf(a,b,-2*a*x + 2*b*y, d,e,-2*d*x + 2*e*y, 0f,0f,1f)
   }
+  fun requiredCrop(sample: VideoProcessingSample, width: Int, height: Int): Float {
+    val c=abs(cos(sample.roll.toDouble())).toFloat();val s=abs(sin(sample.roll.toDouble())).toFloat();val aspect=width.toFloat()/height
+    return max((c+s/aspect)/(1-2*abs(sample.x.coerceIn(-.45f,.45f))),
+      (c+s*aspect)/(1-2*abs(sample.y.coerceIn(-.45f,.45f))))
+  }
+
 }

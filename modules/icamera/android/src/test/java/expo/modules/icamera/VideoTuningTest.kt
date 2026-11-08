@@ -12,16 +12,20 @@ class VideoTuningTest {
     assertFalse(VideoStabilityPolicy.horizon("video", "off"))
     assertEquals(1f, VideoStabilityPolicy.crop("video", "off"), 0f)
   }
+  @Test fun supportedRearEisDoesNotReceiveAnotherProcessingCrop() {
+    assertEquals(1f,VideoStabilityPolicy.crop("video","cinematic",false,true),0f)
+    assertEquals(1.16f,VideoStabilityPolicy.crop("video","cinematic",false,false),.001f)
+  }
   @Test fun selfieFramingDoesNotStackOrdinarySoftwareAndHardwareCrop() {
     for (style in listOf("standard", "cinematic")) {
       assertEquals(1f, VideoStabilityPolicy.crop("video", style, true, true), 0f)
-      assertTrue(VideoStabilityPolicy.crop("video", style, true, false) <= 1.02f)
+      assertTrue(VideoStabilityPolicy.crop("video", style, true, false) <= 1.08f)
     }
     assertEquals(1f, VideoStabilityPolicy.crop("video", "off", true, false), 0f)
     assertEquals(1.04f, VideoStabilityPolicy.crop("action", "cinematic", true, true), .001f)
-    assertEquals(1.08f, VideoStabilityPolicy.crop("action", "off", true, false), .001f)
+    assertEquals(1.12f, VideoStabilityPolicy.crop("action", "off", true, false), .001f)
     assertEquals(1f, VideoStabilityPolicy.crop("video", "horizon", true, true), .001f)
-    assertEquals(1.02f, VideoStabilityPolicy.crop("video", "horizon", true, false), .001f)
+    assertEquals(1.08f, VideoStabilityPolicy.crop("video", "horizon", true, false), .001f)
   }
   @Test fun cropReservesEnoughRoomForSuddenRollInBothDirections() {
     for (degrees in listOf(-80, -45, -20, 0, 20, 45, 80)) {

@@ -29,6 +29,7 @@ import {
 } from './src/camera/hardware';
 import { filterByKey, type FilterKey } from './src/processing/filters';
 import { processSingle, type PhotoMeta } from './src/processing/pipeline';
+import { DEFAULT_PHOTO_SMOOTHING, restorePhotoSmoothing, captureSmoothing } from './src/processing/skinSettings';
 import {
   FocusRing,
   IconButton,
@@ -129,6 +130,7 @@ function CameraScreen() {
   const [mirrorSelfie, setMirrorSelfie] = useState(true);
   const [filter, setFilter] = useState<FilterKey>('natural');
   const [smoothing, setSmoothing] = useState(0);
+  const [photoSmoothing, setPhotoSmoothing] = useState(DEFAULT_PHOTO_SMOOTHING);
   const [showLook, setShowLook] = useState(false);
   const [manual, setManual] = useState<ManualSettings>(AUTO_MANUAL);
   const [proVideo, setProVideo] = useState(false);
@@ -179,6 +181,7 @@ function CameraScreen() {
     mirrorSelfie: boolean;
     filter: FilterKey;
     smoothing: number;
+    photoSmoothing?: number;
     pip: typeof pip;
     manual: ManualSettings;
     brightness: number;
@@ -203,6 +206,7 @@ function CameraScreen() {
         if (typeof v.palmShutter === 'boolean') setPalmShutter(v.palmShutter);
         if (typeof v.shutterSound === 'boolean') setShutterSound(v.shutterSound);
         if (typeof v.smoothing === 'number') setSmoothing(v.smoothing);
+        setPhotoSmoothing(restorePhotoSmoothing(v.photoSmoothing, v.smoothing));
         if (v.pip) setPip(v.pip);
         if (v.manual) setManual(v.manual);
         if (typeof v.brightness === 'number') setBrightness(v.brightness);
@@ -218,11 +222,11 @@ function CameraScreen() {
     if (!settingsLoaded) return;
     if (!remember) return;
     const t = setTimeout(
-      () => saveSettings({ videoV2: true, palmShutter, shutterSound, remember, mode, photo, video, mirrorSelfie, filter, smoothing, pip, manual, brightness, shadows, aspect, bokeh, galleryPref }),
+      () => saveSettings({ videoV2: true, palmShutter, shutterSound, remember, mode, photo, video, mirrorSelfie, filter, smoothing, photoSmoothing, pip, manual, brightness, shadows, aspect, bokeh, galleryPref }),
       400,
     );
     return () => clearTimeout(t);
-  }, [settingsLoaded, remember, mode, photo, video, mirrorSelfie, filter, smoothing, pip, manual, brightness, shadows, aspect, bokeh, galleryPref, palmShutter, shutterSound]);
+  }, [settingsLoaded, remember, mode, photo, video, mirrorSelfie, filter, smoothing, photoSmoothing, pip, manual, brightness, shadows, aspect, bokeh, galleryPref, palmShutter, shutterSound]);
 
   useEffect(() => {
     const sub = AppState.addEventListener('change', (s) => setAppActive(s === 'active'));
@@ -394,7 +398,7 @@ function CameraScreen() {
     const original = `file://${paths[0]}`;
     setLast({ uri: original, original, isVideo: false });
     // everything the job needs is fixed now (later setting changes don't affect this shot)
-    const shot = { mode, facing, zoom, zoomMax: zoomRange.max, smoothing, filter, aspectRatio, bokeh, captureReq, macroKind: caps?.macroKind };
+    const shot = { mode, facing, zoom, zoomMax: zoomRange.max, smoothing: captureSmoothing(mode, photoSmoothing, smoothing), filter, aspectRatio, bokeh, captureReq, macroKind: caps?.macroKind };
     const flip = needsFlip(meta0?.jpegMirrored);
 
     const job = async () => {
@@ -466,7 +470,7 @@ function CameraScreen() {
     // a photo requested by another app finishes before anything else can happen
     if (captureReq === 'image') await procQueue.current;
     setBusy(false);
-  }, [busy, ready, mode, facing, mirrorSelfie, captureReq, zoom, zoomRange, smoothing, filter, aspectRatio, bokeh, caps, captureBurst, saveToGallery, flashToast]);
+  }, [busy, ready, mode, facing, mirrorSelfie, captureReq, zoom, zoomRange, smoothing, photoSmoothing, filter, aspectRatio, bokeh, caps, captureBurst, saveToGallery, flashToast]);
 
   /* ---------- capture: video ---------- */
   const toggleRecording = useCallback(async () => {
@@ -940,8 +944,8 @@ function CameraScreen() {
             <LookPanel
               filter={filter}
               onFilter={setFilter}
-              smoothing={smoothing}
-              onSmoothing={setSmoothing}
+              smoothing={captureSmoothing(mode, photoSmoothing, smoothing)}
+              onSmoothing={mode === 'photo' || mode === 'portrait' ? setPhotoSmoothing : setSmoothing}
               blur={mode === 'portrait' ? bokeh : undefined}
               onBlur={setBokeh}
             />
@@ -1043,7 +1047,7 @@ function CameraScreen() {
                 onPress={() => setShowLook((v) => !v)}
                 style={[styles.quickAction, !(isPhotoShot || mode === 'video' || mode === 'action') && { opacity: 0.45 }]}
               >
-                <MaterialCommunityIcons name="palette-outline" size={15} color={showLook || filter !== 'natural' || smoothing > 0.01 ? '#ffe16b' : '#fff'} />
+                <MaterialCommunityIcons name="palette-outline" size={15} color={showLook || filter !== 'natural' || captureSmoothing(mode, photoSmoothing, smoothing) > 0.01 ? '#ffe16b' : '#fff'} />
                 <Text style={styles.quickActionLabel}>LOOK</Text>
                 <Text numberOfLines={1} style={styles.quickActionValue}>{filter.toUpperCase()}</Text>
               </Pressable>

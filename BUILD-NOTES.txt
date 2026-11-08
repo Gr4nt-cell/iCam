@@ -1,11 +1,10 @@
-iCam HDR processing and grouped mode update
+iCam stabilization and Photo smoothing update
 
 Install: npm install
-Checks: npm run typecheck; node scripts/check-mode-groups.cjs; node scripts/check-photo-look.cjs
-Native: eighteen policy/geometry/hardware tests passed; the HDR processor compiles against Android API 34 classes and Media3 1.4.1. Full app/Android build and physical camera tests have not been run. No APK is included.
+Checks: npm run typecheck; node scripts/check-mode-groups.cjs; node scripts/check-photo-look.cjs; node scripts/check-photo-smoothing.cjs
 
-Both SDR and HDR stabilization crops happen in processing. SDR processes live; HDR processes after recording with HDR_MODE_KEEP_HDR and HEVC. Unsupported exports retain the original HDR clip. HDR processing requires Android 13+ and compatible device encoders. The HDR preview stays wide; its final processed framing is applied after stop.
+Standard Photo and Portrait share the Skin setting (initial 45%) on both cameras. Look > Skin adjusts it or turns it off. Video smoothing remains separate.
 
-Photo and Video have separate mode rows, with Pro available in both. Spring/bounce effects are removed.
+Rear ordinary SDR video uses supported CameraX EIS without an extra software crop. Selfies, Action/Horizon, HDR and hardware-EIS fallbacks use two-pass processing after stop. New recordings include gravity samples for roll. HDR format is retained where editing is supported; failed exports keep the original. No frame dropping is used for stabilization.
 
-New: supported front-lens selection from field-of-view metadata; selfie video 1x maps to the actual minimum hardware zoom. 2% normal selfie crop, 8% Action reserve, no fixed extra roll crop at level. Per-lens quality/FPS selection, capability-checked Pro settings and a working HDR settings switch. Hardware selection is compiled against CameraX 1.5.1; it has not been tested on a connected phone. Release signing credentials are excluded.
+The source already includes all changes. No patch needs applying. See design/stabilization-validation.md for measured replay results and limits. Full app compilation, APK generation and physical-device tests were not performed in this update. Release credentials and build caches are excluded.
