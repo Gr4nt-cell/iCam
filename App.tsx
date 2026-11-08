@@ -30,6 +30,7 @@ import {
 import { filterByKey, type FilterKey } from './src/processing/filters';
 import { processSingle, type PhotoMeta } from './src/processing/pipeline';
 import { DEFAULT_PHOTO_SMOOTHING, restorePhotoSmoothing, captureSmoothing } from './src/processing/skinSettings';
+import { CameraScreenPicker, RearCameraControls, useCameraScreens } from './src/ui/RearCamera';
 import {
   FocusRing,
   IconButton,
@@ -320,6 +321,17 @@ function CameraScreen() {
     toastTimer.current = setTimeout(() => setToast(null), ms);
   }, []);
 
+  // Display switching owns no camera: the existing camera activity moves as one task.
+  const screens = useCameraScreens(recording || busy || processing || countdown > 0, flashToast);
+  const wasSecondary = useRef(false);
+  useEffect(() => {
+    if (screens.onSecondary && !wasSecondary.current && !recording && !busy) {
+      setFacing('back'); setLensId(null); setZoom(1);
+      setShowLook(false); setShowSliders(false); setSettingsOpen(false); setViewerOpen(false);
+    }
+    wasSecondary.current = screens.onSecondary;
+  }, [screens.onSecondary, recording, busy]);
+
   const sliderTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pokeSliders = useCallback(() => {
     setShowSliders(true);
@@ -520,6 +532,7 @@ function CameraScreen() {
   }, []);
 
   const onShutter = useCallback(async () => {
+    if (screens.switching) return;
     if (isVideoMode) {
       // timer delays the start of a recording (stopping is immediate)
       if (!recording && timer > 0) await runCountdown(timer);
@@ -534,7 +547,7 @@ function CameraScreen() {
       setCountdown(0);
     }
     return shootPhoto();
-  }, [isVideoMode, recording, timer, runCountdown, toggleRecording, shootPhoto]);
+  }, [isVideoMode, recording, timer, runCountdown, toggleRecording, shootPhoto, screens.switching]);
 
   // Palm shutter → 3 s timer then shoot
   const onGesture = useCallback(
@@ -785,6 +798,7 @@ function CameraScreen() {
       )}
 
       <View style={StyleSheet.absoluteFill} {...responder.panHandlers} />
+      {!screens.onSecondary && <>
       <View pointerEvents="none" style={[styles.topShade, { height: insets.top + 72 }]} />
       {isPhotoShot && aspect === '1:1' && (() => {
         // Letterboxed 3:4 preview; shade the parts outside the square crop
@@ -845,6 +859,9 @@ function CameraScreen() {
           </Glass>
           <View style={{ flex: 1 }} />
           <Glass radius={24} style={styles.instrumentCluster}>
+          {screens.available && <Pressable accessibilityRole="button" accessibilityLabel="Switch camera screen" disabled={recording || busy || processing || countdown > 0 || screens.switching} onPress={() => screens.setOpen(true)} style={styles.controlButton}>
+            <MaterialCommunityIcons name="monitor-cellphone" size={22} color="#ffe16b" />
+          </Pressable>}
           <Pressable accessibilityRole="button" accessibilityLabel={`Flash: ${flash}`} hitSlop={8} disabled={ready?.hasFlash === false} onPress={() => setFlash((f) => (f === 'off' ? 'auto' : f === 'auto' ? 'on' : 'off'))} style={styles.controlButton}>
             <GlassCircle size={44} active={flash !== 'off'}>
               <MaterialCommunityIcons name={flashIcon} size={21} color={ready?.hasFlash === false ? 'rgba(255,255,255,0.35)' : '#fff'} />
@@ -1012,7 +1029,7 @@ function CameraScreen() {
                   <Thumb uri={last?.uri} processing={processing} onPress={openLast} isVideo={!!last?.isVideo} enabled={!!last} />
                 </Animated.View>
               )}
-              <Shutter kind={shutterKind} recording={recording} busy={busy || countdown > 0} onPress={onShutter} />
+              <Shutter kind={shutterKind} recording={recording} busy={busy || countdown > 0 || screens.switching} onPress={onShutter} />
               <View style={styles.flipAnchor}>
               {mode === 'dual' ? (
                 <IconButton
@@ -1125,6 +1142,20 @@ function CameraScreen() {
             : undefined
         }
       />
+      </>}
+      {screens.onSecondary && <>
+        {focus && <FocusRing key={focus.key} x={focus.x} y={focus.y} />}
+        <RearCameraControls mode={mode} modes={visibleModes} video={isVideoMode} recording={recording} paused={paused}
+          busy={busy || countdown > 0 || screens.switching} locked={recording || busy || processing || countdown > 0 || screens.switching}
+          countdown={countdown} stops={stops} toast={toast} onShutter={onShutter} onMode={changeMode}
+          onLens={(lens) => { if (lens.lensId) { setLensId(lens.lensId); setZoom(1); } else { setLensId(null); setZoom(lens.zoom); } }}
+          canFlip={!recording || canFlipWhileRecording}
+          onFlip={() => { setZoom(1); setLensId(null); setFacing(f => f === 'back' ? 'front' : 'back'); }}
+          onPause={async () => { try { if (paused) await cam.current?.resumeRecording(); else await cam.current?.pauseRecording(); } catch { flashToast('Could not change recording state'); } }}
+          onScreens={() => screens.move(0, !!screens.status?.shizukuGranted)} />
+      </>}
+      <CameraScreenPicker screens={screens} locked={recording || busy || processing || countdown > 0} />
+
     </View>
   );
 }

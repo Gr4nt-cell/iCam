@@ -172,6 +172,9 @@ export type ICameraHandle = {
 
 const NativeModule = requireOptionalNativeModule<{
   getCapabilities: () => Promise<Capabilities>;
+  getCameraDisplays: () => Promise<CameraDisplays>;
+  requestRearDisplayAccess: () => Promise<string>;
+  moveCameraDisplay: (target: number, privileged: boolean) => Promise<{moved: boolean; needsShizuku?: boolean; message?: string}>;
   takeLastCrash: () => string | null;
   detectFaces: (path: string) => Promise<FaceBox[]>;
   segmentPerson: (path: string) => Promise<PersonMask | null>;
@@ -182,6 +185,23 @@ const NativeModule = requireOptionalNativeModule<{
   finishCapture: (path: string, isVideo: boolean) => Promise<boolean>;
   cancelCapture: () => Promise<boolean>;
 }>('ICamera');
+
+export type CameraDisplays = {
+  currentId: number;
+  shizukuRunning: boolean;
+  shizukuGranted: boolean;
+  displays: {id: number; name: string; width: number; height: number}[];
+};
+export async function getCameraDisplays(): Promise<CameraDisplays | null> {
+  return NativeModule?.getCameraDisplays ? NativeModule.getCameraDisplays() : null;
+}
+export async function requestRearDisplayAccess(): Promise<string> {
+  return NativeModule?.requestRearDisplayAccess ? NativeModule.requestRearDisplayAccess() : 'unavailable';
+}
+export async function moveCameraDisplay(target: number, privileged: boolean) {
+  if(!NativeModule?.moveCameraDisplay)throw new Error('Rebuild iCam to enable screen switching');
+  return NativeModule.moveCameraDisplay(target,privileged);
+}
 
 /** Set when another app opened iCam to take a photo or video for it ("default camera" use). */
 export function getCaptureRequest(): 'image' | 'video' | null {

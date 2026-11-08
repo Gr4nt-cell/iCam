@@ -8,3 +8,5 @@ Standard Photo and Portrait share the Skin setting (initial 45%) on both cameras
 Rear ordinary SDR video uses supported CameraX EIS without an extra software crop. Selfies, Action/Horizon, HDR and hardware-EIS fallbacks use two-pass processing after stop. New recordings include gravity samples for roll. HDR format is retained where editing is supported; failed exports keep the original. No frame dropping is used for stabilization.
 
 The source already includes all changes. No patch needs applying. See design/stabilization-validation.md for measured replay results and limits. Full app compilation, APK generation and physical-device tests were not performed in this update. Release credentials and build caches are excluded.
+
+Rear screen: use the screen icon on the camera toolbar, select the attached rear display, and enable Shizuku access if HyperOS blocks it. The compact rear interface has a Front button. See design/rear-screen.md. Xiaomi hardware testing and full APK compilation remain outstanding.
