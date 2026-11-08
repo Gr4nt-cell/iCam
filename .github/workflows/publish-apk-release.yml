@@ -1,0 +1,45 @@
+name: Publish existing iCam APK
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_run_id:
+        description: Successful Android build run ID
+        required: true
+        type: string
+        default: "42480755732"
+      release_tag:
+        description: Existing release tag to attach the APK to
+        required: true
+        type: string
+        default: "v1.0.181"
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Download APK artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          SOURCE_RUN_ID: ${{ inputs.source_run_id }}
+        run: |
+          mkdir -p release-apk
+          gh run download "$SOURCE_RUN_ID" --name iCam-apk --dir release-apk
+          apk=$(find release-apk -type f -name "*.apk" -print -quit)
+          if [ -z "$apk" ]; then
+            echo "::error title=APK artifact missing::The selected build run did not contain an APK."
+            exit 1
+          fi
+          echo "APK_PATH=$apk" >> "$GITHUB_ENV"
+
+      - name: Attach APK to GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: gh release upload "$RELEASE_TAG" "$APK_PATH" --clobber

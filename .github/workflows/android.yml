@@ -3,6 +3,9 @@ name: Build Android APK
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - ".github/workflows/android.yml"
+      - ".github/workflows/publish-apk-release.yml"
   workflow_dispatch:
 
 concurrency:
