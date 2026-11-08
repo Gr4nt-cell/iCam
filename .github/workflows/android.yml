@@ -47,6 +47,18 @@ jobs:
           echo "ANDROID_HOME=${ANDROID_HOME:-$ANDROID_SDK_ROOT}"
           test -d "${ANDROID_HOME:-$ANDROID_SDK_ROOT}"
 
+      - name: Check signing secrets
+        env:
+          KS_B64: ${{ secrets.ICAM_UPLOAD_KEYSTORE_BASE64 }}
+          KS_PASS: ${{ secrets.ICAM_UPLOAD_STORE_PASSWORD }}
+          KS_ALIAS: ${{ secrets.ICAM_UPLOAD_KEY_ALIAS }}
+          KS_KEY_PASS: ${{ secrets.ICAM_UPLOAD_KEY_PASSWORD }}
+        run: |
+          if [ -z "$KS_B64" ] || [ -z "$KS_PASS" ] || [ -z "$KS_ALIAS" ] || [ -z "$KS_KEY_PASS" ]; then
+            echo "::error title=Signing secrets required::Configure ICAM_UPLOAD_KEYSTORE_BASE64, ICAM_UPLOAD_STORE_PASSWORD, ICAM_UPLOAD_KEY_ALIAS, and ICAM_UPLOAD_KEY_PASSWORD in GitHub Actions secrets."
+            exit 1
+          fi
+
       - name: Install dependencies
         run: |
           set -o pipefail
@@ -111,27 +123,22 @@ jobs:
           KS_KEY_PASS: ${{ secrets.ICAM_UPLOAD_KEY_PASSWORD }}
         run: |
           echo "ICAM_VERSION_CODE=$((100 + GITHUB_RUN_NUMBER))" >> "$GITHUB_ENV"
-          if [ -n "$KS_B64" ]; then
-            echo "$KS_B64" | base64 -d > "$RUNNER_TEMP/upload.jks"
-            {
-              echo "ICAM_UPLOAD_STORE_FILE=$RUNNER_TEMP/upload.jks"
-              echo "ICAM_UPLOAD_STORE_PASSWORD=$KS_PASS"
-              echo "ICAM_UPLOAD_KEY_ALIAS=$KS_ALIAS"
-              echo "ICAM_UPLOAD_KEY_PASSWORD=${KS_KEY_PASS:-$KS_PASS}"
-            } >> "$GITHUB_ENV"
-            echo "::notice title=Signing::Release APK/AAB signed with the Play upload key"
-          elif [ -f signing/icam-upload.jks ]; then
-            # Upload key kept in this private repo
-            {
-              echo "ICAM_UPLOAD_STORE_FILE=$GITHUB_WORKSPACE/signing/icam-upload.jks"
-              echo "ICAM_UPLOAD_STORE_PASSWORD=$(sed -n 's/^storePassword=//p' signing/upload.properties)"
-              echo "ICAM_UPLOAD_KEY_ALIAS=$(sed -n 's/^keyAlias=//p' signing/upload.properties)"
-              echo "ICAM_UPLOAD_KEY_PASSWORD=$(sed -n 's/^keyPassword=//p' signing/upload.properties)"
-            } >> "$GITHUB_ENV"
-            echo "::notice title=Signing::Release APK/AAB signed with the Play upload key (repo keystore)"
-          else
-            echo "::warning title=Signing::No upload key - AAB is debug-signed and Play will reject it."
+          if [ -z "$KS_B64" ] || [ -z "$KS_PASS" ] || [ -z "$KS_ALIAS" ] || [ -z "$KS_KEY_PASS" ]; then
+            echo "::error title=Signing secrets required::Configure ICAM_UPLOAD_KEYSTORE_BASE64, ICAM_UPLOAD_STORE_PASSWORD, ICAM_UPLOAD_KEY_ALIAS, and ICAM_UPLOAD_KEY_PASSWORD in GitHub Actions secrets."
+            exit 1
           fi
+          echo "::add-mask::$KS_B64"
+          echo "::add-mask::$KS_PASS"
+          echo "::add-mask::$KS_ALIAS"
+          echo "::add-mask::$KS_KEY_PASS"
+          echo "$KS_B64" | base64 -d > "$RUNNER_TEMP/upload.jks"
+          {
+            echo "ICAM_UPLOAD_STORE_FILE=$RUNNER_TEMP/upload.jks"
+            echo "ICAM_UPLOAD_STORE_PASSWORD=$KS_PASS"
+            echo "ICAM_UPLOAD_KEY_ALIAS=$KS_ALIAS"
+            echo "ICAM_UPLOAD_KEY_PASSWORD=$KS_KEY_PASS"
+          } >> "$GITHUB_ENV"
+          echo "::notice title=Signing::Release APK/AAB signing credentials loaded from GitHub Actions secrets"
 
       - name: Generate native Android project
         run: |

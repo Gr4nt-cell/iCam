@@ -11,3 +11,7 @@ dist/
 
 # generated in CI
 modules/icamera/android/src/main/assets/*.task
+
+# release signing material belongs in GitHub Actions secrets, never in the repository
+/signing/*.jks
+/signing/upload.properties

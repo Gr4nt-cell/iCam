@@ -916,6 +916,7 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
         if (USE_OWN_RECORDER && switchable) {
           // Video / Action: iCam's own recorder (off: Android's recorder is used). CameraX only feeds the viewfinder stream; the GPU
           // pipeline draws each frame into a fixed-size encoder, so front/back can change mid-clip.
+          val minLow = targetFps / 2
           val range = ranges.filter { it.upper == targetFps && it.lower >= minLow && it.lower < targetFps }.minByOrNull { it.lower }
             ?: ranges.firstOrNull { it.lower == targetFps && it.upper == targetFps }
           val pb = Preview.Builder()
