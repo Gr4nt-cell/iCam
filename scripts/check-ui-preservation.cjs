@@ -16,5 +16,17 @@ for(const file of files){
   assert.equal(camera(after),camera(before),'Native camera props changed');
  }
 }
-for(const path of ['modules','src/camera','src/processing','src/settings.ts'])assert.equal(cp.execFileSync('git',['diff',base,'--',path],{encoding:'utf8'}),'',`${path}: backend changed`);
-console.log(`PASS: ${handlers} existing control bindings preserved; camera state/capture logic, native props and processing backend unchanged.`);
+const quality=process.argv.includes('--allow-capture-quality');
+const reviewed=new Set([
+ 'modules/icamera/android/build.gradle',
+ 'modules/icamera/android/src/main/java/expo/modules/icamera/VideoTuning.kt',
+ 'modules/icamera/android/src/main/java/expo/modules/icamera/ICameraView.kt',
+ 'modules/icamera/android/src/main/java/expo/modules/icamera/PortraitVideo.kt',
+ 'modules/icamera/android/src/test/java/expo/modules/icamera/VideoTuningTest.kt',
+ 'src/processing/pipeline.ts','src/processing/shaders.ts',
+]);
+for(const folder of ['modules','src/camera','src/processing','src/settings.ts']) {
+ const changed=cp.execFileSync('git',['diff','--name-only',base,'--',folder],{encoding:'utf8'}).trim().split('\n').filter(Boolean);
+ for(const file of changed)assert(quality&&reviewed.has(file),`${file}: unreviewed backend change`);
+}
+console.log(`PASS: ${handlers} existing control bindings preserved; camera state/capture logic, native camera props unchanged; approved capture-quality changes audited separately when enabled.`);

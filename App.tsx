@@ -660,7 +660,7 @@ function CameraScreen() {
                 : `${video.resolution === '4k' ? '4K' : '1080p'} · ${video.fps}${video.stabilization === 'horizon' ? ' · LOCK' : ''}`;
 
   const topStatus = mode === 'action' ? 'ACTION' : mode === 'video' ? 'VIDEO' : mode === 'macro' ? 'MACRO' : badge;
-  const qualityLabel = mode === 'action' ? '60 FPS' : mode === 'pro' && proVideo ? '4K · 60' : mode === 'video' ? (video.resolution === '4k' ? '4K' : '1080p') + ' · ' + video.fps : aspect === 'full' ? 'FULL' : aspect;
+  const qualityLabel = mode === 'action' ? (facing === 'front' ? '30 FPS' : '60 FPS') : mode === 'pro' && proVideo ? '4K · 60' : mode === 'video' ? (video.resolution === '4k' ? '4K' : '1080p') + ' · ' + video.fps : aspect === 'full' ? 'FULL' : aspect;
 
   return (
     <View style={styles.root}>
@@ -774,6 +774,7 @@ function CameraScreen() {
       )}
 
       <View style={StyleSheet.absoluteFill} {...responder.panHandlers} />
+      <View pointerEvents="none" style={[styles.topShade, { height: insets.top + 72 }]} />
       {isPhotoShot && aspect === '1:1' && (() => {
         // Letterboxed 3:4 preview; shade the parts outside the square crop
         const areaH = Math.min(win.height, (win.width * 4) / 3);
@@ -786,17 +787,9 @@ function CameraScreen() {
           </>
         );
       })()}
-      {!viewerOpen && (
-        <View pointerEvents="none" style={styles.viewfinderGrid}>
-          <View style={[styles.gridLine, styles.gridVertical, { left: '33.333%' }]} />
-          <View style={[styles.gridLine, styles.gridVertical, { left: '66.666%' }]} />
-          <View style={[styles.gridLine, styles.gridHorizontal, { top: '33.333%' }]} />
-          <View style={[styles.gridLine, styles.gridHorizontal, { top: '66.666%' }]} />
-        </View>
-      )}
       {focus && <FocusRing key={focus.key} x={focus.x} y={focus.y} />}
 
-      <View style={styles.exposureRail} pointerEvents="box-none">
+      {showSliders && <View style={styles.exposureRail} pointerEvents="box-none">
         <Pressable hitSlop={8} onPress={() => nudgeExposure(1)} style={styles.exposureButton}>
           <GlassCircle size={34}><MaterialCommunityIcons name="plus" size={16} color="#fff" /></GlassCircle>
         </Pressable>
@@ -807,16 +800,11 @@ function CameraScreen() {
         <Pressable hitSlop={8} onPress={() => nudgeExposure(-1)} style={styles.exposureButton}>
           <GlassCircle size={34}><MaterialCommunityIcons name="minus" size={16} color="#fff" /></GlassCircle>
         </Pressable>
-      </View>
+      </View>}
 
-      {/* Top camera instrument rail */}
+      {/* Floating camera instruments */}
       <View style={[styles.top, { top: insets.top + 12 }]} pointerEvents="box-none">
         <View style={styles.topRow}>
-          <Pressable accessibilityRole="button" accessibilityLabel={`Flash: ${flash}`} hitSlop={8} disabled={ready?.hasFlash === false} onPress={() => setFlash((f) => (f === 'off' ? 'auto' : f === 'auto' ? 'on' : 'off'))} style={styles.controlButton}>
-            <GlassCircle size={44} active={flash !== 'off'}>
-              <MaterialCommunityIcons name={flashIcon} size={21} color={ready?.hasFlash === false ? 'rgba(255,255,255,0.35)' : '#fff'} />
-            </GlassCircle>
-          </Pressable>
           <Glass radius={26} style={styles.topPill}>
             {mode !== 'dual' && (
               <Pressable accessibilityRole="button" accessibilityLabel={`Timer: ${timer === 0 ? 'off' : `${timer} seconds`}`} hitSlop={8} style={styles.topTool} onPress={() => setTimer((t) => (t === 0 ? 3 : t === 3 ? 10 : 0))}>
@@ -844,17 +832,23 @@ function CameraScreen() {
               </Pressable>
             )}
           </Glass>
+          <View style={{ flex: 1 }} />
+          <Glass radius={24} style={styles.instrumentCluster}>
+          <Pressable accessibilityRole="button" accessibilityLabel={`Flash: ${flash}`} hitSlop={8} disabled={ready?.hasFlash === false} onPress={() => setFlash((f) => (f === 'off' ? 'auto' : f === 'auto' ? 'on' : 'off'))} style={styles.controlButton}>
+            <GlassCircle size={44} active={flash !== 'off'}>
+              <MaterialCommunityIcons name={flashIcon} size={21} color={ready?.hasFlash === false ? 'rgba(255,255,255,0.35)' : '#fff'} />
+            </GlassCircle>
+          </Pressable>
           <Pressable accessibilityRole="button" accessibilityLabel="Camera settings" hitSlop={8} onPress={() => setSettingsOpen(true)} style={styles.controlButton}>
             <GlassCircle size={44}><MaterialCommunityIcons name="tune-variant" size={21} color="#fff" /></GlassCircle>
           </Pressable>
+          </Glass>
         </View>
         <View style={styles.topMetaRow}>
-          <Glass radius={18} style={styles.topMetaChip}>
+          <View style={styles.topMetaChip}>
             <View style={styles.statusDot} />
             <Text numberOfLines={1} style={styles.topMetaLabel}>{topStatus}</Text>
-            <View style={styles.statusDivider} />
-            <Text numberOfLines={1} style={styles.topMetaValue}>{qualityLabel}</Text>
-          </Glass>
+          </View>
           <View style={styles.topMetaTools}>
             {mode === 'video' && facing === 'back' && (
               <Pop>
@@ -863,26 +857,26 @@ function CameraScreen() {
                   setVideo((v) => ({ ...v, stabilization: on ? 'horizon' : 'cinematic' }));
                   flashToast(on ? 'Horizon lock on' : 'Horizon lock off');
                 }}>
-                  <MaterialCommunityIcons name="rotate-left" size={17} color={video.stabilization === 'horizon' ? '#c2e9ff' : '#fff'} />
+                  <MaterialCommunityIcons name="rotate-left" size={17} color={video.stabilization === 'horizon' ? '#ffe16b' : '#fff'} />
                 </Pressable>
               </Pop>
             )}
             {(facing === 'front' || mode === 'dual') && (
               <Pop>
                 <Pressable hitSlop={8} style={styles.metaTool} onPress={() => setMirrorSelfie((v) => !v)}>
-                  <MaterialCommunityIcons name="flip-horizontal" size={17} color={mirrorSelfie ? '#c2e9ff' : '#fff'} />
+                  <MaterialCommunityIcons name="flip-horizontal" size={17} color={mirrorSelfie ? '#ffe16b' : '#fff'} />
                 </Pressable>
               </Pop>
             )}
             {palmShutter && palmStatus !== 'off' && (
               <Pop>
                 <View style={styles.metaTool}>
-                  <MaterialCommunityIcons name="hand-back-right-outline" size={16} color={palmStatus === 'palm' ? '#c2e9ff' : palmStatus === 'hand' ? '#fff' : palmStatus.startsWith('error') ? '#ff6b5f' : 'rgba(255,255,255,0.45)'} />
+                  <MaterialCommunityIcons name="hand-back-right-outline" size={16} color={palmStatus === 'palm' ? '#ffe16b' : palmStatus === 'hand' ? '#fff' : palmStatus.startsWith('error') ? '#ff6b5f' : 'rgba(255,255,255,0.45)'} />
                 </View>
               </Pop>
             )}
           </View>
-          <Text style={styles.cameraSideLabel}>{facing === 'back' ? 'REAR CAMERA' : 'FRONT CAMERA'}</Text>
+
         </View>
         {recording && (
           <Animated.View layout={SUBBAR_MOVE} style={styles.recordingBar}>
@@ -996,19 +990,19 @@ function CameraScreen() {
           />
         </Animated.View>
         <Animated.View layout={GLIDE}>
-          <Glass radius={38} style={styles.shutterDeck}>
-            <ModeCarousel mode={mode} modes={visibleModes} onChange={changeMode} disabled={recording} />
+          <View style={styles.shutterDeck}>
             <View style={styles.shutterRow}>
               {recording && mode !== 'slowmo' ? (
-                <Animated.View key="pause" entering={ZoomIn.duration(220)} exiting={ZoomOut.duration(160)}>
+                <Animated.View key="pause" entering={ZoomIn.duration(220)} exiting={ZoomOut.duration(160)} style={styles.galleryAnchor}>
                   <IconButton icon={paused ? 'record' : 'pause'} size={56} onPress={togglePause} />
                 </Animated.View>
               ) : (
-                <Animated.View key="thumb" entering={ZoomIn.duration(220)} exiting={ZoomOut.duration(160)}>
+                <Animated.View key="thumb" entering={ZoomIn.duration(220)} exiting={ZoomOut.duration(160)} style={styles.galleryAnchor}>
                   <Thumb uri={last?.uri} processing={processing} onPress={openLast} isVideo={!!last?.isVideo} enabled={!!last} />
                 </Animated.View>
               )}
               <Shutter kind={shutterKind} recording={recording} busy={busy || countdown > 0} onPress={onShutter} />
+              <View style={styles.flipAnchor}>
               {mode === 'dual' ? (
                 <IconButton
                   icon="swap-horizontal"
@@ -1026,7 +1020,9 @@ function CameraScreen() {
                   }}
                 />
               )}
+              </View>
             </View>
+            <ModeCarousel mode={mode} modes={visibleModes} onChange={changeMode} disabled={recording} />
             <View style={styles.quickActions}>
               <Pressable
                 hitSlop={8}
@@ -1034,7 +1030,7 @@ function CameraScreen() {
                 onPress={() => setShowLook((v) => !v)}
                 style={[styles.quickAction, !(isPhotoShot || mode === 'video' || mode === 'action') && { opacity: 0.45 }]}
               >
-                <MaterialCommunityIcons name="palette-outline" size={15} color={showLook || filter !== 'natural' || smoothing > 0.01 ? '#c2e9ff' : '#fff'} />
+                <MaterialCommunityIcons name="palette-outline" size={15} color={showLook || filter !== 'natural' || smoothing > 0.01 ? '#ffe16b' : '#fff'} />
                 <Text style={styles.quickActionLabel}>LOOK</Text>
                 <Text numberOfLines={1} style={styles.quickActionValue}>{filter.toUpperCase()}</Text>
               </Pressable>
@@ -1044,11 +1040,11 @@ function CameraScreen() {
                 onPress={() => mode === 'pro' ? setSettingsOpen(true) : pokeSliders()}
                 style={styles.quickAction}
               >
-                <MaterialCommunityIcons name="tune-variant" size={15} color={showSliders ? '#c2e9ff' : '#fff'} />
+                <MaterialCommunityIcons name="tune-variant" size={15} color={showSliders ? '#ffe16b' : '#fff'} />
                 <Text style={styles.quickActionLabel}>{mode === 'pro' ? 'SETUP' : 'EXPOSURE'}</Text>
               </Pressable>
             </View>
-          </Glass>
+          </View>
         </Animated.View>
         {mode === 'night' && ready?.nightExtension && (
           <Animated.View entering={FadeInDown.duration(200)} exiting={FadeOutDown.duration(160)} style={styles.nightReadyWrap}>
@@ -1139,23 +1135,27 @@ function Panel({ children }: { children: React.ReactNode }) {
 }
 
 const styles = StyleSheet.create({
+  topShade: { position: 'absolute', left: 0, right: 0, top: 0, backgroundColor: '#000' },
+  instrumentCluster: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 2, height: 48, gap: 2 },
+  galleryAnchor: { position: 'absolute', bottom: 56, left: 22, zIndex: 3 },
+  flipAnchor: { position: 'absolute', bottom: 54, right: 22, zIndex: 3 },
   root: { flex: 1, backgroundColor: '#000' },
   center: { alignItems: 'center', justifyContent: 'center' },
   dim: { color: 'rgba(255,255,255,0.6)' },
-  top: { position: 'absolute', left: 20, right: 20, alignItems: 'stretch', gap: 12, zIndex: 8 },
+  top: { position: 'absolute', left: 18, right: 18, alignItems: 'stretch', gap: 10, zIndex: 8 },
   topRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12 },
   controlButton: { width: 44, height: 44, alignItems: 'center', justifyContent: 'center' },
-  topPill: { flex: 1, maxWidth: 240, minWidth: 0, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-evenly', gap: 5, paddingHorizontal: 12, height: 44 },
+  topPill: { minWidth: 100, maxWidth: 200, flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 10, height: 44 },
   topBadge: { maxWidth: 66, color: '#fff', fontSize: 10, fontWeight: '800', letterSpacing: 0.35, textAlign: 'center' },
   statusDivider: { width: StyleSheet.hairlineWidth, height: 18, backgroundColor: 'rgba(255,255,255,0.32)' },
   topTool: { height: 34, minWidth: 38, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 4, paddingHorizontal: 4 },
   timerText: { color: '#fff', fontSize: 12, fontWeight: '600', letterSpacing: 0.2 },
   qualityChip: { minWidth: 48, maxWidth: 78, height: 34, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 2, paddingHorizontal: 3 },
   qualityText: { color: '#fff', fontSize: 12, fontWeight: '600', letterSpacing: 0.2 },
-  topMetaRow: { flexDirection: 'row', alignItems: 'center', gap: 7, marginHorizontal: 2, marginTop: 1 },
-  topMetaChip: { maxWidth: '62%', minWidth: 100, minHeight: 40, flexDirection: 'row', alignItems: 'center', gap: 7, paddingHorizontal: 10 },
-  statusDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: '#c2e9ff', shadowColor: '#c2e9ff', shadowOpacity: 0.75, shadowRadius: 6 },
-  topMetaLabel: { maxWidth: 88, color: '#fff', fontSize: 10, fontWeight: '600', letterSpacing: 0.7 },
+  topMetaRow: { flexDirection: 'row', alignItems: 'center', gap: 7, marginHorizontal: 2 },
+  topMetaChip: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 4, minHeight: 24, maxWidth: '70%' },
+  statusDot: { width: 4, height: 4, borderRadius: 2, backgroundColor: '#ffe16b' },
+  topMetaLabel: { color: 'rgba(255,255,255,0.85)', fontSize: 10, fontWeight: '600', letterSpacing: 1.8, textShadowColor: '#000', textShadowRadius: 4 },
   topMetaValue: { color: 'rgba(255,255,255,0.8)', fontSize: 10, fontWeight: '600', letterSpacing: 0.2 },
   topMetaTools: { flexDirection: 'row', alignItems: 'center', gap: 4 },
   metaTool: { width: 30, height: 30, alignItems: 'center', justifyContent: 'center' },
@@ -1166,7 +1166,7 @@ const styles = StyleSheet.create({
   subBarTime: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingRight: 8 },
   badge: { color: '#fff', fontSize: 12, fontWeight: '800', letterSpacing: 0.6 },
   recBadge: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 12, height: 32 },
-  recLed: { width: 8, height: 8, borderRadius: 4, backgroundColor: '#ff675b' },
+  recLed: { width: 8, height: 8, borderRadius: 4, backgroundColor: '#ff453a' },
   recText: { color: '#fff', fontWeight: '700', fontVariant: ['tabular-nums'] },
   countdown: { color: '#fff', fontSize: 96, fontWeight: '200' },
   viewfinderGrid: { position: 'absolute', left: '7%', right: '7%', top: '27%', bottom: '35%', borderWidth: StyleSheet.hairlineWidth, borderColor: 'rgba(255,255,255,0.25)', borderRadius: 3 },
@@ -1177,16 +1177,16 @@ const styles = StyleSheet.create({
   exposureButton: { width: 36, height: 36, alignItems: 'center', justifyContent: 'center' },
   exposureTrack: { width: 34, height: 92, alignItems: 'center', justifyContent: 'center' },
   exposureLine: { position: 'absolute', top: 12, bottom: 12, left: 16, width: 1, backgroundColor: 'rgba(255,255,255,0.52)' },
-  exposureMarker: { position: 'absolute', left: 8, right: 8, top: '50%', height: 2, marginTop: -1, borderRadius: 1, backgroundColor: '#c2e9ff', shadowColor: '#c2e9ff', shadowOpacity: 0.85, shadowRadius: 7 },
-  bottom: { position: 'absolute', left: 0, right: 0, bottom: 0, gap: 12, zIndex: 8 },
-  zoomFloat: { alignSelf: 'center' },
-  shutterRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 22, paddingVertical: 10 },
-  shutterDeck: { alignSelf: 'center', width: '92%', maxWidth: 520, paddingTop: 8, paddingBottom: 8, gap: 4 },
-  quickActions: { alignSelf: 'center', flexDirection: 'row', alignItems: 'center', justifyContent: 'center', minHeight: 40, paddingHorizontal: 6, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: 'rgba(221,241,255,0.18)', width: '84%' },
-  quickAction: { minHeight: 40, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 5, paddingHorizontal: 9 },
-  quickActionLabel: { color: 'rgba(255,255,255,0.84)', fontSize: 10, fontWeight: '600', letterSpacing: 1 },
-  quickActionValue: { maxWidth: 72, color: '#c2e9ff', fontSize: 8, fontWeight: '700', letterSpacing: 0.35 },
-  quickDivider: { width: StyleSheet.hairlineWidth, height: 16, backgroundColor: 'rgba(255,255,255,0.34)' },
+  exposureMarker: { position: 'absolute', left: 8, right: 8, top: '50%', height: 2, marginTop: -1, backgroundColor: '#ffe16b' },
+  bottom: { position: 'absolute', left: 0, right: 0, bottom: 0, gap: 14, zIndex: 8 },
+  zoomFloat: { alignSelf: 'center', marginBottom: 4 },
+  shutterRow: { height: 92, alignItems: 'center', justifyContent: 'center', position: 'static' },
+  shutterDeck: { alignSelf: 'center', width: '100%', maxWidth: 620, backgroundColor: 'rgba(0,0,0,0.94)', paddingTop: 18, paddingBottom: 8, gap: 16 },
+  quickActions: { alignSelf: 'center', flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 12, minHeight: 30, paddingHorizontal: 6 },
+  quickAction: { minHeight: 32, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, paddingHorizontal: 10, borderRadius: 16, backgroundColor: 'rgba(255,255,255,0.055)' },
+  quickActionLabel: { color: 'rgba(255,255,255,0.72)', fontSize: 9, fontWeight: '600', letterSpacing: 1.4 },
+  quickActionValue: { maxWidth: 72, color: '#ffe16b', fontSize: 9, fontWeight: '600', letterSpacing: 0.2 },
+  quickDivider: { width: 0, height: 0 },
   dock: { marginHorizontal: 14, paddingTop: 10, paddingBottom: 12, gap: 13, shadowColor: '#000', shadowOpacity: 0.22, shadowRadius: 20, shadowOffset: { width: 0, height: 6 }, elevation: 10 },
   blurRow: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 14, height: 50, marginHorizontal: 24 },
   blurLabel: { color: '#fff', fontSize: 13, fontWeight: '600' },

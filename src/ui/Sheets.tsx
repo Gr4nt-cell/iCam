@@ -34,13 +34,13 @@ export function SettingsSheet(p: SettingsProps) {
     <Modal visible={p.visible} transparent animationType="slide" onRequestClose={p.onClose} statusBarTranslucent>
       <Pressable style={StyleSheet.absoluteFill} onPress={p.onClose} />
       <View style={[s.sheetWrap, { paddingBottom: p.bottomInset + 8 }]}>
-        <Glass radius={32} style={s.sheet} tint="rgba(12,22,34,0.91)" intensity={70}>
+        <Glass radius={32} style={s.sheet} tint="rgba(17,17,16,0.93)" intensity={70}>
           <View style={s.grabber} />
-          <ScrollView contentContainerStyle={{ padding: 20, paddingTop: 8, gap: 18 }}>
+          <ScrollView contentContainerStyle={{ padding: 22, paddingTop: 16, gap: 20 }}>
             <View style={s.sheetHeader}>
               <View style={{ flex: 1 }}>
-                <Text style={s.eyebrow}>ICAM · PREFERENCES</Text>
-                <Text style={s.title}>Make it yours.</Text>
+                <Text style={s.eyebrow}>YOUR CAMERA, YOUR WAY</Text>
+                <Text style={s.title}>Camera settings</Text>
               </View>
               <Pressable accessibilityRole="button" accessibilityLabel="Close settings" onPress={p.onClose} style={s.closeButton}>
                 <MaterialCommunityIcons name="close" size={22} color="#fff" />
@@ -48,7 +48,7 @@ export function SettingsSheet(p: SettingsProps) {
             </View>
 
             <Section title="Photo processing">
-              <Row label="Processing" hint="Single full-quality shot processed by your phone's own image engine (HDR, depth Portrait, Night) where available — no multi-frame merging" >
+              <Row label="Processing" hint="Natural colour and detail, with your phone’s HDR, Portrait and Night processing when available." >
                 <View />
               </Row>
               {p.capabilities?.nightExtension ? (
@@ -103,7 +103,7 @@ export function SettingsSheet(p: SettingsProps) {
               </Row>
               <Row
                 label="Stabilization"
-                hint={p.video.stabilization === 'horizon' ? 'Horizon lock keeps the horizon level even if you tilt or spin the phone (crops in, uses the ultrawide when available)' : undefined}
+                hint={p.video.stabilization === 'horizon' ? 'Keeps the horizon level. Uses a tighter crop on both front and rear cameras.' : 'Cinema uses extra crop for steadier front and rear video. Off keeps the widest view; Action always uses strong stabilization.'}
               >
                 <Segmented
                   options={['off', 'standard', 'cinematic', 'horizon']}
@@ -230,7 +230,7 @@ function Toggle({ value, onChange, disabled }: { value: boolean; onChange: (v: b
       value={value}
       disabled={disabled}
       onValueChange={onChange}
-      trackColor={{ false: 'rgba(255,255,255,0.18)', true: '#c2e9ff' }}
+      trackColor={{ false: 'rgba(255,255,255,0.18)', true: '#ffe16b' }}
       thumbColor="#fff"
     />
   );
@@ -301,7 +301,7 @@ export function Viewer({
       <View style={s.viewer}>
         {isVideo ? (
           <View style={[StyleSheet.absoluteFill, { alignItems: 'center', justifyContent: 'center', gap: 12 }]}>
-            <MaterialCommunityIcons name="check-circle-outline" size={64} color="#c2e9ff" />
+            <MaterialCommunityIcons name="check-circle-outline" size={64} color="#ffe16b" />
             <Text style={s.viewerText}>Video saved to your gallery</Text>
           </View>
         ) : (
@@ -366,7 +366,7 @@ export function PermissionGate({ onGrant, missing }: { onGrant: () => void; miss
   return (
     <View style={[StyleSheet.absoluteFill, { backgroundColor: '#000', alignItems: 'center', justifyContent: 'center', padding: 24 }]}>
       <Glass radius={32} style={{ padding: 24, gap: 14, width: '100%', maxWidth: 380 }} tint="rgba(40,40,48,0.6)">
-        <MaterialCommunityIcons name="camera-iris" size={44} color="#c2e9ff" />
+        <MaterialCommunityIcons name="camera-iris" size={44} color="#ffe16b" />
         <Text style={s.title}>iCam needs access</Text>
         <Text style={s.rowHint}>
           To use every lens, record sound and save to your gallery, allow: {missing.join(', ')}.
@@ -380,23 +380,23 @@ export function PermissionGate({ onGrant, missing }: { onGrant: () => void; miss
 }
 
 const s = StyleSheet.create({
-  sheetWrap: { position: 'absolute', alignSelf: 'center', width: '96%', maxWidth: 600, bottom: 0, maxHeight: '88%' },
+  sheetWrap: { position: 'absolute', alignSelf: 'center', width: '100%', maxWidth: 600, bottom: 0, maxHeight: '90%' },
   sheet: { flexShrink: 1 },
   sheetHeader: { flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 6 },
-  eyebrow: { color: '#c2e9ff', fontSize: 10, fontWeight: '700', letterSpacing: 2, marginBottom: 6 },
-  closeButton: { width: 44, height: 44, borderRadius: 22, backgroundColor: 'rgba(221,241,255,0.12)', borderWidth: 1, borderColor: 'rgba(221,241,255,0.24)', alignItems: 'center', justifyContent: 'center' },
-  sectionCard: { gap: 14, padding: 16, borderRadius: 24, backgroundColor: 'rgba(221,241,255,0.055)', borderWidth: StyleSheet.hairlineWidth, borderColor: 'rgba(221,241,255,0.18)' },
+  eyebrow: { color: '#ffe16b', fontSize: 10, fontWeight: '700', letterSpacing: 2, marginBottom: 6 },
+  closeButton: { width: 44, height: 44, borderRadius: 22, backgroundColor: 'rgba(255,255,240,0.12)', borderWidth: 1, borderColor: 'rgba(255,255,240,0.24)', alignItems: 'center', justifyContent: 'center' },
+  sectionCard: { gap: 14, padding: 16, borderRadius: 24, backgroundColor: 'rgba(255,255,240,0.055)', borderWidth: StyleSheet.hairlineWidth, borderColor: 'rgba(255,255,240,0.18)' },
   grabber: { alignSelf: 'center', width: 40, height: 5, borderRadius: 3, backgroundColor: 'rgba(255,255,255,0.4)', marginTop: 10 },
-  title: { color: '#fff', fontSize: 30, fontWeight: '600', letterSpacing: -0.8 },
-  section: { color: '#c2e9ff', fontSize: 11, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 1.4 },
+  title: { color: '#fff', fontSize: 28, fontWeight: '500', letterSpacing: -0.8 },
+  section: { color: '#ffe16b', fontSize: 11, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 1.4 },
   row: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', minHeight: 48, gap: 8 },
   rowLabel: { color: '#fff', fontSize: 15, fontWeight: '600' },
-  rowHint: { color: 'rgba(232,243,255,0.7)', fontSize: 12, lineHeight: 18, marginTop: 4 },
+  rowHint: { color: 'rgba(245,244,235,0.7)', fontSize: 12, lineHeight: 18, marginTop: 4 },
   seg: { maxWidth: '100%', backgroundColor: 'rgba(255,255,255,0.06)', borderRadius: 19 },
   segItem: { paddingHorizontal: 10, paddingVertical: 6, borderRadius: 11 },
   segActive: { backgroundColor: 'rgba(214,228,255,0.95)' },
   segText: { color: '#fff', fontSize: 13, fontWeight: '600' },
-  segTextActive: { color: '#0b1f44' },
+  segTextActive: { color: '#27251b' },
   hwCard: { backgroundColor: 'rgba(255,255,255,0.07)', borderRadius: 18, padding: 14, gap: 3 },
   hwTitle: { color: '#fff', fontSize: 14, fontWeight: '700', textTransform: 'capitalize' },
   hwLine: { color: 'rgba(255,255,255,0.72)', fontSize: 12 },
@@ -416,6 +416,6 @@ const s = StyleSheet.create({
   viewerText: { color: '#fff', fontSize: 13, fontWeight: '600' },
   resetBtn: { alignSelf: 'flex-start', paddingVertical: 8 },
   resetText: { color: '#ff9f8f', fontSize: 14, fontWeight: '600' },
-  cta: { backgroundColor: '#c2e9ff', borderRadius: 22, height: 46, alignItems: 'center', justifyContent: 'center', marginTop: 6 },
-  ctaText: { color: '#0b1f44', fontSize: 16, fontWeight: '700' },
+  cta: { backgroundColor: '#ffe16b', borderRadius: 22, height: 46, alignItems: 'center', justifyContent: 'center', marginTop: 6 },
+  ctaText: { color: '#27251b', fontSize: 16, fontWeight: '700' },
 });

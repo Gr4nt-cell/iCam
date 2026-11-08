@@ -149,7 +149,7 @@ export function GlassSegmented({
           dragging.current = true;
           dragStart.current = l?.x ?? 0;
           hoverRef.current = live.current.value;
-          scale.value = withSpring(1.08, PRESS);
+          scale.value = withSpring(1.035, PRESS);
         },
         onPanResponderMove: (_, g) => {
           const keys = live.current.items.map((i) => i.key).filter((k) => layouts.current[k]);
@@ -244,7 +244,7 @@ export function GlassSegmented({
             style={[s.item, { height, paddingHorizontal: paddingH, minWidth: minItemWidth, borderRadius: height / 2 }]}
           >
             {it.icon ? (
-              <MaterialCommunityIcons name={it.icon} size={fontSize + 2} color={active ? '#fff' : 'rgba(255,255,255,0.75)'} />
+              <MaterialCommunityIcons name={it.icon} size={fontSize + 2} color={active ? '#ffe16b' : 'rgba(255,255,255,0.75)'} />
             ) : null}
             <Text
               numberOfLines={1}
@@ -286,13 +286,13 @@ const s = StyleSheet.create({
   pill: {
     position: 'absolute',
     left: 0,
-    backgroundColor: 'rgba(185,226,255,0.21)',
+    backgroundColor: 'rgba(255,255,240,0.13)',
     overflow: 'hidden',
   },
   item: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 4 },
   text: { color: 'rgba(255,255,255,0.78)', fontWeight: '600' },
   textActive: {
-    color: '#d7f1ff',
+    color: '#ffe16b',
     fontWeight: '700',
     textShadowColor: 'rgba(0,0,0,0.45)',
     textShadowRadius: 4,

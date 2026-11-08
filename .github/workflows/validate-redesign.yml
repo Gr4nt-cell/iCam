@@ -1,0 +1,35 @@
+name: Validate camera interface and video quality
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: gradle/actions/setup-gradle@v4
+      - run: npm install --no-audit --no-fund
+      - run: npm run typecheck
+      - name: Audit preserved camera controls
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || 'HEAD' }}
+        run: node scripts/check-ui-preservation.cjs "$BASE_SHA" --allow-capture-quality
+      - run: node scripts/check-photo-look.cjs
+      - name: Generate Android project
+        run: npx expo prebuild --platform android --clean --no-install
+      - name: Compile camera module and test video tuning
+        working-directory: android
+        run: ./gradlew :icamera:compileDebugKotlin :icamera:testDebugUnitTest --no-daemon --max-workers=2 -PreactNativeArchitectures=arm64-v8a

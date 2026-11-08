@@ -11,6 +11,7 @@ import {
   type SkRuntimeEffect,
   type SkSurface,
 } from '@shopify/react-native-skia';
+import { detectFaces } from '../../modules/icamera';
 import { File, Paths } from 'expo-file-system';
 import { estimateNoise, estimateShift, refineSubpixel, tileResiduals, type LumaPlane } from './align';
 import { filterByKey, type FilterKey } from './filters';
@@ -421,11 +422,14 @@ function shade(img: SkImage, key: string, src: string, uniforms: number[]): SkIm
 }
 
 /** Skin smoothing + colour filter, applied after tone mapping. */
-export function finishLook(img: SkImage, smoothing = 0, filter: FilterKey = 'natural'): SkImage {
+export function finishLook(img: SkImage, smoothing = 0, filter: FilterKey = 'natural', faces: { x: number; y: number; w: number; h: number }[] = []): SkImage {
   let out = img;
   if (smoothing > 0.01) {
     const radius = Math.max(3, Math.min(img.width(), img.height()) / 380);
-    out = shade(out, 'smooth', SMOOTH_SKSL, [smoothing, radius]);
+    const selected = faces.filter(f => f.w > 0 && f.h > 0).slice(0,5);
+    const boxes = selected.flatMap(f => [f.x,f.y,f.w,f.h]);
+    while(boxes.length < 20) boxes.push(0);
+    out = shade(out, 'smooth', SMOOTH_SKSL, [smoothing,radius,img.width(),img.height(),selected.length,...boxes]);
   }
   const f = filterByKey(filter);
   if (f.key !== 'natural') {
@@ -535,7 +539,7 @@ function enhance(img: SkImage, amount: number, radius?: number, core = 0.006): S
   const paint = Skia.Paint();
   const k = Math.min(1.5, amount);
   // Vibrance stays strong even when the phone already processed the photo (matches the video look)
-  paint.setShader(fx.makeShaderWithChildren([0.7 * k, 0.28 * k, 0.45, radius ?? Math.max(1, Math.min(W, H) / 2000), core], [opt(img), opt(base)]));
+  paint.setShader(fx.makeShaderWithChildren([0.65 * k, 0.20 * k, 0.14, radius ?? Math.max(1, Math.min(W, H) / 2000), core], [opt(img), opt(base)]));
   surf.getCanvas().drawPaint(paint);
   return snapshot(surf);
 }
@@ -561,7 +565,9 @@ half4 main(float2 p) {
   float ad = abs(d);
   float cored = sign(d) * max(ad - core, 0.0) * smoothstep(0.0, core * 5.0, ad);
   cored = clamp(cored, -0.08, 0.08);
-  float3 o = c + cored * sharp * 1.6;
+  float3 o = c + cored * sharp * 1.35;
+  // Neighbourhood clamp avoids bright/dark sharpening halos on hair and high-contrast edges.
+  o=clamp(o,min(c,min(n1,n2))-0.015,max(c,max(n1,n2))+0.015);
   float lb = lum(float3(base.eval(p).rgb));
   float mid = 1.0 - abs(ly * 2.0 - 1.0);
   o += (ly - lb) * clarity * mid;
@@ -611,6 +617,7 @@ function adaptiveDenoise(img: SkImage, sigma: number): SkImage {
 }
 
 export async function processSingle(path: string, o: SingleOptions): Promise<string> {
+  const faces = o.smoothing > 0.01 ? await detectFaces(path) : [];
   // Pass 1: decode → upright → noise cleanup, in one GPU draw (noise measured on the raw pixels)
   let img = await loadDenoised(path, o.meta);
   const core = Math.max(0.004, lastSigma * 2.5);
@@ -626,7 +633,7 @@ export async function processSingle(path: string, o: SingleOptions): Promise<str
       } catch {}
     }
     if (o.portrait) img = await applyPortrait(img, o.portrait.maskPath, o.portrait.strength);
-    img = finishLook(img, o.smoothing, 'natural');
+    img = finishLook(img, o.smoothing, 'natural', faces);
     if (zoomed) {
       try {
         const ai = o.aiZoom ? await aiZoomCrop(img, o.digitalZoom!).catch(() => null) : null;
@@ -644,7 +651,7 @@ export async function processSingle(path: string, o: SingleOptions): Promise<str
   }
   const file = new File(Paths.cache, `iCam_${Date.now()}.jpg`);
   file.create({ overwrite: true });
-  file.write(img.encodeToBytes(ImageFormat.JPEG, 95));
+  file.write(img.encodeToBytes(ImageFormat.JPEG, 97));
   return file.uri;
 }
 
@@ -714,7 +721,7 @@ function finalPass(
     up.scale(W / sw, H / sh);
     const k = Math.min(1.5, amount);
     shader = effect('enhance', ENHANCE_SKSL).makeShaderWithChildren(
-      [0.7 * k, 0.28 * k, 0.45, Math.max(1, Math.min(W, H) / 2000), o.core ?? 0.006],
+      [0.65 * k, 0.20 * k, 0.14, Math.max(1, Math.min(W, H) / 2000), o.core ?? 0.006],
       [shader, opt(small, up)],
     );
   }
@@ -889,7 +896,7 @@ export async function processBurst(paths: string[], opts: ProcessOptions): Promi
     await yieldFrame();
     out = await applyPortrait(out, opts.portrait.maskPath, opts.portrait.strength);
   }
-  out = finishLook(out, opts.smoothing ?? 0, opts.filter ?? 'natural');
+  out = finishLook(out, opts.smoothing ?? 0, opts.filter ?? 'natural', opts.faces);
   out = cropToAspect(out, opts.aspect);
   const bytes = out.encodeToBytes(ImageFormat.JPEG, 97);
 

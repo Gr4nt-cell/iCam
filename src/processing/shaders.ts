@@ -179,35 +179,46 @@ export const SMOOTH_SKSL = `
 uniform shader img;
 uniform float strength;
 uniform float radius;
-
+uniform float2 size;
+uniform float faceCount;
+uniform float4 faces[5];
 float skinMask(float3 c) {
   float y = dot(c, float3(0.299, 0.587, 0.114));
-  float cb = 0.5 - 0.168736 * c.r - 0.331264 * c.g + 0.5 * c.b;
-  float cr = 0.5 + 0.5 * c.r - 0.418688 * c.g - 0.081312 * c.b;
-  return smoothstep(0.27, 0.32, cb) * (1.0 - smoothstep(0.48, 0.53, cb)) *
-         smoothstep(0.50, 0.54, cr) * (1.0 - smoothstep(0.67, 0.71, cr)) *
-         smoothstep(0.12, 0.22, y);
+  float cb = 0.5 - 0.168736*c.r - 0.331264*c.g + 0.5*c.b;
+  float cr = 0.5 + 0.5*c.r - 0.418688*c.g - 0.081312*c.b;
+  return smoothstep(0.27,0.32,cb)*(1.0-smoothstep(0.48,0.53,cb))*
+    smoothstep(0.50,0.54,cr)*(1.0-smoothstep(0.67,0.71,cr))*smoothstep(0.035,0.12,y);
 }
-
-half4 main(float2 p) {
-  float3 c = img.eval(p).rgb;
-  float m = skinMask(c) * strength;
-  if (m < 0.01) { return half4(half3(c), 1.0); }
-  float3 acc = c;
-  float w = 1.0;
-  for (int i = 0; i < 16; i++) {
-    float fi = float(i);
-    float a = fi * 0.39269908;
-    float r = mod(fi, 2.0) < 0.5 ? radius : radius * 0.5;
-    float3 s = img.eval(p + float2(cos(a), sin(a)) * r).rgb;
-    float3 d = s - c;
-    float wk = exp(-dot(d, d) / 0.010);
-    acc += s * wk;
-    w += wk;
+float faceMask(float2 p) {
+  if (faceCount < 0.5) return 0.20;
+  float mask = 0.0;
+  for (int i=0;i<5;i++) {
+    if (float(i) >= faceCount) break;
+    float4 f=faces[i];
+    float2 q=(p/size - f.xy - f.zw*0.5)/max(f.zw*0.5,float2(0.001));
+    mask=max(mask,1.0-smoothstep(0.72,1.0,length(q)));
   }
-  float3 o = mix(c, acc / w, m);
-  o = mix(o, o * 1.03 + 0.008, 0.5 * m); // a touch of glow on skin
-  return half4(half3(clamp(o, 0.0, 1.0)), 1.0);
+  return mask;
+}
+half4 main(float2 p) {
+  float3 c=img.eval(p).rgb;
+  float3 near=(img.eval(p+float2(1,0)).rgb+img.eval(p-float2(1,0)).rgb+
+    img.eval(p+float2(0,1)).rgb+img.eval(p-float2(0,1)).rgb)*0.25;
+  float edge=length(c-near);
+  float m=skinMask(c)*faceMask(p)*clamp(strength,0.0,1.0)*(1.0-smoothstep(0.025,0.10,edge))*0.72;
+  if(m<0.005)return half4(half3(c),1);
+  float3 acc=c;float weight=1.0;
+  for(int i=0;i<16;i++) {
+    float a=float(i)*0.39269908;
+    float r=mod(float(i),2.0)<0.5?radius:radius*0.5;
+    float3 sample=img.eval(p+float2(cos(a),sin(a))*r).rgb;
+    float3 d=sample-c;
+    float wk=exp(-dot(d,d)/0.006);
+    acc+=sample*wk;weight+=wk;
+  }
+  // Retain high-frequency pores; never brighten or whiten the original complexion.
+  float3 residual=clamp(c-near,float3(-0.012),float3(0.012))*0.35;
+  return half4(half3(clamp(mix(c,acc/weight+residual,m),0.0,1.0)),1);
 }
 `;
 

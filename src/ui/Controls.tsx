@@ -2,6 +2,7 @@ import { MaterialCommunityIcons } from '@expo/vector-icons';
 import React, { useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  useWindowDimensions,
   Animated,
   Image,
   PanResponder,
@@ -236,7 +237,7 @@ function ZoomDial({ zoom, min, max, stops }: { zoom: number; min: number; max: n
         );
       })}
       {/* fixed marker at the top */}
-      <View style={[radial(0, R - 16, 2.5, 26), { backgroundColor: '#c2e9ff', borderRadius: 1.5 }]} />
+      <View style={[radial(0, R - 16, 2.5, 26), { backgroundColor: '#ffe16b', borderRadius: 1.5 }]} />
       <Text style={[styles.dialValue, { position: 'absolute', left: 0, right: 0, top: cy - R + 52 }]}>
         {zoom >= 10 ? Math.round(zoom) : zoom.toFixed(1)}×
       </Text>
@@ -257,8 +258,11 @@ export function ModeCarousel({
   onChange: (m: CaptureMode) => void;
   disabled?: boolean;
 }) {
+  const [expanded, setExpanded] = useState(false);
+  const compact = useWindowDimensions().width < 360;
   return (
     <View style={styles.modeBar}>
+      {expanded ? <Glass radius={24} style={{ position: 'absolute', bottom: 62, width: 300, alignSelf: 'center' }}>
       <GlassSegmented
         items={modes}
         value={mode}
@@ -269,6 +273,21 @@ export function ModeCarousel({
         fontSize={13}
         paddingH={13}
       />
+      </Glass> : null}
+      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+        <Glass radius={27}>
+          <GlassSegmented items={[{ key: 'video', label: 'VIDEO' }, { key: 'photo', label: 'PHOTO' }]}
+            value={mode} onChange={(key) => onChange(key as CaptureMode)} disabled={disabled}
+            height={compact ? 38 : 42} fontSize={compact ? 11 : 13} paddingH={compact ? 8 : 12} minItemWidth={compact ? 56 : 68} />
+        </Glass>
+        <Pressable accessibilityRole="button" accessibilityLabel="All camera modes" accessibilityState={{ expanded }}
+          disabled={disabled} onPress={() => setExpanded(v => !v)}>
+          <GlassCircle size={compact ? 36 : 42} active={expanded || !['photo', 'video'].includes(mode)}>
+            <MaterialCommunityIcons name="dots-grid" size={20} color={expanded || !['photo', 'video'].includes(mode) ? '#ffe16b' : '#fff'} />
+          </GlassCircle>
+        </Pressable>
+      </View>
+      {!['photo', 'video'].includes(mode) ? <Text style={styles.specialMode}>{modes.find(item => item.key === mode)?.label.toUpperCase()}</Text> : null}
     </View>
   );
 }
@@ -345,7 +364,7 @@ export function Thumb({
 }) {
   return (
     <Pressable accessibilityRole="button" accessibilityLabel="Open latest capture" onPress={onPress} disabled={!uri && !enabled}>
-      <Glass radius={18} style={styles.thumb}>
+      <Glass radius={27} style={styles.thumb}>
         {uri ? (
           <RAnimated.View key={uri} entering={ZoomIn.duration(260)} style={StyleSheet.absoluteFill}>
             <Image source={{ uri }} style={styles.thumbImg} />
@@ -513,20 +532,21 @@ export function Toast({ text }: { text: string | null }) {
 export const styles = StyleSheet.create({
   center: { alignItems: 'center', justifyContent: 'center' },
   zoomBar: { alignSelf: 'center' },
-  dialValue: { color: '#c2e9ff', fontSize: 14, fontWeight: '700', textAlign: 'center', marginTop: 4, fontVariant: ['tabular-nums'] },
+  dialValue: { color: '#ffe16b', fontSize: 14, fontWeight: '700', textAlign: 'center', marginTop: 4, fontVariant: ['tabular-nums'] },
   dialLabel: { width: 40, textAlign: 'center', color: 'rgba(255,255,255,0.9)', fontSize: 11, fontWeight: '700' },
   zoomPill: { minWidth: 38, height: 38, borderRadius: 19, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 6 },
   zoomPillActive: { backgroundColor: 'rgba(255,255,255,0.92)' },
   zoomText: { color: '#fff', fontSize: 13, fontWeight: '600' },
   zoomTextActive: { color: '#111', fontWeight: '700' },
-  modeBar: { alignSelf: 'center', maxWidth: '94%' },
+  modeBar: { alignSelf: 'center', maxWidth: '72%', alignItems: 'center' },
+  specialMode: { color: '#ffe16b', fontSize: 9, fontWeight: '700', letterSpacing: 2, marginTop: 5 },
   modeChip: { paddingHorizontal: 14, height: 36, borderRadius: 18, justifyContent: 'center' },
   modeChipActive: { backgroundColor: 'rgba(214,228,255,0.95)' },
   modeText: { color: 'rgba(255,255,255,0.85)', fontSize: 14, fontWeight: '600' },
   modeTextActive: { color: '#0b1f44' },
   shutterOuter: { width: 84, height: 84, borderRadius: 42, borderWidth: 1.5, borderColor: 'rgba(255,255,255,0.9)', alignItems: 'center', justifyContent: 'center' },
-  shutterInner: { width: 66, height: 66, borderRadius: 33, backgroundColor: '#f1f8ff', alignItems: 'center', justifyContent: 'center' },
-  shutterNight: { backgroundColor: '#e9e6ff' },
+  shutterInner: { width: 66, height: 66, borderRadius: 33, backgroundColor: '#fff9ef', alignItems: 'center', justifyContent: 'center' },
+  shutterNight: { backgroundColor: '#ffe7a1' },
   recDot: { width: 62, height: 62, borderRadius: 31, backgroundColor: '#ff3b30' },
   recSquare: { width: 30, height: 30, borderRadius: 8 },
   thumb: { width: 52, height: 52 },
@@ -536,8 +556,8 @@ export const styles = StyleSheet.create({
   sliderTrackWrap: { flex: 1, height: 44, justifyContent: 'center' },
   sliderTrack: { height: 4, borderRadius: 2, backgroundColor: 'rgba(255,255,255,0.18)' },
   sliderCenterTick: { position: 'absolute', left: '50%', width: 2, height: 12, marginLeft: -1, backgroundColor: 'rgba(255,255,255,0.7)' },
-  sliderKnob: { position: 'absolute', width: 22, height: 22, borderRadius: 11, backgroundColor: '#c2e9ff', borderWidth: 2, borderColor: '#fff' },
-  focusRing: { position: 'absolute', width: 72, height: 72, borderRadius: 36, borderWidth: 2, borderColor: 'rgba(255,255,255,0.95)' },
+  sliderKnob: { position: 'absolute', width: 22, height: 22, borderRadius: 11, backgroundColor: '#ffe16b', borderWidth: 2, borderColor: 'rgba(255,255,255,0.85)' },
+  focusRing: { position: 'absolute', width: 72, height: 72, borderRadius: 12, borderWidth: 1.5, borderColor: '#ffe16b' },
   toast: { alignSelf: 'center', paddingHorizontal: 16, paddingVertical: 9 },
   toastText: { color: '#fff', fontSize: 13, fontWeight: '600' },
 });

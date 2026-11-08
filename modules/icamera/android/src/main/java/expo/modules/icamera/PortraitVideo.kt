@@ -111,6 +111,9 @@ class PortraitProcessor : SurfaceProcessor {
   private var outProg = 0
   private var statFbo = 0
   private var statTex = 0
+  @Volatile var autoWhiteBalance = true
+  private val whiteBalanceGain = floatArrayOf(1f, 1f, 1f)
+  private var statsTimestamp = 0L
   private var gain = 1f
   private var curveA = 0f
   private var curveNorm = 1f
@@ -137,10 +140,7 @@ class PortraitProcessor : SurfaceProcessor {
   private var motTex = 0
   private var downProg = 0
   private var prevLuma: IntArray? = null
-  private var trajX = 0.0
-  private var trajY = 0.0
-  private var smoothX = 0.0
-  private var smoothY = 0.0
+  private val cameraPath = VideoCameraPath()
   private var shiftX = 0f
   private var shiftY = 0f
   private var lastTs = 0L
@@ -318,7 +318,7 @@ class PortraitProcessor : SurfaceProcessor {
     // Enhanced (non-blur) path: process the frame once into an offscreen buffer, then draw outputs from it
     val enh = enhance || blurOn
     if (enh) {
-      if (frame % 6L == 1L) updateStats()
+      if (frame % 6L == 1L) updateStats(s.timestamp)
       if (stabCrop > 1.001f) updateMotion(s.timestamp) else { shiftX = 0f; shiftY = 0f; prevLuma = null; motDrawn = false }
       processFrame()
       if (blurOn) drawBokeh(cur)
@@ -344,15 +344,9 @@ class PortraitProcessor : SurfaceProcessor {
         if (cxMirrored) angle = -angle
         val w = size.width.toFloat()
         val h = size.height.toFloat()
-        // Crop only as much as the current tilt needs (zoom in quickly, ease back out slowly)
-        var a = Math.abs(angle.toDouble()) % Math.PI
-        if (a > Math.PI / 2) a = Math.PI - a
-        val r = maxOf(w, h) / minOf(w, h)
-        val needed = (Math.cos(a) + r * Math.sin(a)).toFloat() * 1.03f
-        val prev = cropState[out] ?: needed
-        val k = if (needed > prev) prev + (needed - prev) * 0.35f else prev + (needed - prev) * 0.05f
+        val k = VideoStabilityPolicy.rotationCrop(w, h, angle, cropState[out] ?: 1f)
         cropState[out] = k
-        zoomK = maxOf(1f, k)
+        zoomK = k
       }
       xform = floatArrayOf(size.width.toFloat(), size.height.toFloat(), angle, zoomK, if (flip) 1f else 0f)
       if (enh) drawOut(outM, blurOn) else drawCopy(outM)
@@ -440,12 +434,8 @@ class PortraitProcessor : SurfaceProcessor {
     var zoomK = 1f
     if (horizonLock) {
       angle = if (frontCamera) -roll else roll
-      var a = Math.abs(angle.toDouble()) % Math.PI
-      if (a > Math.PI / 2) a = Math.PI - a
-      val r = maxOf(ew, eh) / minOf(ew, eh)
-      val needed = (Math.cos(a) + r * Math.sin(a)).toFloat() * 1.03f
-      encCrop = if (needed > encCrop) encCrop + (needed - encCrop) * 0.35f else encCrop + (needed - encCrop) * 0.05f
-      zoomK = maxOf(1f, encCrop)
+      encCrop = VideoStabilityPolicy.rotationCrop(ew, eh, angle, encCrop)
+      zoomK = encCrop
     }
     xform = floatArrayOf(ew, eh, angle, zoomK, 0f)
     if (enh) drawOut(encM, blurOn) else drawCopy(encM)
@@ -530,7 +520,7 @@ class PortraitProcessor : SurfaceProcessor {
   /** Reads a tiny copy of the frame and adapts brightness / denoise strength to the scene. */
   private var statDrawn = false
   private val statBuf: ByteBuffer by lazy { ByteBuffer.allocateDirect(64 * 36 * 4).order(ByteOrder.nativeOrder()) }
-  private fun updateStats() {
+  private fun updateStats(timestamp: Long) {
     val w = 64
     val h = 36
     // Read back the copy drawn last time (finished long ago, so the GPU isn't stalled), then draw a new one
@@ -566,18 +556,30 @@ class PortraitProcessor : SurfaceProcessor {
     val buf = statBuf
     var sum = 0.0
     val n = w * h
+    val histogram = IntArray(256)
+    var red = 0.0; var green = 0.0; var blue = 0.0; var neutrals = 0
     for (i in 0 until n) {
-      val r = (buf.get(i * 4).toInt() and 0xff)
-      val g = (buf.get(i * 4 + 1).toInt() and 0xff)
-      val b = (buf.get(i * 4 + 2).toInt() and 0xff)
-      sum += (0.299 * r + 0.587 * g + 0.114 * b) / 255.0
+      val r = buf.get(i * 4).toInt() and 0xff
+      val g = buf.get(i * 4 + 1).toInt() and 0xff
+      val b = buf.get(i * 4 + 2).toInt() and 0xff
+      val luma = (0.299 * r + 0.587 * g + 0.114 * b).toInt().coerceIn(0, 255)
+      histogram[luma]++; sum += luma / 255.0
+      // Only near-neutral midtones vote. Coloured walls, skin and clipped lights do not.
+      if (luma in 40..210 && maxOf(r, g, b) - minOf(r, g, b) <= 18) {
+        red += r; green += g; blue += b; neutrals++
+      }
     }
-    val mean = (sum / n).toFloat()
-    // Aim for a natural mid-grey; never darken, at most ~2.6× in the shadows
-    val target = (0.40f / maxOf(mean, 0.03f)).coerceIn(1f, 2.6f)
-    // Slow, steady brightening: ignore small changes (sensor noise / camera exposure steps) and
-    // ease toward the target, so dim scenes don't pulse
-    if (Math.abs(target - gain) / gain > 0.06f) gain += (target - gain) * 0.06f
+    fun percentile(fraction: Float): Float {
+      var total = 0
+      for (i in histogram.indices) { total += histogram[i]; if (total >= n * fraction) return i / 255f }
+      return 1f
+    }
+    val dt = if (statsTimestamp > 0L && timestamp > statsTimestamp) ((timestamp - statsTimestamp) / 1e9f).coerceIn(.01f, .6f) else .2f
+    statsTimestamp = timestamp
+    val target = VideoTonePolicy.gain((sum / n).toFloat(), percentile(.95f), percentile(.99f))
+    gain = VideoTonePolicy.adapt(gain, target, dt)
+    val neutral = if (autoWhiteBalance) VideoTonePolicy.neutralGains(red, green, blue, neutrals, n) else floatArrayOf(1f, 1f, 1f)
+    for (i in 0..2) whiteBalanceGain[i] = if (autoWhiteBalance) VideoTonePolicy.adapt(whiteBalanceGain[i], neutral[i], dt * .35f) else 1f
     // Curve y' = (1 - e^(-a·y)) / (1 - e^(-a)): shadow slope = gain, highlights roll off smoothly
     if (gain < 1.02f) { curveA = 0f; curveNorm = 1f } else {
       var lo = 0.0; var hi = 20.0
@@ -590,7 +592,7 @@ class PortraitProcessor : SurfaceProcessor {
       curveNorm = (1.0 / (1 - Math.exp(-lo))).toFloat()
     }
     // More brightening = more noise to clean
-    temporal = (0.3f + (gain - 1f) * 0.3f + (digitalZoomNow - 1f) * 0.04f).coerceIn(0.3f, 0.7f)
+    temporal = (0.3f + (gain - 1f) * 0.3f + (digitalZoomNow - 1f) * 0.04f).coerceIn(0.25f, 0.45f)
   }
 
   /** One pass: OES frame → tone + spatial/temporal denoise + detail → vtex[cur]. */
@@ -607,10 +609,11 @@ class PortraitProcessor : SurfaceProcessor {
     GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, vtex[1 - cur])
     GLES20.glUniform1i(GLES20.glGetUniformLocation(enhProg, "sPrev"), 1)
     GLES20.glUniform2f(GLES20.glGetUniformLocation(enhProg, "uTexel"), 1f / inW, 1f / inH)
+    GLES20.glUniform3f(GLES20.glGetUniformLocation(enhProg, "uWhiteBalance"), whiteBalanceGain[0], whiteBalanceGain[1], whiteBalanceGain[2])
     GLES20.glUniform1f(GLES20.glGetUniformLocation(enhProg, "uA"), curveA)
     GLES20.glUniform1f(GLES20.glGetUniformLocation(enhProg, "uNorm"), curveNorm)
     GLES20.glUniform1f(GLES20.glGetUniformLocation(enhProg, "uTemporal"), if (havePrev) temporal else 0f)
-    GLES20.glUniform1f(GLES20.glGetUniformLocation(enhProg, "uSharp"), 0.55f * (1f - smoothing * 0.6f))
+    GLES20.glUniform1f(GLES20.glGetUniformLocation(enhProg, "uSharp"), 0.42f * (1f - smoothing * 0.5f))
     GLES20.glUniform1f(GLES20.glGetUniformLocation(enhProg, "uSmooth"), smoothing)
     GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
     GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
@@ -758,73 +761,13 @@ class PortraitProcessor : SurfaceProcessor {
 
     val prev = prevLuma
     prevLuma = luma
-    val dt = if (lastTs > 0L && lumaTs > lastTs) ((lumaTs - lastTs) / 1e9).coerceIn(0.005, 0.1) else 1.0 / 30
+    val dt = if (lastTs > 0L && lumaTs > lastTs) ((lumaTs - lastTs) / 1e9).coerceAtLeast(0.005) else 1.0 / 30
     lastTs = lumaTs
-    if (prev == null) { trajX = 0.0; trajY = 0.0; smoothX = 0.0; smoothY = 0.0; return }
+    if (prev == null) { cameraPath.reset(); shiftX = 0f; shiftY = 0f; return }
 
-    val m = estimateShift(prev, luma)
-    if (m == null) {
-      // Scene change / too fast: re-anchor the path here (no jump)
-      smoothX = trajX; smoothY = trajY
-    } else {
-      trajX += m[0] / MW
-      trajY += m[1] / MH
-    }
-    // Smooth the camera path (~0.45 s time constant), following faster when near the crop edge
-    val limit = ((1f - 1f / stabCrop) / 2f).toDouble()
-    val ex = trajX - smoothX
-    val ey = trajY - smoothY
-    val edge = maxOf(Math.abs(ex), Math.abs(ey)) / maxOf(limit, 1e-4)
-    val tau = if (edge > 0.7) 0.12 else 0.45
-    val alpha = 1 - Math.exp(-dt / tau)
-    smoothX += (trajX - smoothX) * alpha
-    smoothY += (trajY - smoothY) * alpha
-    shiftX = (trajX - smoothX).coerceIn(-limit, limit).toFloat()
-    shiftY = (trajY - smoothY).coerceIn(-limit, limit).toFloat()
-  }
-
-  /** Median block-matching shift (content motion prev → cur) in low-res pixels, or null if unreliable. */
-  private fun estimateShift(prev: IntArray, cur: IntArray): DoubleArray? {
-    val R = 6
-    val bw = 28
-    val bh = 18
-    val xs = intArrayOf(12, 47, 85, 120)
-    val ys = intArrayOf(10, 36, 62)
-    val dxs = ArrayList<Double>()
-    val dys = ArrayList<Double>()
-    val sad = IntArray((2 * R + 1) * (2 * R + 1))
-    for (by in ys) for (bx in xs) {
-      // skip flat blocks (no texture to track)
-      var mn = 255; var mx = 0
-      for (y in by until by + bh step 3) for (x in bx until bx + bw step 3) {
-        val v = prev[y * MW + x]; if (v < mn) mn = v; if (v > mx) mx = v
-      }
-      if (mx - mn < 18) continue
-      var best = Int.MAX_VALUE; var bdx = 0; var bdy = 0
-      for (dy in -R..R) for (dx in -R..R) {
-        var acc = 0
-        for (y in by until by + bh step 2) {
-          val py = y * MW
-          val cy = (y + dy).coerceIn(0, MH - 1) * MW
-          for (x in bx until bx + bw step 2) {
-            acc += Math.abs(cur[cy + (x + dx).coerceIn(0, MW - 1)] - prev[py + x])
-          }
-        }
-        sad[(dy + R) * (2 * R + 1) + (dx + R)] = acc
-        if (acc < best) { best = acc; bdx = dx; bdy = dy }
-      }
-      if (best > (bw / 2) * (bh / 2) * 22) continue // poor match (occlusion / big change)
-      if (Math.abs(bdx) == R || Math.abs(bdy) == R) continue // at the search edge: unreliable
-      // sub-pixel refinement (parabola through the neighbours)
-      fun sub(a: Int, b: Int, c: Int): Double { val d = a - 2.0 * b + c; return if (d > 0) 0.5 * (a - c) / d else 0.0 }
-      val i = (bdy + R) * (2 * R + 1) + (bdx + R)
-      val w = 2 * R + 1
-      dxs.add(bdx + sub(sad[i - 1], sad[i], sad[i + 1]))
-      dys.add(bdy + sub(sad[i - w], sad[i], sad[i + w]))
-    }
-    if (dxs.size < 3) return null
-    dxs.sort(); dys.sort()
-    return doubleArrayOf(dxs[dxs.size / 2], dys[dys.size / 2])
+    val m = VideoMotionEstimator.estimate(prev, luma, MW, MH)
+    val correction = cameraPath.update((m?.get(0) ?: 0.0) / MW, (m?.get(1) ?: 0.0) / MH, dt, stabCrop, m != null)
+    shiftX = correction[0]; shiftY = correction[1]
   }
 
   /* ---------------- segmentation ---------------- */
@@ -1129,6 +1072,7 @@ class PortraitProcessor : SurfaceProcessor {
       uniform samplerExternalOES sTex;
       uniform sampler2D sPrev;
       uniform vec2 uTexel;
+      uniform vec3 uWhiteBalance;
       uniform float uA;
       uniform float uNorm;
       uniform float uTemporal;
@@ -1136,10 +1080,15 @@ class PortraitProcessor : SurfaceProcessor {
       uniform float uSmooth;
       const vec3 LW = vec3(0.299, 0.587, 0.114);
       vec3 tone(vec3 c) {
-        if (uA < 0.01) return c;
+        c *= uWhiteBalance;
+        if (uA < 0.01) return clamp(c, 0.0, 1.0);
         float y = max(dot(c, LW), 0.0005);
-        float y2 = (1.0 - exp(-uA * y)) * uNorm;
-        return c * (y2 / y);
+        float y2 = clamp((1.0 - exp(-uA * y)) * uNorm, 0.0, 1.0);
+        vec3 mapped = c * (y2 / y);
+        float peak = max(mapped.r, max(mapped.g, mapped.b));
+        // Compress chroma into SDR headroom instead of clipping individual colour channels.
+        float chroma = peak > 1.0 ? (1.0 - y2) / max(peak - y2, 0.0005) : 1.0;
+        return clamp(vec3(y2) + (mapped - y2) * chroma, 0.0, 1.0);
       }
       void main() {
         vec3 c = texture2D(sTex, vTex).rgb;
@@ -1168,7 +1117,8 @@ class PortraitProcessor : SurfaceProcessor {
           float cb = -0.1687 * c.r - 0.3313 * c.g + 0.5 * c.b;
           float cr = 0.5 * c.r - 0.4187 * c.g - 0.0813 * c.b;
           float skin = smoothstep(-0.02, 0.02, cr - 0.02) * (1.0 - smoothstep(0.16, 0.22, cr))
-                     * smoothstep(-0.22, -0.16, cb) * (1.0 - smoothstep(0.0, 0.05, cb));
+                     * smoothstep(-0.22, -0.16, cb) * (1.0 - smoothstep(0.0, 0.05, cb))
+                     * smoothstep(0.035, 0.12, dot(c, LW));
           vec3 acc = vec3(0.0);
           float wsum = 0.0;
           for (int i = 0; i < 8; i++) {
@@ -1180,7 +1130,9 @@ class PortraitProcessor : SurfaceProcessor {
             wsum += wq;
           }
           vec3 sm = (acc + cs) / (wsum + 1.0);
-          cs = mix(cs, sm, skin * uSmooth * 0.85);
+          float feature = 1.0 - smoothstep(0.025, 0.10, dn);
+          vec3 pore = clamp(c - n, vec3(-0.012), vec3(0.012)) * 0.35;
+          cs = mix(cs, sm + pore, skin * uSmooth * feature * 0.65);
         }
         vec3 t = tone(cs);
         if (uTemporal > 0.0) {
@@ -1197,7 +1149,7 @@ class PortraitProcessor : SurfaceProcessor {
         }
         float detail = dot(tone(c) - tone(n), LW);
         float cored = sign(detail) * max(abs(detail) - 0.012, 0.0);
-        t += clamp(cored, -0.06, 0.06) * uSharp * 2.0;
+        t += clamp(cored, -0.035, 0.035) * uSharp * 1.4;
         gl_FragColor = vec4(clamp(t, 0.0, 1.0), 1.0);
       }
     """

@@ -97,6 +97,7 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
   private var camera: Camera? = null
   private var imageCapture: ImageCapture? = null
   private var videoCapture: VideoCapture<Recorder>? = null
+  private var videoHardwareStabilized = false
   private var recording: Recording? = null
   private var slowFps = 0
   private var usingNightExtension = false // true whenever a vendor extension handles processing
@@ -654,7 +655,7 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
     return if (f == "front") CameraSelector.DEFAULT_FRONT_CAMERA else CameraSelector.DEFAULT_BACK_CAMERA
   }
 
-  /** Optical image stabilization, when the lens has it (combined with electronic stabilization for video). */
+  /** Optical stabilization is used when electronic stabilization is unavailable. */
   @OptIn(ExperimentalCamera2Interop::class)
   @androidx.annotation.OptIn(markerClass = [ExperimentalCamera2Interop::class])
   private fun oisSupported(info: androidx.camera.core.CameraInfo): Boolean = try {
@@ -813,13 +814,13 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
         val sel = selector(facing)
         val info = p.getCameraInfo(sel)
         val front = facing == "front"
-        val stab = !front && (try { Preview.getPreviewCapabilities(info).isStabilizationSupported } catch (e: Throwable) { false })
-        val preview = newPreview(stab, oisSupported(info))
+        val stab = VideoStabilityPolicy.crop(mode, stabilization) > 1.001f && (try { Preview.getPreviewCapabilities(info).isStabilizationSupported } catch (e: Throwable) { false })
+        val preview = newPreview(stab, VideoStabilityPolicy.crop(mode, stabilization) > 1.001f && !stab && !videoHardwareStabilized && oisSupported(info))
         val proc = portraitProcessor
         camera = if (proc != null && effectPreview) {
           proc.frontCamera = front
-          proc.horizonLock = !front && (mode == "action" || stabilization == "horizon")
-          proc.stabCrop = if (front) 1.06f else if (mode == "action") 1.16f else if (stabilization == "off") 1f else 1.12f
+          proc.horizonLock = VideoStabilityPolicy.horizon(mode, stabilization)
+          proc.stabCrop = VideoStabilityPolicy.crop(mode, stabilization)
           setRollSensor(proc.horizonLock)
           val group = UseCaseGroup.Builder().addUseCase(preview).addUseCase(vc).addEffect(PortraitVideoEffect(proc)).build()
           p.bindToLifecycle(owner, sel, group)
@@ -860,22 +861,21 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
       .setTargetVideoEncodingBitRate(if (uhd) 60_000_000 else 24_000_000)
       .build()
 
-    // Strongest stabilization available: preview stabilization (stabilizes preview + recording,
-    // "cinematic"), else video EIS; plus optical stabilization when the lens has OIS.
+    // Prefer preview stabilization, then video EIS, then OIS when electronic modes are unavailable.
     // Portrait video always uses the strongest (cinematic) stabilization for smooth footage
-    // Stabilization crops the frame; on the front camera that would zoom selfies in, so skip it there
+    // Front and rear use the same crop policy; hardware EIS is enabled whenever supported.
     // True 10-bit HDR bypasses our (8-bit) GPU processing
     val hdr = hdrVideo && !action && !portraitVideo &&
       (try { Recorder.getVideoCapabilities(info).supportedDynamicRanges.any { it != DynamicRange.SDR } } catch (e: Throwable) { false })
-    // Horizon lock is for the main cameras (a selfie would just be cropped)
-    val horizon = !hdr && !selfieVideo && (action || stabilization == "horizon")
-    val wantStab = horizon || (!selfieVideo && (portraitVideo || stabilization != "off"))
+    // The renderer compensates the front camera roll and mirror transforms too.
+    val horizon = !hdr && VideoStabilityPolicy.horizon(mode, stabilization)
+    val wantStab = horizon || portraitVideo || stabilization != "off"
     val previewStab = wantStab && (action || horizon || portraitVideo || stabilization == "cinematic") &&
       (try { Preview.getPreviewCapabilities(info).isStabilizationSupported } catch (e: Throwable) { false })
     val videoStabOk = listOfNotNull(info, otherInfo).all {
       try { Recorder.getVideoCapabilities(it).isStabilizationSupported } catch (e: Throwable) { false }
     }
-    val ois = wantStab && oisSupported(info)
+    val ois = wantStab && !previewStab && !videoStabOk && oisSupported(info)
     // Our GL effect handles background blur, horizon lock and selfie mirroring; it mirrors the
     // recording itself, so CameraX mirroring is off whenever the effect runs
     // Every SDR recording goes through it for low-light tone, denoise and detail
@@ -883,19 +883,13 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
     // Selfie mirroring is always done by CameraX (it accounts for every device's buffer layout)
     val vb = VideoCapture.Builder(recorder)
       .setMirrorMode(if (mirror) MirrorMode.MIRROR_MODE_ON_FRONT_ONLY else MirrorMode.MIRROR_MODE_OFF)
-    if (wantStab && !previewStab && videoStabOk) vb.setVideoStabilizationEnabled(true)
+    videoHardwareStabilized = wantStab && !previewStab && videoStabOk
+    if (videoHardwareStabilized) vb.setVideoStabilizationEnabled(true)
 
-    // Variable frame rate (e.g. 15–30 or 30–60) lets the camera expose longer in dim light instead
-    // of going dark; it runs at the full rate whenever there is enough light
-    // only frame-rate ranges both cameras support
+    // Prefer fixed cadence, falling back to the closest mutually supported frame-rate range.
     val ranges = info.supportedFrameRateRanges.filter { r -> otherInfo == null || otherInfo.supportedFrameRateRanges.contains(r) }
-    // Front cameras flicker in the dark with a variable frame rate (exposure jumps as the rate
-    // changes), so selfies keep a fixed rate; the main camera may slow down to gather light
-    val minLow = if (selfieVideo) targetFps + 1 else if (targetFps >= 60) 30 else 15
-    (ranges.filter { it.upper == targetFps && it.lower >= minLow && it.lower < targetFps }.minByOrNull { it.lower }
-      ?: ranges.firstOrNull { it.lower == targetFps && it.upper == targetFps })
-      ?.let { vb.setTargetFrameRate(it) }
-      ?: ranges.filter { it.upper >= targetFps }.minByOrNull { it.upper }?.let { vb.setTargetFrameRate(Range(it.upper, it.upper)) }
+    VideoStabilityPolicy.frameRate(ranges.map { it.lower to it.upper }, targetFps)
+      ?.let { vb.setTargetFrameRate(Range(it.first, it.second)) }
 
     if (hdr) {
       val supported = Recorder.getVideoCapabilities(info).supportedDynamicRanges
@@ -917,13 +911,7 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
         proc.frontCamera = selfieVideo
         proc.mirrorVideo = false
         // Second-stage (image-based) stabilization on top of the phone's own: crop margin by mode
-        proc.stabCrop = when {
-          stabilization == "off" && !action -> 1f
-          selfieVideo -> 1.06f
-          action -> 1.16f
-          stabilization == "standard" -> 1.08f
-          else -> 1.12f
-        }
+        proc.stabCrop = VideoStabilityPolicy.crop(mode, stabilization)
         proc.onWeakGpu = { reason -> post { emitPortraitStatus(mapOf("blur" to false, "reason" to reason)) } }
         if (USE_OWN_RECORDER && switchable) {
           // Video / Action: iCam's own recorder (off: Android's recorder is used). CameraX only feeds the viewfinder stream; the GPU
@@ -994,6 +982,7 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
     } catch (e: Throwable) {
       // Fall back to a plain configuration the device is guaranteed to support
       p.unbindAll()
+      videoHardwareStabilized = false
       val plain = VideoCapture.Builder(buildRecorder(Quality.FHD, 20_000_000))
         .setMirrorMode(if (mirror) MirrorMode.MIRROR_MODE_ON_FRONT_ONLY else MirrorMode.MIRROR_MODE_OFF)
         .build()
@@ -1168,6 +1157,7 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
   private fun applyControls() {
     val cam = camera ?: return
     try {
+      portraitProcessor?.autoWhiteBalance = wb == "auto"
       // Camera2 overrides only in Pro; other modes stay fully automatic so the vendor 3A runs normally
       if (mode == "pro") {
         val b = CaptureRequestOptions.Builder()
@@ -1205,7 +1195,9 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
       } else if (!usingNightExtension) {
         Camera2CameraControl.from(cam.cameraControl).clearCaptureRequestOptions()
       }
-      setEvIndex(ev + burstEvOffset)
+      // A modest baseline protects bright windows / sky; manual Pro exposure remains exact.
+      val videoBias = if (mode in listOf("video", "action", "pvideo")) -1.0 / 3.0 else 0.0
+      setEvIndex(ev + burstEvOffset + videoBias)
     } catch (e: Throwable) {
       emitError("Camera control rejected: ${e.message}")
     }

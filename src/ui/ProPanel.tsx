@@ -227,7 +227,7 @@ function Chip({
 }) {
   return (
     <Pressable onPress={onPress} style={[s.chip, active && s.chipActive]}>
-      {icon ? <MaterialCommunityIcons name={icon} size={15} color={active ? '#0b1f44' : '#fff'} /> : null}
+      {icon ? <MaterialCommunityIcons name={icon} size={15} color={active ? '#27251b' : '#fff'} /> : null}
       <Text style={[s.chipText, active && s.chipTextActive]}>{label}</Text>
     </Pressable>
   );
@@ -266,7 +266,7 @@ export function LookPanel({
       {smoothing !== undefined && onSmoothing ? (
         <View style={s.evRow}>
           <MaterialCommunityIcons name="face-recognition" size={20} color="#fff" />
-          <Text style={s.smoothLabel}>Smooth</Text>
+          <Text style={s.smoothLabel}>Skin</Text>
           <View style={{ flex: 1 }}>
             <Slider value={smoothing} min={0} max={1} onChange={onSmoothing} />
           </View>
@@ -299,14 +299,14 @@ const s = StyleSheet.create({
   tabText: { color: 'rgba(255,255,255,0.7)', fontSize: 13, fontWeight: '600' },
   tabTextActive: { color: '#fff' },
   chips: { paddingHorizontal: 10, gap: 6, alignItems: 'center' },
-  chip: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 12, height: 34, borderRadius: 17, borderWidth: 1, borderColor: 'rgba(221,241,255,0.16)', backgroundColor: 'rgba(255,255,255,0.06)' },
-  chipActive: { backgroundColor: 'rgba(194,233,255,0.90)' },
+  chip: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 12, height: 34, borderRadius: 17, borderWidth: 1, borderColor: 'rgba(255,255,240,0.16)', backgroundColor: 'rgba(255,255,255,0.06)' },
+  chipActive: { backgroundColor: 'rgba(255,225,107,0.92)' },
   chipText: { color: '#fff', fontSize: 13, fontWeight: '600' },
-  chipTextActive: { color: '#0b1f44' },
+  chipTextActive: { color: '#27251b' },
   evRow: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 14 },
   evLabel: { color: 'rgba(255,255,255,0.8)', fontSize: 12, fontWeight: '600', minWidth: 22, textAlign: 'center' },
   smoothLabel: { color: '#fff', fontSize: 13, fontWeight: '600' },
   note: { color: 'rgba(255,255,255,0.7)', fontSize: 12, paddingHorizontal: 14, paddingVertical: 8 },
   reset: { alignSelf: 'center' },
-  resetText: { color: '#c2e9ff', fontSize: 12, fontWeight: '600' },
+  resetText: { color: '#ffe16b', fontSize: 12, fontWeight: '600' },
 });
