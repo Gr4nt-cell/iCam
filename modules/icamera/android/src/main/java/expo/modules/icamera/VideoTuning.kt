@@ -23,6 +23,9 @@ internal object VideoStabilityPolicy {
       else -> 1.16f
     }
   }
+  fun motionCrop(base: Float, rotation: Float, share: Boolean): Float =
+    max(1f,if(share)base/max(1f,rotation) else base)
+
   fun rotationCrop(width: Float, height: Float, angle: Float, previous: Float): Float {
     if (width <= 0 || height <= 0 || !angle.isFinite()) return 1f
     var a = abs(angle.toDouble()) % Math.PI

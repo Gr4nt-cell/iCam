@@ -27,10 +27,11 @@ import {
   type PhotoSettings,
   type VideoSettings,
 } from './src/camera/hardware';
+import { rearCameraFrame, cameraFocusPoint, mirrorPhoto } from './src/camera/rearLayout';
 import { filterByKey, type FilterKey } from './src/processing/filters';
 import { processSingle, type PhotoMeta } from './src/processing/pipeline';
 import { DEFAULT_PHOTO_SMOOTHING, restorePhotoSmoothing, captureSmoothing } from './src/processing/skinSettings';
-import { CameraScreenPicker, RearCameraControls, useCameraScreens } from './src/ui/RearCamera';
+import { CameraScreenPicker, RearCameraControls, RearCameraBackdrop, useCameraScreens } from './src/ui/RearCamera';
 import {
   FocusRing,
   IconButton,
@@ -200,7 +201,7 @@ function CameraScreen() {
         setRemember(true);
         if (v.photo) setPhoto((p) => ({ ...p, ...v.photo }));
         // HDR defaults off, but preserve an explicitly saved choice now that HDR processing is supported.
-        if (v.video) setVideo((x) => ({ ...x, ...v.video }));
+        if (v.video) setVideo((x) => ({ ...x, ...v.video, stabilization: v.video?.hdr && v.video.stabilization === 'horizon' ? 'cinematic' : v.video?.stabilization ?? x.stabilization }));
         if (v.mode) setMode(v.mode === 'pvideo' ? 'video' : v.mode); // Portrait video was removed
         if (typeof v.mirrorSelfie === 'boolean') setMirrorSelfie(v.mirrorSelfie);
         if (v.filter === 'natural' || v.filter === 'mono') setFilter(v.filter);
@@ -378,7 +379,7 @@ function CameraScreen() {
   /* ---------- capture: photo / night / pro photo ---------- */
   /** Front camera: does the JPEG need flipping to match the mirror setting? (1 = phone already mirrored it) */
   const needsFlip = (jpegMirrored?: number) =>
-    facing === 'front' && (jpegMirrored === 1 ? !mirrorSelfie : mirrorSelfie);
+    mirrorPhoto(facing,mirrorSelfie,screens.onSecondary,jpegMirrored);
 
   // Photos are processed one after another in the background, so the shutter is free again as soon
   // as the camera has the frame (shot-to-shot no longer waits for processing and saving)
@@ -410,7 +411,7 @@ function CameraScreen() {
     const original = `file://${paths[0]}`;
     setLast({ uri: original, original, isVideo: false });
     // everything the job needs is fixed now (later setting changes don't affect this shot)
-    const shot = { mode, facing, zoom, zoomMax: zoomRange.max, smoothing: captureSmoothing(mode, photoSmoothing, smoothing), filter, aspectRatio, bokeh, captureReq, macroKind: caps?.macroKind };
+    const shot = { mode, facing, zoom, zoomMax: zoomRange.max, smoothing: captureSmoothing(mode, photoSmoothing, smoothing), filter, aspectRatio: screens.onSecondary && aspect === 'full' ? rearCameraFrame(win.width,win.height).width / win.height : aspectRatio, bokeh, captureReq, macroKind: caps?.macroKind };
     const flip = needsFlip(meta0?.jpegMirrored);
 
     const job = async () => {
@@ -482,7 +483,7 @@ function CameraScreen() {
     // a photo requested by another app finishes before anything else can happen
     if (captureReq === 'image') await procQueue.current;
     setBusy(false);
-  }, [busy, ready, mode, facing, mirrorSelfie, captureReq, zoom, zoomRange, smoothing, photoSmoothing, filter, aspectRatio, bokeh, caps, captureBurst, saveToGallery, flashToast]);
+  }, [busy, ready, mode, facing, mirrorSelfie, captureReq, zoom, zoomRange, smoothing, photoSmoothing, screens.onSecondary, filter, aspectRatio, bokeh, caps, captureBurst, saveToGallery, flashToast]);
 
   /* ---------- capture: video ---------- */
   const toggleRecording = useCallback(async () => {
@@ -591,8 +592,8 @@ function CameraScreen() {
   );
 
   /* ---------- gestures: tap-to-focus, pinch-to-zoom, swipe modes ---------- */
-  const live = useRef({ zoom, zoomRange, mode, recording, visibleModes, maxZoom });
-  live.current = { zoom, zoomRange, mode, recording, visibleModes, maxZoom };
+  const live = useRef({ zoom, zoomRange, mode, recording, visibleModes, maxZoom, rear: screens.onSecondary, width: win.width, height: win.height });
+  live.current = { zoom, zoomRange, mode, recording, visibleModes, maxZoom, rear: screens.onSecondary, width: win.width, height: win.height };
   const gesture = useRef({ pinchStart: 0, zoomStart: 1, pinched: false });
   const onShutterRef = useRef(onShutter);
   onShutterRef.current = onShutter;
@@ -624,8 +625,10 @@ function CameraScreen() {
           const L = live.current;
           if (Math.abs(g.dx) < 10 && Math.abs(g.dy) < 10) {
             const { locationX: x, locationY: y } = e.nativeEvent;
+            const point=cameraFocusPoint(x,y,L.width,L.height,L.rear);
+            if(!point)return;
             setFocus({ x, y, key: Date.now() });
-            cam.current?.focus(x, y).catch(() => {});
+            cam.current?.focus(point.x, point.y).catch(() => {});
             if (L.mode !== 'pro') pokeSliders();
           } else if (Math.abs(g.dx) > 70 && Math.abs(g.dx) > Math.abs(g.dy) * 1.5 && !L.recording) {
             const list = L.visibleModes;
@@ -683,10 +686,11 @@ function CameraScreen() {
     <View style={styles.root}>
       <StatusBar style="light" hidden />
 
+      {screens.onSecondary && <RearCameraBackdrop />}
       {cameraModuleAvailable ? (
         <ICameraView
           ref={cam}
-          style={StyleSheet.absoluteFill}
+          style={screens.onSecondary ? {...rearCameraFrame(win.width,win.height),position: 'absolute',borderRadius:16,overflow:'hidden'} : StyleSheet.absoluteFill}
           mode={mode === 'pro' && proVideo ? 'video' : mode}
           facing={facing}
           dualPrimary={dualPrimary}
@@ -700,6 +704,7 @@ function CameraScreen() {
           flash={isVideoMode ? 'off' : flash}
           torch={isVideoMode && flash === 'on'}
           mirror={mirrorSelfie}
+          rearSelfie={screens.onSecondary}
           audio={perms.mic}
           active={appActive && !viewerOpen}
           videoQuality={video.resolution === '4k' ? 'uhd' : 'fhd'}
@@ -761,7 +766,8 @@ function CameraScreen() {
               setBusy(true);
               setProcessing(true);
             } else if (st.merging) {
-              setProcessing(true); // quiet: only the thumbnail's processing ring shows
+              setRecording(false); setPaused(false); setBusy(true);
+              setProcessing(true); // camera-switch segments still need to be joined
             } else if (typeof st.paused === 'boolean') setPaused(st.paused);
           }}
           onRecordingFinished={async (e) => {
@@ -878,7 +884,7 @@ function CameraScreen() {
             <Text numberOfLines={1} style={styles.topMetaLabel}>{topStatus}</Text>
           </View>
           <View style={styles.topMetaTools}>
-            {mode === 'video' && facing === 'back' && (
+            {mode === 'video' && facing === 'back' && !video.hdr && (
               <Pop>
                 <Pressable hitSlop={8} style={styles.metaTool} onPress={() => {
                   const on = video.stabilization !== 'horizon';
@@ -1147,7 +1153,8 @@ function CameraScreen() {
         {focus && <FocusRing key={focus.key} x={focus.x} y={focus.y} />}
         <RearCameraControls mode={mode} modes={visibleModes} video={isVideoMode} recording={recording} paused={paused}
           busy={busy || countdown > 0 || screens.switching} locked={recording || busy || processing || countdown > 0 || screens.switching}
-          countdown={countdown} stops={stops} toast={toast} onShutter={onShutter} onMode={changeMode}
+          countdown={countdown} stops={stops} zoomLabel={trim(shownZoom)} toast={toast} onGallery={openLast}
+          skin={captureSmoothing(mode,photoSmoothing,smoothing)} onSkin={mode==='photo'||mode==='portrait'?setPhotoSmoothing:setSmoothing} onShutter={onShutter} onMode={changeMode}
           onLens={(lens) => { if (lens.lensId) { setLensId(lens.lensId); setZoom(1); } else { setLensId(null); setZoom(lens.zoom); } }}
           canFlip={!recording || canFlipWhileRecording}
           onFlip={() => { setZoom(1); setLensId(null); setFacing(f => f === 'back' ? 'front' : 'back'); }}

@@ -27,23 +27,7 @@ class RearDisplayService(private val context: Context) : Binder() {
       check(Binder.getCallingUid()==uid) { "Only iCam may use its screen service" }
       val task=data.readInt();val display=data.readInt()
       require(task>=0 && display>=0)
-      // Non-SDK calls stay inside the explicitly authorised Shizuku process.
-      val api=Class.forName("android.app.ActivityTaskManager").getMethod("getService").invoke(null)
-      val type=Class.forName("android.app.IActivityTaskManager")
-      val roots=type.getMethod("getAllRootTaskInfos").invoke(api) as List<*>
-      val root=roots.filterNotNull().firstOrNull { info ->
-        val cls=info.javaClass
-        val rootId=cls.getField("taskId").getInt(info)
-        val children=(cls.getField("childTaskIds").get(info) as? IntArray) ?: intArrayOf()
-        val top=cls.getField("topActivity").get(info) as? ComponentName
-        RearDisplayPolicy.ownRootTask(rootId,task,children,top?.packageName,ownPackage)
-      } ?: throw IllegalStateException("iCam must be in the foreground before switching")
-      val rootId=root.javaClass.getField("taskId").getInt(root)
-      type.getMethod("moveRootTaskToDisplay",Int::class.javaPrimitiveType,Int::class.javaPrimitiveType).invoke(api,rootId,display)
-      // Wake only the explicitly chosen display. No system settings or other tasks are changed.
-      try { val wake=ProcessBuilder("input","-d",display.toString(),"keyevent","224").start()
-        if(!wake.waitFor(2,TimeUnit.SECONDS))wake.destroy()
-      } catch (_: Exception) {}
+      RearDisplayTaskMover.move(context,task,display,true)
       reply?.writeNoException();reply?.writeInt(1)
     } catch(e: Exception){reply?.writeException(IllegalStateException(e.cause?.message ?: e.message ?: "Screen switch refused"))}
     return true

@@ -1,40 +1,15 @@
-# iCam: capture processing and grouped modes
+# iCam current interface and recording pipeline
 
-Photo and Video are the two main tabs. Each has a separate subtype row:
+The main interface uses black surroundings, smoked glass controls and yellow accents. The rear interface follows the supplied Xiaomi reference: a portrait viewfinder beside a narrow control column, gallery / zoom / beauty / shutter controls, bottom mode labels and a top chevron returning to the front screen. A low-cost soft gradient fills the spare background; no live full-screen blur pass is added.
 
-- Photo: Standard, Portrait, Night Sight, Macro (when supported), Pro.
-- Video: Standard, Slo-mo and Dual (when supported), Action, Pro video.
+The screen switch is shown only for detected built-in rear-sized displays. External, Wi-Fi, virtual and overlay displays are excluded. Rear mode mirrors preview, saved photos and recorded video, with local focus coordinates matching the smaller viewfinder. Main-screen mirror preferences remain separate. Root is an explicit optional fallback; correctly provisioned privileged builds use their granted task permission before Shizuku or root. See rear-screen.md and ../system-integration/README.md.
 
-Pro's photo/video toggle remains available. All spring animations and overshoot have been replaced with fixed-duration transitions. Scroll containers do not bounce. The gallery and flip controls are anchored to the shutter row so the additional subtype row cannot overlap them.
+SDR video tone, denoise, skin smoothing, stabilization and crop run on the live GPU path before encoding. Supported ordinary rear-camera EIS is not cropped a second time. Other SDR paths use causal motion / roll filters and a small selfie crop. Horizon works in SDR, including the front camera, with enough crop to cover rotated edges. The 8-bit processor rejects 10-bit input.
 
-## Stabilization and framing
+HDR records directly through CameraX's 10-bit path with supported hardware EIS / OIS while recording. Unsupported HDR EIS combinations retry the same HDR range with optical stabilization where available and report the limitation. HDR is not silently converted to SDR. Live HDR Horizon lock is unavailable: choose SDR for Horizon. Settings preserve an HDR choice and migrate an old HDR+Horizon combination to Cinema.
 
-Ordinary rear SDR video now uses CameraX electronic stabilization when the selected camera supports it. That path receives no second processing crop. If hardware EIS cannot bind, the exporter provides a software fallback. Front capture stays wide without hardware EIS; it uses a small processing margin (1.06x Standard, 1.08x Cinema, 1.12x Action). Rear software reserves are 1.10x Standard, 1.16x Cinema, 1.28x Action. Horizon may need more crop to keep rotated corners covered.
+Stop now emits the finalized encoded file directly. There is no automatic whole-clip stabilization export or offline motion scan after Stop. Encoder / muxer finalization and the gallery copy remain. Clips with camera switches may still require joining; recording is locked until that join completes. Old offline helper classes and their mathematical tests are retained as inactive reference code.
 
-Software stabilization runs after stop for both SDR and HDR. Aspect-correct proxies feed corner selection, pyramidal optical flow, backward verification and robust affine consensus. Full-resolution output uses only rigid translation / roll and a constant crop, avoiding affine stretching. Offline symmetric smoothing uses future frames; brief tracking gaps do not reset the path. Normal roll comes from the recorded gravity trace, since image-only roll is ambiguous during perspective pans. Action/Horizon use gravity for absolute leveling. Clips with too few reliable tracks retain the original.
+Photo and Portrait share detected-face skin smoothing on both cameras (initial 45%, adjustable under Look / Skin). Video smoothing is separate. Existing modes, HDR capture, lens selection and offline image processing remain available on the main screen.
 
-SDR exports as AVC. HDR stays HLG/HDR10 through Media3's high-precision pipeline and HEVC export; unsupported HDR editing retains the original. Export runs after stop with the existing processing indicator. Captured frames and their measurement proxies stay separate.
-
-Photo and Portrait now share a separate adjustable face-smoothing setting on both front and rear cameras. Its initial strength is 45%; an existing positive skin setting migrates, and an explicitly saved new Off setting is preserved. This setting does not alter video, Pro, Night or Macro defaults. Both modes use the same detected-face smoothing shader; Portrait additionally adds depth blur.
-
-## Per-phone hardware tuning
-
-For video, iCam filters the CameraX-exposed front cameras to recordable candidates, checks HLG/HDR10 capability when requested, and ranks supported candidates by estimated video field of view from sensor size, focal length and zoom-out range. If a wider lens rejects the full session, it retries the default front camera. It never forces a hidden camera ID.
-
-Selfie video 1x maps to the selected lens's actual minimum zoom (including values below native 1x); manual zoom scales from that baseline. The preview fits the full frame. Source switching clears old digital zoom, motion and roll crops. Quality selection and frame cadence are based on the selected camera, not an intersection with the other camera. The 16:9 output format is retained. Pro controls check manual sensor/postprocessing capability and supported WB/focus/exposure ranges before applying overrides. Pro video routes to video capture with its manual controls enabled. HDR is exposed in settings and forwarded to native capture; explicitly saved choices are retained.
-
-These are runtime checks performed on the installed phone. No connected phone hardware was inspected in this workspace.
-
-## Photo quality
-
-Photo finishing uses restrained colour, limited sharpening and JPEG quality 97. Detected-face smoothing feathers boundaries, preserves complexion and protects facial features. SDR video tone adaptation limits highlight brightening and uses small neutral-sample white-balance corrections. This does not recover already-clipped sensor detail.
-
-## Validation
-
-- TypeScript type check, actual Skia photo shader rendering and mode grouping checks pass.
-- Eighteen Kotlin tests pass: crop policy, motion estimation, tone limits, interpolation, pause timing, mirror direction coverage of transformed frame corners, hardware-relative zoom and lens field-of-view ranking.
-- The HDR processor and geometry compile against Android API 34 classes and the exact Media3 1.4.1 dependencies. The hardware selector compiles against CameraX 1.5.1.
-- The scoped preservation audit confirms 143 unaffected control bindings. Authorized HDR callbacks, grouped controls and motion changes are scoped separately.
-- Full Android app compilation, HDR export on a physical phone and front/rear walking footage still require verification. No APK was built for this revision.
-
-The CI workflow compiles the complete Android camera module and runs its tests. The older Figma and preview artwork in this folder represent an earlier interface, not the updated grouped controls or evidence of capture quality.
+Validation includes TypeScript, the actual photo shader, capture/control regression checks, manifest mods, rear layout / mirroring policy, rear display detection, root task ownership and live roll / crop math. The live GL processor and display access classes compile against their Android dependencies. Full APK compilation and physical Xiaomi testing are still required before release.

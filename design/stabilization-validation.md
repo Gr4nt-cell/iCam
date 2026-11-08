@@ -1,3 +1,7 @@
+# Archived offline replay — not the current live recording pipeline
+
+The following measurements describe the earlier two-pass experiment. The current recording flow does not call this offline exporter. They are not performance claims for the live encoder path.
+
 # Validation scope
 
 The supplied files are portrait 1080x1920 AVC: 14899.mp4 contains 245 frames at approximately 30 fps; 14900.mp4 contains 559 frames at approximately 60 fps. The first is a selfie clip; the second pans across a room with nearby walls and motion blur.

@@ -53,8 +53,8 @@ class ICameraModule : Module() {
     AsyncFunction("requestRearDisplayAccess") { RearDisplayRouter.requestAccess() }
       .runOnQueue(expo.modules.kotlin.functions.Queues.MAIN)
 
-    AsyncFunction("moveCameraDisplay") { target: Int, privileged: Boolean ->
-      RearDisplayRouter.move(appContext.currentActivity ?: throw IllegalStateException("No camera activity"),target,privileged)
+    AsyncFunction("moveCameraDisplay") { target: Int, privileged: Boolean, root: Boolean ->
+      RearDisplayRouter.move(appContext.currentActivity ?: throw IllegalStateException("No camera activity"),target,privileged,root)
     }
 
     /** Finds faces in a photo (upright, normalized 0..1 boxes) for face-priority exposure. */
@@ -183,6 +183,7 @@ class ICameraModule : Module() {
       Prop("focusDistance") { view: ICameraView, v: Double -> view.setFocusDistance(v.toFloat()) }
       Prop("flash") { view: ICameraView, v: String -> view.setFlash(v) }
       Prop("torch") { view: ICameraView, v: Boolean -> view.setTorch(v) }
+      Prop("rearSelfie") { view: ICameraView, v: Boolean -> view.setRearSelfie(v) }
       Prop("mirror") { view: ICameraView, v: Boolean -> view.setMirror(v) }
       Prop("audio") { view: ICameraView, v: Boolean -> view.setAudio(v) }
       Prop("active") { view: ICameraView, v: Boolean -> view.setActive(v) }

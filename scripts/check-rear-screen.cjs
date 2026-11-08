@@ -16,7 +16,8 @@ const modConfig={...config,modResults:{manifest:{application:[{activity:[main]}]
  assert(app.includes('onScreens={() => screens.move(0, !!screens.status?.shizukuGranted)}'));
  const service=fs.readFileSync('modules/icamera/android/src/main/java/expo/modules/icamera/RearDisplayService.kt','utf8');
  assert(service.includes('Binder.getCallingUid()==uid'));
- assert(service.includes('RearDisplayPolicy.ownRootTask'));
+ assert(service.includes('RearDisplayTaskMover.move'));
+ assert(fs.readFileSync('modules/icamera/android/src/main/java/expo/modules/icamera/RearDisplayTaskMover.kt','utf8').includes('RearDisplayPolicy.ownRootTask'));
  assert(!service.includes('force-stop')&&!service.includes('settings put'));
  const manifest=fs.readFileSync('modules/icamera/android/src/main/AndroidManifest.xml','utf8');
  assert(manifest.includes('android.permission.INTERACT_ACROSS_USERS_FULL'));

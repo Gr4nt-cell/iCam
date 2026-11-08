@@ -1,0 +1,16 @@
+const fs=require('fs'),assert=require('assert/strict');
+const camera=fs.readFileSync('modules/icamera/android/src/main/java/expo/modules/icamera/ICameraView.kt','utf8');
+const gl=fs.readFileSync('modules/icamera/android/src/main/java/expo/modules/icamera/PortraitVideo.kt','utf8');
+assert(!camera.includes('HdrVideoStabilizer.process'),'Stop must not trigger a whole-clip export');
+assert(!camera.includes('RecordingRollTrace('),'Live recording must not collect an offline trace');
+assert(camera.includes('proc.stabCrop = VideoStabilityPolicy.crop'));
+assert(camera.includes('proc.horizonLock = horizon && !hardwareEis'));
+assert(gl.includes('request.dynamicRange.bitDepth > 8'),'8-bit effects must reject HDR inputs');
+assert(gl.includes('uv = 0.5 + (uv - 0.5) / uCrop + uShift'));
+assert(camera.includes('.setDynamicRange(hdrRange!!)'),'HDR fallback must preserve its range');
+assert(camera.includes('recording != null || joiningVideo'));
+assert(camera.includes('joiningVideo=true'));
+assert(gl.includes('VideoStabilityPolicy.motionCrop'));
+assert(fs.readFileSync('src/ui/RearCamera.tsx','utf8').includes('available:!!status&&status.displays.some(d=>d.isRear)'));
+assert(camera.includes('MirrorMode.MIRROR_MODE_ON else if'));
+console.log('PASS: live GPU crop, no post-stop stabilization export, HDR separation and mirrored video.');

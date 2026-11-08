@@ -1,12 +1,10 @@
-iCam stabilization and Photo smoothing update
+iCam live video and Xiaomi rear-screen update
 
 Install: npm install
-Checks: npm run typecheck; node scripts/check-mode-groups.cjs; node scripts/check-photo-look.cjs; node scripts/check-photo-smoothing.cjs
+Checks: npm run typecheck; node scripts/check-photo-look.cjs; node scripts/check-photo-smoothing.cjs; node scripts/check-mode-groups.cjs; node scripts/check-rear-screen.cjs; node scripts/check-xiaomi-rear.cjs; node scripts/check-live-video.cjs
 
-Standard Photo and Portrait share the Skin setting (initial 45%) on both cameras. Look > Skin adjusts it or turns it off. Video smoothing remains separate.
+Video processing and crop now run while recording. Stop no longer launches a stabilization re-export. Encoder finalization and gallery copy remain; camera-switch clips may still need joining. HDR uses supported camera-side live stabilization and stays 10-bit. Use SDR for live Horizon lock. The shader processor refuses HDR input.
 
-Rear ordinary SDR video uses supported CameraX EIS without an extra software crop. Selfies, Action/Horizon, HDR and hardware-EIS fallbacks use two-pass processing after stop. New recordings include gravity samples for roll. HDR format is retained where editing is supported; failed exports keep the original. No frame dropping is used for stabilization.
+The Xiaomi-style rear UI appears only when a built-in rear-sized display is detected. Casting / external / virtual screens do not expose the switch. Rear mode mirrors preview, photos and video, and has a chevron back to the front screen. Access tries normal Android, granted system privilege, authorised Shizuku and explicitly opted-in root. System integration files are included; the app cannot grant itself privileges just by being copied into /system/app.
 
-The source already includes all changes. No patch needs applying. See design/stabilization-validation.md for measured replay results and limits. Full app compilation, APK generation and physical-device tests were not performed in this update. Release credentials and build caches are excluded.
-
-Rear screen: use the screen icon on the camera toolbar, select the attached rear display, and enable Shizuku access if HyperOS blocks it. The compact rear interface has a Front button. See design/rear-screen.md. Xiaomi hardware testing and full APK compilation remain outstanding.
+The source already includes all changes. No patch is needed. The live GL processor and rear-routing classes compile against Android dependencies and policy tests are included. A full APK build and physical-device verification are still outstanding. No APK or signing credentials are included.

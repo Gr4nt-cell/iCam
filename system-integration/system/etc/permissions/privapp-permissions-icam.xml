@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<permissions>
+    <privapp-permissions package="com.gr4nt.icam">
+        <permission name="android.permission.MANAGE_ACTIVITY_TASKS" />
+    </privapp-permissions>
+</permissions>

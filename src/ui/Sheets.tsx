@@ -103,15 +103,15 @@ export function SettingsSheet(p: SettingsProps) {
               </Row>
               <Row label="HDR video" hint={p.supportsVideoHdr ? 'Keep HDR highlights and colour. Stabilization is processed after recording.' : 'HDR video is not reported by this camera.'}>
                 <Toggle value={p.video.hdr} disabled={!p.supportsVideoHdr && !p.video.hdr}
-                  onChange={(hdr) => p.onVideo({ ...p.video, hdr })} />
+                  onChange={(hdr) => p.onVideo({ ...p.video, hdr, stabilization: hdr && p.video.stabilization === 'horizon' ? 'cinematic' : p.video.stabilization })} />
               </Row>
               <Row
                 label="Stabilization"
-                hint={p.video.stabilization === 'horizon' ? 'Keeps the horizon level; extra crop is applied only as needed for rotation.' : 'Supported rear cameras use phone stabilization. Other clips are stabilized after recording; selfies keep a smaller crop. Off keeps the widest view.'}
+                hint={p.video.hdr ? 'HDR uses supported phone stabilization while recording. Horizon lock requires HDR off.' : p.video.stabilization === 'horizon' ? 'Keeps the horizon level; extra crop is applied only as needed for rotation.' : 'Stabilization and cropping run while recording. Selfies keep a smaller crop; Stop only finalizes the encoded clip.'}
               >
                 <Segmented
-                  options={['off', 'standard', 'cinematic', 'horizon']}
-                  labels={['Off', 'Std', 'Cinema', 'Horizon']}
+                  options={p.video.hdr ? ['off', 'standard', 'cinematic'] : ['off', 'standard', 'cinematic', 'horizon']}
+                  labels={p.video.hdr ? ['Off', 'Std', 'Cinema'] : ['Off', 'Std', 'Cinema', 'Horizon']}
                   value={p.video.stabilization}
                   onChange={(v) => p.onVideo({ ...p.video, stabilization: v as VideoSettings['stabilization'] })}
                 />
