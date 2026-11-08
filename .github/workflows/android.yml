@@ -49,13 +49,13 @@ jobs:
 
       - name: Check signing secrets
         env:
-          KS_B64: ${{ secrets.ICAM_UPLOAD_KEYSTORE_BASE64 }}
-          KS_PASS: ${{ secrets.ICAM_UPLOAD_STORE_PASSWORD }}
-          KS_ALIAS: ${{ secrets.ICAM_UPLOAD_KEY_ALIAS }}
-          KS_KEY_PASS: ${{ secrets.ICAM_UPLOAD_KEY_PASSWORD }}
+          KS_B64: ${{ secrets.KEYSTORE_BASE64 }}
+          KS_PASS: ${{ secrets.UPLOAD_STORE_PASSWORD }}
+          KS_ALIAS: ${{ secrets.UPLOAD_KEY_ALIAS }}
+          KS_KEY_PASS: ${{ secrets.UPLOAD_KEY_PASSWORD }}
         run: |
           if [ -z "$KS_B64" ] || [ -z "$KS_PASS" ] || [ -z "$KS_ALIAS" ] || [ -z "$KS_KEY_PASS" ]; then
-            echo "::error title=Signing secrets required::Configure ICAM_UPLOAD_KEYSTORE_BASE64, ICAM_UPLOAD_STORE_PASSWORD, ICAM_UPLOAD_KEY_ALIAS, and ICAM_UPLOAD_KEY_PASSWORD in GitHub Actions secrets."
+            echo "::error title=Signing secrets required::Configure KEYSTORE_BASE64, UPLOAD_STORE_PASSWORD, UPLOAD_KEY_ALIAS, and UPLOAD_KEY_PASSWORD in GitHub Actions secrets."
             exit 1
           fi
 
@@ -117,14 +117,14 @@ jobs:
 
       - name: Upload key (Play signing)
         env:
-          KS_B64: ${{ secrets.ICAM_UPLOAD_KEYSTORE_BASE64 }}
-          KS_PASS: ${{ secrets.ICAM_UPLOAD_STORE_PASSWORD }}
-          KS_ALIAS: ${{ secrets.ICAM_UPLOAD_KEY_ALIAS }}
-          KS_KEY_PASS: ${{ secrets.ICAM_UPLOAD_KEY_PASSWORD }}
+          KS_B64: ${{ secrets.KEYSTORE_BASE64 }}
+          KS_PASS: ${{ secrets.UPLOAD_STORE_PASSWORD }}
+          KS_ALIAS: ${{ secrets.UPLOAD_KEY_ALIAS }}
+          KS_KEY_PASS: ${{ secrets.UPLOAD_KEY_PASSWORD }}
         run: |
           echo "ICAM_VERSION_CODE=$((100 + GITHUB_RUN_NUMBER))" >> "$GITHUB_ENV"
           if [ -z "$KS_B64" ] || [ -z "$KS_PASS" ] || [ -z "$KS_ALIAS" ] || [ -z "$KS_KEY_PASS" ]; then
-            echo "::error title=Signing secrets required::Configure ICAM_UPLOAD_KEYSTORE_BASE64, ICAM_UPLOAD_STORE_PASSWORD, ICAM_UPLOAD_KEY_ALIAS, and ICAM_UPLOAD_KEY_PASSWORD in GitHub Actions secrets."
+            echo "::error title=Signing secrets required::Configure KEYSTORE_BASE64, UPLOAD_STORE_PASSWORD, UPLOAD_KEY_ALIAS, and UPLOAD_KEY_PASSWORD in GitHub Actions secrets."
             exit 1
           fi
           echo "::add-mask::$KS_B64"
