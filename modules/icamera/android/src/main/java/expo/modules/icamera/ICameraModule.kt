@@ -177,6 +177,7 @@ class ICameraModule : Module() {
       Prop("active") { view: ICameraView, v: Boolean -> view.setActive(v) }
       Prop("videoQuality") { view: ICameraView, v: String -> view.setVideoQuality(v) }
       Prop("fps") { view: ICameraView, v: Double -> view.setFps(v.toInt()) }
+      Prop("manualControls") { view: ICameraView, v: Boolean -> view.setManualControls(v) }
       Prop("hdrVideo") { view: ICameraView, v: Boolean -> view.setHdrVideo(v) }
       Prop("antibanding") { view: ICameraView, v: String -> view.setAntibanding(v) }
       Prop("stabilization") { view: ICameraView, v: String -> view.setStabilization(v) }

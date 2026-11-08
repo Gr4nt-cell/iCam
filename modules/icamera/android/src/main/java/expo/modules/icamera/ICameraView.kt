@@ -108,6 +108,7 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
   private var facing = "back"
   private var dualPrimary = "back"
   private var zoom = 1f
+  private var defaultFrontFallback = false
   private var ev = 0.0
   private var iso = 0
   private var shutterNs = 0L
@@ -121,6 +122,9 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
   private var active = true
   private var videoQuality = "uhd"
   private var fps = 30
+  private var boundFrameRate = 30
+  private var manualControls = false
+  fun setManualControls(v: Boolean) { manualControls = v; applyControls() }
   private var hdrVideo = false
   private var hdrCaptureBound = false
   private var hdrProcessingBusy = false
@@ -199,8 +203,8 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
   }
 
   fun setMode(v: String) = rebindOnChange(mode, v) { mode = it; post { updateGestures() } }
-  fun setFacing(v: String) = rebindOnChange(facing, v) { facing = it }
-  fun setDualPrimary(v: String) = rebindOnChange(dualPrimary, v) { dualPrimary = it }
+  fun setFacing(v: String) = rebindOnChange(facing, v) { facing = it; zoom = 1f; defaultFrontFallback = false }
+  fun setDualPrimary(v: String) = rebindOnChange(dualPrimary, v) { dualPrimary = it; zoom = 1f }
   fun setMirror(v: Boolean) = rebindOnChange(mirror, v) { mirror = it }
   fun setActive(v: Boolean) = rebindOnChange(active, v) { active = it; post { updateGestures() } }
   fun setVideoQuality(v: String) = rebindOnChange(videoQuality, v) { videoQuality = it }
@@ -444,7 +448,8 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
     val z = cam.cameraInfo.zoomState.value
     val zMin = z?.minZoomRatio ?: 1f
     val zMax = z?.maxZoomRatio ?: 1f
-    var hw = (macroZoom ?: zoom).coerceIn(zMin, zMax)
+    val front = (if (mode == "dual") dualPrimary == "front" else facing == "front") && mode !in PHOTO_MODES
+    var hw = PhoneCameraPolicy.hardwareZoom(front, macroZoom ?: zoom, zMin, zMax)
     if (horizonCrop > 1.01f) hw = maxOf(zMin, hw / horizonCrop)
     // Big jumps (tapping a lens pill) glide instead of cutting, so lens changes are smooth on video too
     val from = z?.zoomRatio ?: hw
@@ -462,7 +467,7 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
         start()
       }
     } else cam.cameraControl.setZoomRatio(hw)
-    digitalZoom = if (mode == "dual" || mode == "slowmo") 1f else maxOf(1f, zoom / zMax)
+    digitalZoom = if (mode == "dual" || mode == "slowmo") 1f else PhoneCameraPolicy.digitalZoom(front, zoom, zMin, zMax)
     portraitProcessor?.digitalZoom = if (effectPreview) digitalZoom else 1f
     applyPreviewTransform()
   }
@@ -605,6 +610,9 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
           "macro" -> bindMacro(p, owner)
           else -> bindPhoto(p, owner)
         }
+        if ((if (mode == "dual") dualPrimary == "front" else facing == "front") && mode !in PHOTO_MODES)
+          previewView.scaleType = PreviewView.ScaleType.FIT_CENTER
+        else previewView.scaleType = if (previewFit) PreviewView.ScaleType.FIT_CENTER else PreviewView.ScaleType.FILL_CENTER
         applyZoom()
         applyPreviewColor()
         postDelayed({ applyPreviewColor() }, 400) // the viewfinder's surface view appears asynchronously
@@ -615,14 +623,15 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
         setTorch(torch)
         applyControls()
         val z = camera?.cameraInfo?.zoomState?.value
+        val baseZoom = PhoneCameraPolicy.zoomBase((if (mode == "dual") dualPrimary == "front" else facing == "front") && mode !in PHOTO_MODES, z?.minZoomRatio ?: 1f)
         emitReady(
           mapOf(
             "mode" to mode,
             "slowMotionFps" to slowFps,
             "nightExtension" to (activeExtension == "night"),
             "extension" to activeExtension,
-            "zoomMin" to (z?.minZoomRatio ?: 1f).toDouble(),
-            "zoomMax" to (z?.maxZoomRatio ?: 1f).toDouble(),
+            "zoomMin" to ((z?.minZoomRatio ?: 1f) / baseZoom).toDouble(),
+            "zoomMax" to ((z?.maxZoomRatio ?: 1f) / baseZoom).toDouble(),
             "hasFlash" to (camera?.cameraInfo?.hasFlashUnit() ?: false),
             "horizonLock" to sensorOn,
           ),
@@ -632,6 +641,12 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
         // Switching front/back: many phones can't open the new camera until the old one has closed,
         // so CameraX briefly sees "no available camera". Wait and try again instead of failing.
         val msg = e.message ?: e.toString()
+        if (facing == "front" && mode !in PHOTO_MODES && mode != "dual" && !defaultFrontFallback) {
+          // Some vendor wide lenses report recording capabilities but reject a complete session.
+          defaultFrontFallback = true
+          postDelayed({ rebind() }, 200)
+          return@withProvider
+        }
         if (msg.contains("No available camera", true) && bindRetries < 8) {
           bindRetries++
           postDelayed({ rebind() }, 250L * bindRetries)
@@ -658,7 +673,10 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
         .addCameraFilter { infos -> infos.filter { Camera2CameraInfo.from(it).cameraId == id }.ifEmpty { infos.take(0) } }
         .build()
     }
-    return if (f == "front") CameraSelector.DEFAULT_FRONT_CAMERA else CameraSelector.DEFAULT_BACK_CAMERA
+    return if (f == "front") {
+      if (mode !in PHOTO_MODES && mode != "dual" && !defaultFrontFallback) PhoneCameraTuning.frontSelector(hdrVideo && (mode == "video" || mode == "action"))
+      else CameraSelector.DEFAULT_FRONT_CAMERA
+    } else CameraSelector.DEFAULT_BACK_CAMERA
   }
 
   /** Optical stabilization is used when electronic stabilization is unavailable. */
@@ -855,11 +873,10 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
       hdrRanges.contains(DynamicRange.HDR10_10_BIT) -> DynamicRange.HDR10_10_BIT
       else -> throw IllegalStateException("This camera cannot record HLG or HDR10 with these settings")
     }
-    // The other camera (front ↔ back): video settings must suit BOTH, so the camera can be switched
-    // mid-recording without the clip's size, frame rate or stabilization becoming invalid
+    // Inspect the selected camera itself. Camera changes use separate segments; the joiner
+    // already normalizes differing dimensions instead of limiting both cameras in advance.
     val switchable = hdrRange == null && (mode == "video" || mode == "action")
-    val otherInfo = if (switchable) try { p.getCameraInfo(selector(if (selfieVideo) "back" else "front")) } catch (e: Throwable) { null } else null
-    fun bothSupport(q: Quality) = listOfNotNull(info, otherInfo).all {
+    fun bothSupport(q: Quality) = listOf(info).all {
       try { Recorder.getVideoCapabilities(it).getSupportedQualities(hdrRange ?: DynamicRange.SDR).contains(q) } catch (e: Throwable) { false }
     }
     val uhd = !action && !portraitVideo && videoQuality == "uhd" && bothSupport(Quality.UHD)
@@ -867,7 +884,7 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
     // span the 100/120 Hz pulsing of indoor lights, which shows as flicker in dim rooms
     val targetFps = if (selfieVideo) minOf(fps, 30) else if (action) 60 else if (portraitVideo) 30 else fps
     val quality = if (uhd) Quality.UHD else if (bothSupport(Quality.FHD)) Quality.FHD else Quality.HD
-    // Same 16:9 size on front and back (strict, no per-camera fallback)
+    // Preserve the requested 16:9 output; use this lens's supported quality range.
     val recorder = Recorder.Builder()
       .setQualitySelector(QualitySelector.from(quality, FallbackStrategy.lowerQualityOrHigherThan(Quality.SD)))
       .setAspectRatio(androidx.camera.core.AspectRatio.RATIO_16_9)
@@ -895,10 +912,11 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
     videoHardwareStabilized = false
     vb.setVideoStabilizationEnabled(videoHardwareStabilized)
 
-    // Prefer fixed cadence, falling back to the closest mutually supported frame-rate range.
-    val ranges = info.supportedFrameRateRanges.filter { r -> otherInfo == null || otherInfo.supportedFrameRateRanges.contains(r) }
+    // Prefer fixed cadence from the selected lens's actual frame-rate ranges.
+    val ranges = info.supportedFrameRateRanges.toList()
+    boundFrameRate = targetFps
     VideoStabilityPolicy.frameRate(ranges.map { it.lower to it.upper }, targetFps)
-      ?.let { vb.setTargetFrameRate(Range(it.first, it.second)) }
+      ?.let { boundFrameRate = it.second; vb.setTargetFrameRate(Range(it.first, it.second)) }
 
     hdrRange?.let { vb.setDynamicRange(it) }
     val vc = vb.build()
@@ -1109,7 +1127,7 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
       camera = cc.cameras.firstOrNull { it.cameraInfo.lensFacing == main.lensFacing } ?: cc.cameras.firstOrNull()
       cc.cameras.firstOrNull { it.cameraInfo.lensFacing == CameraSelector.LENS_FACING_FRONT }?.let { fr ->
         val z = fr.cameraInfo.zoomState.value
-        fr.cameraControl.setZoomRatio(1f.coerceIn(z?.minZoomRatio ?: 1f, z?.maxZoomRatio ?: 1f))
+        fr.cameraControl.setZoomRatio((z?.minZoomRatio ?: 1f))
       }
       videoCapture = null
       pipContainer.visibility = View.VISIBLE
@@ -1154,7 +1172,7 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
     // Keep the selfie lens at its natural framing; do not force a face-filling crop.
     cc.cameras.firstOrNull { it.cameraInfo.lensFacing == CameraSelector.LENS_FACING_FRONT }?.let { front ->
       val z = front.cameraInfo.zoomState.value
-      val target = 1f.coerceIn(z?.minZoomRatio ?: 1f, z?.maxZoomRatio ?: 1f)
+      val target = (z?.minZoomRatio ?: 1f)
       front.cameraControl.setZoomRatio(target)
     }
     videoCapture = vc
@@ -1169,36 +1187,42 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
     try {
       portraitProcessor?.autoWhiteBalance = wb == "auto"
       // Camera2 overrides only in Pro; other modes stay fully automatic so the vendor 3A runs normally
-      if (mode == "pro") {
+      if (mode == "pro" || manualControls) {
+        val c2 = Camera2CameraInfo.from(cam.cameraInfo)
+        val capabilities = c2.getCameraCharacteristic(android.hardware.camera2.CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES) ?: intArrayOf()
+        val isoRange = c2.getCameraCharacteristic(android.hardware.camera2.CameraCharacteristics.SENSOR_INFO_SENSITIVITY_RANGE)
+        val timeRange = c2.getCameraCharacteristic(android.hardware.camera2.CameraCharacteristics.SENSOR_INFO_EXPOSURE_TIME_RANGE)
+        val awbModes = c2.getCameraCharacteristic(android.hardware.camera2.CameraCharacteristics.CONTROL_AWB_AVAILABLE_MODES) ?: intArrayOf()
         val b = CaptureRequestOptions.Builder()
-        val manualExposure = iso > 0 && shutterNs > 0
+        val manualExposure = iso > 0 && shutterNs > 0 && isoRange != null && timeRange != null &&
+          capabilities.contains(android.hardware.camera2.CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES_MANUAL_SENSOR)
         if (manualExposure) {
           b.setCaptureRequestOption(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_OFF)
-          b.setCaptureRequestOption(CaptureRequest.SENSOR_SENSITIVITY, iso)
-          b.setCaptureRequestOption(CaptureRequest.SENSOR_EXPOSURE_TIME, shutterNs)
-          b.setCaptureRequestOption(CaptureRequest.SENSOR_FRAME_DURATION, max(shutterNs, 33_333_333L))
+          b.setCaptureRequestOption(CaptureRequest.SENSOR_SENSITIVITY, iso.coerceIn(isoRange!!.lower,isoRange.upper))
+          val exposure = shutterNs.coerceIn(timeRange!!.lower,timeRange.upper)
+          b.setCaptureRequestOption(CaptureRequest.SENSOR_EXPOSURE_TIME, exposure)
+          b.setCaptureRequestOption(CaptureRequest.SENSOR_FRAME_DURATION, max(exposure, if (mode == "pro") 33_333_333L else 1_000_000_000L / boundFrameRate.coerceAtLeast(1)))
         }
-        if (wb == "kelvin") {
+        if (wb == "kelvin" && capabilities.contains(android.hardware.camera2.CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES_MANUAL_POST_PROCESSING) && awbModes.contains(CaptureRequest.CONTROL_AWB_MODE_OFF)) {
           b.setCaptureRequestOption(CaptureRequest.CONTROL_AWB_MODE, CaptureRequest.CONTROL_AWB_MODE_OFF)
           b.setCaptureRequestOption(CaptureRequest.COLOR_CORRECTION_MODE, CaptureRequest.COLOR_CORRECTION_MODE_TRANSFORM_MATRIX)
           b.setCaptureRequestOption(CaptureRequest.COLOR_CORRECTION_GAINS, kelvinToGains(kelvin))
         } else if (wb != "auto") {
-          b.setCaptureRequestOption(
-            CaptureRequest.CONTROL_AWB_MODE,
-            when (wb) {
-              "daylight" -> CaptureRequest.CONTROL_AWB_MODE_DAYLIGHT
-              "cloudy" -> CaptureRequest.CONTROL_AWB_MODE_CLOUDY_DAYLIGHT
-              "shade" -> CaptureRequest.CONTROL_AWB_MODE_SHADE
-              "tungsten" -> CaptureRequest.CONTROL_AWB_MODE_INCANDESCENT
-              "fluorescent" -> CaptureRequest.CONTROL_AWB_MODE_FLUORESCENT
-              "twilight" -> CaptureRequest.CONTROL_AWB_MODE_TWILIGHT
-              else -> CaptureRequest.CONTROL_AWB_MODE_AUTO
-            },
-          )
+          val requested = when (wb) {
+            "daylight" -> CaptureRequest.CONTROL_AWB_MODE_DAYLIGHT
+            "cloudy" -> CaptureRequest.CONTROL_AWB_MODE_CLOUDY_DAYLIGHT
+            "shade" -> CaptureRequest.CONTROL_AWB_MODE_SHADE
+            "tungsten" -> CaptureRequest.CONTROL_AWB_MODE_INCANDESCENT
+            "fluorescent" -> CaptureRequest.CONTROL_AWB_MODE_FLUORESCENT
+            "twilight" -> CaptureRequest.CONTROL_AWB_MODE_TWILIGHT
+            else -> CaptureRequest.CONTROL_AWB_MODE_AUTO
+          }
+          if (awbModes.contains(requested)) b.setCaptureRequestOption(CaptureRequest.CONTROL_AWB_MODE,requested)
         }
-        if (focus >= 0f) {
+        val maxFocus = c2.getCameraCharacteristic(android.hardware.camera2.CameraCharacteristics.LENS_INFO_MINIMUM_FOCUS_DISTANCE) ?: 0f
+        if (focus >= 0f && maxFocus > 0f) {
           b.setCaptureRequestOption(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_OFF)
-          b.setCaptureRequestOption(CaptureRequest.LENS_FOCUS_DISTANCE, focus)
+          b.setCaptureRequestOption(CaptureRequest.LENS_FOCUS_DISTANCE, focus.coerceIn(0f,maxFocus))
         }
         Camera2CameraControl.from(cam.cameraControl).setCaptureRequestOptions(b.build())
         if (manualExposure) return

@@ -2,8 +2,10 @@ iCam HDR processing and grouped mode update
 
 Install: npm install
 Checks: npm run typecheck; node scripts/check-mode-groups.cjs; node scripts/check-photo-look.cjs
-Native: fourteen policy/geometry tests passed; the HDR processor compiles against Android API 34 classes and Media3 1.4.1. Full app/Android build and physical camera tests have not been run. No APK is included.
+Native: eighteen policy/geometry/hardware tests passed; the HDR processor compiles against Android API 34 classes and Media3 1.4.1. Full app/Android build and physical camera tests have not been run. No APK is included.
 
 Both SDR and HDR stabilization crops happen in processing. SDR processes live; HDR processes after recording with HDR_MODE_KEEP_HDR and HEVC. Unsupported exports retain the original HDR clip. HDR processing requires Android 13+ and compatible device encoders. The HDR preview stays wide; its final processed framing is applied after stop.
 
-Photo and Video have separate mode rows, with Pro available in both. Spring/bounce effects are removed. Release signing credentials are excluded.
+Photo and Video have separate mode rows, with Pro available in both. Spring/bounce effects are removed.
+
+New: supported front-lens selection from field-of-view metadata; selfie video 1x maps to the actual minimum hardware zoom. 2% normal selfie crop, 8% Action reserve, no fixed extra roll crop at level. Per-lens quality/FPS selection, capability-checked Pro settings and a working HDR settings switch. Hardware selection is compiled against CameraX 1.5.1; it has not been tested on a connected phone. Release signing credentials are excluded.

@@ -101,9 +101,13 @@ export function SettingsSheet(p: SettingsProps) {
                   onChange={(v) => p.onVideo({ ...p.video, fps: Number(v) as VideoSettings['fps'] })}
                 />
               </Row>
+              <Row label="HDR video" hint={p.supportsVideoHdr ? 'Keep HDR highlights and colour. Stabilization is processed after recording.' : 'HDR video is not reported by this camera.'}>
+                <Toggle value={p.video.hdr} disabled={!p.supportsVideoHdr && !p.video.hdr}
+                  onChange={(hdr) => p.onVideo({ ...p.video, hdr })} />
+              </Row>
               <Row
                 label="Stabilization"
-                hint={p.video.stabilization === 'horizon' ? 'Keeps the horizon level. Uses a tighter crop on both front and rear cameras.' : 'Cinema uses extra crop for steadier front and rear video. Off keeps the widest view; Action always uses strong stabilization.'}
+                hint={p.video.stabilization === 'horizon' ? 'Keeps the horizon level; extra crop is applied only as needed for rotation.' : 'Selfie video uses a small crop to keep a wide view. Off preserves the widest framing; Action reserves more room for movement.'}
               >
                 <Segmented
                   options={['off', 'standard', 'cinematic', 'horizon']}

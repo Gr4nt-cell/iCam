@@ -195,8 +195,8 @@ function CameraScreen() {
       if (v?.remember) {
         setRemember(true);
         if (v.photo) setPhoto((p) => ({ ...p, ...v.photo }));
-        // v2: HDR video now defaults off (it looked dark on normal screens and bypasses iCam's video processing)
-        if (v.video) setVideo((x) => ({ ...x, ...v.video, hdr: false }));
+        // HDR defaults off, but preserve an explicitly saved choice now that HDR processing is supported.
+        if (v.video) setVideo((x) => ({ ...x, ...v.video }));
         if (v.mode) setMode(v.mode === 'pvideo' ? 'video' : v.mode); // Portrait video was removed
         if (typeof v.mirrorSelfie === 'boolean') setMirrorSelfie(v.mirrorSelfie);
         if (v.filter === 'natural' || v.filter === 'mono') setFilter(v.filter);
@@ -670,7 +670,7 @@ function CameraScreen() {
         <ICameraView
           ref={cam}
           style={StyleSheet.absoluteFill}
-          mode={mode}
+          mode={mode === 'pro' && proVideo ? 'video' : mode}
           facing={facing}
           dualPrimary={dualPrimary}
           zoom={zoom}
@@ -687,7 +687,8 @@ function CameraScreen() {
           active={appActive && !viewerOpen}
           videoQuality={video.resolution === '4k' ? 'uhd' : 'fhd'}
           fps={video.fps}
-          hdrVideo={false}
+          hdrVideo={video.hdr}
+          manualControls={mode === 'pro'}
           antibanding={video.antibanding ?? 'country'}
           stabilization={video.stabilization}
           faceSmoothing={smoothing}
@@ -1013,7 +1014,11 @@ function CameraScreen() {
                 <IconButton
                   icon="swap-horizontal"
                   size={56}
-                  onPress={() => !recording && setDualPrimary((p) => (p === 'back' ? 'front' : 'back'))}
+                  onPress={() => {
+                    if (recording) return;
+                    setZoom(1);
+                    setDualPrimary((p) => (p === 'back' ? 'front' : 'back'));
+                  }}
                 />
               ) : (
                 <IconButton

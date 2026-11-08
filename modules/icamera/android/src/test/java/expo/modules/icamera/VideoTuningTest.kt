@@ -15,13 +15,13 @@ class VideoTuningTest {
   @Test fun selfieFramingDoesNotStackOrdinarySoftwareAndHardwareCrop() {
     for (style in listOf("standard", "cinematic")) {
       assertEquals(1f, VideoStabilityPolicy.crop("video", style, true, true), 0f)
-      assertTrue(VideoStabilityPolicy.crop("video", style, true, false) <= 1.10f)
+      assertTrue(VideoStabilityPolicy.crop("video", style, true, false) <= 1.02f)
     }
     assertEquals(1f, VideoStabilityPolicy.crop("video", "off", true, false), 0f)
-    assertEquals(1.08f, VideoStabilityPolicy.crop("action", "cinematic", true, true), .001f)
-    assertEquals(1.16f, VideoStabilityPolicy.crop("action", "off", true, false), .001f)
-    assertEquals(1.04f, VideoStabilityPolicy.crop("video", "horizon", true, true), .001f)
-    assertEquals(1.08f, VideoStabilityPolicy.crop("video", "horizon", true, false), .001f)
+    assertEquals(1.04f, VideoStabilityPolicy.crop("action", "cinematic", true, true), .001f)
+    assertEquals(1.08f, VideoStabilityPolicy.crop("action", "off", true, false), .001f)
+    assertEquals(1f, VideoStabilityPolicy.crop("video", "horizon", true, true), .001f)
+    assertEquals(1.02f, VideoStabilityPolicy.crop("video", "horizon", true, false), .001f)
   }
   @Test fun cropReservesEnoughRoomForSuddenRollInBothDirections() {
     for (degrees in listOf(-80, -45, -20, 0, 20, 45, 80)) {
@@ -29,6 +29,9 @@ class VideoTuningTest {
       val need = abs(cos(a)) + (1920f / 1080f) * abs(sin(a))
       assertTrue(VideoStabilityPolicy.rotationCrop(1080f, 1920f, a, 1f) >= need)
     }
+  }
+  @Test fun levelHorizonAddsNoUnnecessaryRotationCrop() {
+    assertEquals(1f, VideoStabilityPolicy.rotationCrop(1080f,1920f,0f,1f),0f)
   }
   @Test fun fixedFrameRateIsPreferredOverExposurePumping() {
     assertEquals(30 to 30, VideoStabilityPolicy.frameRate(listOf(15 to 30, 30 to 30), 30))

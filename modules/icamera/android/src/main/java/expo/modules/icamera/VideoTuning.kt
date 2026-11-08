@@ -8,12 +8,10 @@ internal object VideoStabilityPolicy {
     // Selfie sensors have less field of view to spare. Avoid a full second EIS crop
     // when the phone already stabilizes; retain a small reserve for software motion.
     if (frontCamera) return when {
-      mode == "action" -> if (hardwareStabilized) 1.08f else 1.16f
+      mode == "action" -> if (hardwareStabilized) 1.04f else 1.08f
       stabilization == "off" -> 1f
-      stabilization == "horizon" -> if (hardwareStabilized) 1.04f else 1.08f
       hardwareStabilized -> 1f
-      stabilization == "standard" -> 1.06f
-      else -> 1.10f
+      else -> 1.02f
     }
     return when {
       mode == "action" -> 1.28f
@@ -27,7 +25,8 @@ internal object VideoStabilityPolicy {
     if (width <= 0 || height <= 0 || !angle.isFinite()) return 1f
     var a = abs(angle.toDouble()) % Math.PI
     if (a > Math.PI / 2) a = Math.PI - a
-    val needed = ((cos(a) + max(width, height) / min(width, height) * sin(a)) * 1.03).toFloat().coerceAtLeast(1f)
+    val guard = if (a > 0.0005) 1.005 else 1.0
+    val needed = ((cos(a) + max(width, height) / min(width, height) * sin(a)) * guard).toFloat().coerceAtLeast(1f)
     // Never ease below the geometric requirement: that exposes black corners during roll changes.
     return max(needed, previous + (needed - previous) * 0.05f)
   }

@@ -220,6 +220,11 @@ class PortraitProcessor : SurfaceProcessor {
     initGl()
     inW = request.resolution.width
     inH = request.resolution.height
+    // Never carry the previous lens's digital zoom, roll crop or motion estimate into a selfie.
+    digitalZoomNow = if (frontCamera) 1f else digitalZoom
+    cropState.clear(); encCrop = 1f; rollInit = false
+    cameraPath.reset(); prevLuma = null; motDrawn = false; lastTs = 0L
+    shiftX = 0f; shiftY = 0f
     val tex = IntArray(1)
     GLES20.glGenTextures(1, tex, 0)
     oesTex = tex[0]

@@ -115,6 +115,8 @@ export type ICameraProps = ViewProps & {
   videoQuality?: 'uhd' | 'fhd';
   fps?: number;
   hdrVideo?: boolean;
+  /** Apply supported Pro controls while recording video. */
+  manualControls?: boolean;
   /** Video/Action f-number (0 = automatic); simulated with depth blur on fixed-aperture lenses */
   aperture?: number;
   /** 'country' | 'auto' | '50' | '60' | 'off' */
@@ -134,7 +136,7 @@ export type ICameraProps = ViewProps & {
   /** Portrait video background blur strength 0..1 */
   bokeh?: number;
   onPortraitStatus?: (e: NativeEvent<{ blur: boolean; reason?: string }>) => void;
-  onRecordingState?: (e: NativeEvent<{ paused?: boolean; merging?: boolean }>) => void;
+  onRecordingState?: (e: NativeEvent<{ paused?: boolean; merging?: boolean; processing?: boolean }>) => void;
   onGesture?: (e: NativeEvent<{ kind: 'palm' | 'status'; status?: string }>) => void;
   palmShutter?: boolean;
   shutterSound?: boolean;
