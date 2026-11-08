@@ -5,12 +5,23 @@ import org.junit.Test
 import kotlin.math.*
 
 class VideoTuningTest {
-  @Test fun frontAndRearShareActionAndHorizonCropPolicy() {
+  @Test fun rearActionAndHorizonCropPolicy() {
     assertEquals(1.28f, VideoStabilityPolicy.crop("action", "off"), .001f)
     assertEquals(1.24f, VideoStabilityPolicy.crop("video", "horizon"), .001f)
     assertTrue(VideoStabilityPolicy.horizon("video", "horizon"))
     assertFalse(VideoStabilityPolicy.horizon("video", "off"))
     assertEquals(1f, VideoStabilityPolicy.crop("video", "off"), 0f)
+  }
+  @Test fun selfieFramingDoesNotStackOrdinarySoftwareAndHardwareCrop() {
+    for (style in listOf("standard", "cinematic")) {
+      assertEquals(1f, VideoStabilityPolicy.crop("video", style, true, true), 0f)
+      assertTrue(VideoStabilityPolicy.crop("video", style, true, false) <= 1.10f)
+    }
+    assertEquals(1f, VideoStabilityPolicy.crop("video", "off", true, false), 0f)
+    assertEquals(1.08f, VideoStabilityPolicy.crop("action", "cinematic", true, true), .001f)
+    assertEquals(1.16f, VideoStabilityPolicy.crop("action", "off", true, false), .001f)
+    assertEquals(1.04f, VideoStabilityPolicy.crop("video", "horizon", true, true), .001f)
+    assertEquals(1.08f, VideoStabilityPolicy.crop("video", "horizon", true, false), .001f)
   }
   @Test fun cropReservesEnoughRoomForSuddenRollInBothDirections() {
     for (degrees in listOf(-80, -45, -20, 0, 20, 45, 80)) {

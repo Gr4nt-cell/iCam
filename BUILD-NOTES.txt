@@ -1,1 +1,9 @@
-Source snapshot 03360f1. Install dependencies with npm install, then npm run typecheck. Android compilation has not been completed in this workspace. Photo shader checks and seven standalone Kotlin policy tests passed. Test camera quality and front/rear Action/Horizon stabilization on a physical Android phone. No claim of iPhone Action Mode equivalence. Release signing credentials are excluded.
+iCam HDR processing and grouped mode update
+
+Install: npm install
+Checks: npm run typecheck; node scripts/check-mode-groups.cjs; node scripts/check-photo-look.cjs
+Native: fourteen policy/geometry tests passed; the HDR processor compiles against Android API 34 classes and Media3 1.4.1. Full app/Android build and physical camera tests have not been run. No APK is included.
+
+Both SDR and HDR stabilization crops happen in processing. SDR processes live; HDR processes after recording with HDR_MODE_KEEP_HDR and HEVC. Unsupported exports retain the original HDR clip. HDR processing requires Android 13+ and compatible device encoders. The HDR preview stays wide; its final processed framing is applied after stop.
+
+Photo and Video have separate mode rows, with Pro available in both. Spring/bounce effects are removed. Release signing credentials are excluded.

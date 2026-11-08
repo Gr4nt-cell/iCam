@@ -122,6 +122,10 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
   private var videoQuality = "uhd"
   private var fps = 30
   private var hdrVideo = false
+  private var hdrCaptureBound = false
+  private var hdrProcessingBusy = false
+  private var hdrRollTrace: RecordingRollTrace? = null
+  private var latestRoll = 0f
   private var stabilization = "cinematic"
   private var nightExtension = true
 
@@ -490,7 +494,9 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
       val gy = gravity[1]
       // Phone lying flat: the roll is undefined, keep the last angle
       if (Math.hypot(gx.toDouble(), gy.toDouble()) < 3.0) return
-      portraitProcessor?.targetRoll = Math.atan2(gx.toDouble(), gy.toDouble()).toFloat()
+      latestRoll = Math.atan2(gx.toDouble(), gy.toDouble()).toFloat()
+      portraitProcessor?.targetRoll = latestRoll
+      hdrRollTrace?.add(e.timestamp, latestRoll)
     }
     override fun onAccuracyChanged(s: Sensor?, a: Int) {}
   }
@@ -585,7 +591,7 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
       try {
         p.unbindAll()
         camera = null; imageCapture = null; videoCapture = null
-        usingNightExtension = false; activeExtension = null; slowFps = 0; horizonCrop = 1f
+        usingNightExtension = false; activeExtension = null; slowFps = 0; horizonCrop = 1f; hdrCaptureBound = false
         effectPreview = false; macroZoom = null; ownMode = false
         setRollSensor(false)
         if (!active) return@withProvider
@@ -695,7 +701,7 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
     androidx.camera.camera2.interop.Camera2Interop.Extender(b)
       .setCaptureRequestOption(CaptureRequest.CONTROL_AE_ANTIBANDING_MODE, antibandingMode())
     if (matchAspect) b.setResolutionSelector(resolutionSelector())
-    if (stabilized) b.setPreviewStabilizationEnabled(true)
+    b.setPreviewStabilizationEnabled(stabilized)
     if (ois) {
       androidx.camera.camera2.interop.Camera2Interop.Extender(b)
         .setCaptureRequestOption(CaptureRequest.LENS_OPTICAL_STABILIZATION_MODE, CaptureRequest.LENS_OPTICAL_STABILIZATION_MODE_ON)
@@ -814,13 +820,14 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
         val sel = selector(facing)
         val info = p.getCameraInfo(sel)
         val front = facing == "front"
-        val stab = VideoStabilityPolicy.crop(mode, stabilization) > 1.001f && (try { Preview.getPreviewCapabilities(info).isStabilizationSupported } catch (e: Throwable) { false })
+        // SDR stabilization crops only in PortraitProcessor, keeping the sensor feed wide.
+        val stab = !effectPreview && VideoStabilityPolicy.crop(mode, stabilization) > 1.001f && (try { Preview.getPreviewCapabilities(info).isStabilizationSupported } catch (e: Throwable) { false })
         val preview = newPreview(stab, VideoStabilityPolicy.crop(mode, stabilization) > 1.001f && !stab && !videoHardwareStabilized && oisSupported(info))
         val proc = portraitProcessor
         camera = if (proc != null && effectPreview) {
           proc.frontCamera = front
           proc.horizonLock = VideoStabilityPolicy.horizon(mode, stabilization)
-          proc.stabCrop = VideoStabilityPolicy.crop(mode, stabilization)
+          proc.stabCrop = VideoStabilityPolicy.crop(mode, stabilization, front, stab || videoHardwareStabilized)
           setRollSensor(proc.horizonLock)
           val group = UseCaseGroup.Builder().addUseCase(preview).addUseCase(vc).addEffect(PortraitVideoEffect(proc)).build()
           p.bindToLifecycle(owner, sel, group)
@@ -842,12 +849,18 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
     val action = mode == "action"
     val portraitVideo = mode == "pvideo"
     val selfieVideo = facing == "front"
+    val hdrRanges = try { Recorder.getVideoCapabilities(info).supportedDynamicRanges } catch (_: Throwable) { emptySet<DynamicRange>() }
+    val hdrRange = if (!hdrVideo || portraitVideo) null else when {
+      hdrRanges.contains(DynamicRange.HLG_10_BIT) -> DynamicRange.HLG_10_BIT
+      hdrRanges.contains(DynamicRange.HDR10_10_BIT) -> DynamicRange.HDR10_10_BIT
+      else -> throw IllegalStateException("This camera cannot record HLG or HDR10 with these settings")
+    }
     // The other camera (front ↔ back): video settings must suit BOTH, so the camera can be switched
     // mid-recording without the clip's size, frame rate or stabilization becoming invalid
-    val switchable = mode == "video" || mode == "action"
+    val switchable = hdrRange == null && (mode == "video" || mode == "action")
     val otherInfo = if (switchable) try { p.getCameraInfo(selector(if (selfieVideo) "back" else "front")) } catch (e: Throwable) { null } else null
     fun bothSupport(q: Quality) = listOfNotNull(info, otherInfo).all {
-      try { Recorder.getVideoCapabilities(it).getSupportedQualities(DynamicRange.SDR).contains(q) } catch (e: Throwable) { false }
+      try { Recorder.getVideoCapabilities(it).getSupportedQualities(hdrRange ?: DynamicRange.SDR).contains(q) } catch (e: Throwable) { false }
     }
     val uhd = !action && !portraitVideo && videoQuality == "uhd" && bothSupport(Quality.UHD)
     // Front cameras record at a steady 30 fps (also in Action): at 60 fps the exposure is too short to
@@ -861,21 +874,17 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
       .setTargetVideoEncodingBitRate(if (uhd) 60_000_000 else 24_000_000)
       .build()
 
-    // Prefer preview stabilization, then video EIS, then OIS when electronic modes are unavailable.
-    // Portrait video always uses the strongest (cinematic) stabilization for smooth footage
-    // Front and rear use the same crop policy; hardware EIS is enabled whenever supported.
-    // True 10-bit HDR bypasses our (8-bit) GPU processing
-    val hdr = hdrVideo && !action && !portraitVideo &&
-      (try { Recorder.getVideoCapabilities(info).supportedDynamicRanges.any { it != DynamicRange.SDR } } catch (e: Throwable) { false })
+    // SDR keeps the camera field of view and stabilizes in the GPU processor.
+    // Optical stabilization can assist without stacking another electronic crop.
+    // Selfies use a smaller processing reserve to preserve a wider field of view.
+    // HDR stays out of the 8-bit live processor; stabilize it after recording in HDR.
+    val hdr = hdrRange != null
     // The renderer compensates the front camera roll and mirror transforms too.
-    val horizon = !hdr && VideoStabilityPolicy.horizon(mode, stabilization)
+    val horizon = VideoStabilityPolicy.horizon(mode, stabilization)
     val wantStab = horizon || portraitVideo || stabilization != "off"
-    val previewStab = wantStab && (action || horizon || portraitVideo || stabilization == "cinematic") &&
-      (try { Preview.getPreviewCapabilities(info).isStabilizationSupported } catch (e: Throwable) { false })
-    val videoStabOk = listOfNotNull(info, otherInfo).all {
-      try { Recorder.getVideoCapabilities(it).isStabilizationSupported } catch (e: Throwable) { false }
-    }
-    val ois = wantStab && !previewStab && !videoStabOk && oisSupported(info)
+    // Both SDR and HDR keep the sensor feed wide. SDR processes live; HDR processes after capture.
+    val previewStab = false
+    val ois = wantStab && oisSupported(info)
     // Our GL effect handles background blur, horizon lock and selfie mirroring; it mirrors the
     // recording itself, so CameraX mirroring is off whenever the effect runs
     // Every SDR recording goes through it for low-light tone, denoise and detail
@@ -883,19 +892,15 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
     // Selfie mirroring is always done by CameraX (it accounts for every device's buffer layout)
     val vb = VideoCapture.Builder(recorder)
       .setMirrorMode(if (mirror) MirrorMode.MIRROR_MODE_ON_FRONT_ONLY else MirrorMode.MIRROR_MODE_OFF)
-    videoHardwareStabilized = wantStab && !previewStab && videoStabOk
-    if (videoHardwareStabilized) vb.setVideoStabilizationEnabled(true)
+    videoHardwareStabilized = false
+    vb.setVideoStabilizationEnabled(videoHardwareStabilized)
 
     // Prefer fixed cadence, falling back to the closest mutually supported frame-rate range.
     val ranges = info.supportedFrameRateRanges.filter { r -> otherInfo == null || otherInfo.supportedFrameRateRanges.contains(r) }
     VideoStabilityPolicy.frameRate(ranges.map { it.lower to it.upper }, targetFps)
       ?.let { vb.setTargetFrameRate(Range(it.first, it.second)) }
 
-    if (hdr) {
-      val supported = Recorder.getVideoCapabilities(info).supportedDynamicRanges
-      if (supported.contains(DynamicRange.HLG_10_BIT)) vb.setDynamicRange(DynamicRange.HLG_10_BIT)
-      else if (supported.contains(DynamicRange.HDR_UNSPECIFIED_10_BIT)) vb.setDynamicRange(DynamicRange.HDR_UNSPECIFIED_10_BIT)
-    }
+    hdrRange?.let { vb.setDynamicRange(it) }
     val vc = vb.build()
     if (useEffect) {
       // GPU effect on preview + recording: background blur, horizon lock, mirroring
@@ -910,15 +915,14 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
         proc.horizonLock = horizon
         proc.frontCamera = selfieVideo
         proc.mirrorVideo = false
-        // Second-stage (image-based) stabilization on top of the phone's own: crop margin by mode
-        proc.stabCrop = VideoStabilityPolicy.crop(mode, stabilization)
+        // Apply stabilization crop here, during GPU processing before encoding.
+        proc.stabCrop = VideoStabilityPolicy.crop(mode, stabilization, selfieVideo, previewStab || videoHardwareStabilized)
         proc.onWeakGpu = { reason -> post { emitPortraitStatus(mapOf("blur" to false, "reason" to reason)) } }
         if (USE_OWN_RECORDER && switchable) {
           // Video / Action: iCam's own recorder (off: Android's recorder is used). CameraX only feeds the viewfinder stream; the GPU
           // pipeline draws each frame into a fixed-size encoder, so front/back can change mid-clip.
-          val minLow = targetFps / 2
-          val range = ranges.filter { it.upper == targetFps && it.lower >= minLow && it.lower < targetFps }.minByOrNull { it.lower }
-            ?: ranges.firstOrNull { it.lower == targetFps && it.upper == targetFps }
+          val chosenRange = VideoStabilityPolicy.frameRate(ranges.map { it.lower to it.upper }, targetFps)
+          val range = chosenRange?.let { Range(it.first, it.second) }
           val pb = Preview.Builder()
             .setResolutionSelector(
               androidx.camera.core.resolutionselector.ResolutionSelector.Builder()
@@ -931,7 +935,7 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
                 )
                 .build(),
             )
-          if (previewStab) pb.setPreviewStabilizationEnabled(true)
+          pb.setPreviewStabilizationEnabled(previewStab)
           range?.let { pb.setTargetFrameRate(it) }
           if (ois) {
             androidx.camera.camera2.interop.Camera2Interop.Extender(pb)
@@ -975,12 +979,15 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
     val plainVc = if (useEffect) {
       VideoCapture.Builder(recorder)
         .setMirrorMode(if (mirror) MirrorMode.MIRROR_MODE_ON_FRONT_ONLY else MirrorMode.MIRROR_MODE_OFF)
-        .also { if (wantStab && !previewStab && videoStabOk) it.setVideoStabilizationEnabled(true) }
+        // Processing failure must not silently reintroduce an electronic sensor crop.
+        .setVideoStabilizationEnabled(false)
         .build()
     } else vc
     camera = try {
       p.bindToLifecycle(owner, sel, newPreview(previewStab, ois), plainVc).also { videoCapture = plainVc }
     } catch (e: Throwable) {
+      // Never silently replace a requested HDR capture with SDR.
+      if (hdr) throw IllegalStateException("HDR recording is unavailable with these settings", e)
       // Fall back to a plain configuration the device is guaranteed to support
       p.unbindAll()
       videoHardwareStabilized = false
@@ -989,6 +996,8 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
         .build()
       p.bindToLifecycle(owner, sel, newPreview(), plain).also { videoCapture = plain }
     }
+    hdrCaptureBound = hdr
+    setRollSensor(hdr && horizon)
   }
 
   /** Macro: the tele-macro or dedicated macro camera found from lens data, with close-focus AF. */
@@ -1100,7 +1109,7 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
       camera = cc.cameras.firstOrNull { it.cameraInfo.lensFacing == main.lensFacing } ?: cc.cameras.firstOrNull()
       cc.cameras.firstOrNull { it.cameraInfo.lensFacing == CameraSelector.LENS_FACING_FRONT }?.let { fr ->
         val z = fr.cameraInfo.zoomState.value
-        fr.cameraControl.setZoomRatio(1.3f.coerceIn(z?.minZoomRatio ?: 1f, z?.maxZoomRatio ?: 1f))
+        fr.cameraControl.setZoomRatio(1f.coerceIn(z?.minZoomRatio ?: 1f, z?.maxZoomRatio ?: 1f))
       }
       videoCapture = null
       pipContainer.visibility = View.VISIBLE
@@ -1142,10 +1151,10 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
     )
     val cc = p.bindToLifecycle(listOf(primary, secondary))
     camera = cc.cameras.firstOrNull { it.cameraInfo.lensFacing == main.lensFacing } ?: cc.cameras.firstOrNull()
-    // Selfie lenses are very wide: zoom in a little so the face fills and centres in its window
+    // Keep the selfie lens at its natural framing; do not force a face-filling crop.
     cc.cameras.firstOrNull { it.cameraInfo.lensFacing == CameraSelector.LENS_FACING_FRONT }?.let { front ->
       val z = front.cameraInfo.zoomState.value
-      val target = 1.3f.coerceIn(z?.minZoomRatio ?: 1f, z?.maxZoomRatio ?: 1f)
+      val target = 1f.coerceIn(z?.minZoomRatio ?: 1f, z?.maxZoomRatio ?: 1f)
       front.cameraControl.setZoomRatio(target)
     }
     videoCapture = vc
@@ -1351,6 +1360,7 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
 
   @SuppressLint("MissingPermission")
   fun startRecording() {
+    if (hdrProcessingBusy) return
     if (mode == "dual" && !dualComposed) {
       dualComposed = true
       pendingDualRecord = true
@@ -1445,7 +1455,11 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
 
   @SuppressLint("MissingPermission")
   private fun beginRecording(vc: VideoCapture<Recorder>, continuing: Boolean = false) {
-    if (recording != null) return
+    if (recording != null || hdrProcessingBusy) return
+    val hdrCrop = if (hdrCaptureBound) VideoStabilityPolicy.crop(mode, stabilization, facing == "front") else 1f
+    val hdrTrace = if (hdrCaptureBound && VideoStabilityPolicy.horizon(mode, stabilization))
+      RecordingRollTrace(facing == "front" && !mirror) else null
+    hdrRollTrace = hdrTrace
     if (!continuing) {
       segments.clear()
       segmentDurUs.clear()
@@ -1471,9 +1485,14 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
     keepScreenOn = true
     rootView?.keepScreenOn = true
     recording = pending.start(executor) { event ->
-      if (event is VideoRecordEvent.Pause) emitRecordingState(mapOf("paused" to true))
+      if (event is VideoRecordEvent.Start || event is VideoRecordEvent.Resume) {
+        hdrTrace?.resume(event.recordingStats.recordedDurationNanos / 1000, android.os.SystemClock.elapsedRealtimeNanos(), latestRoll)
+      }
+      if (event is VideoRecordEvent.Pause) { hdrTrace?.pause(); emitRecordingState(mapOf("paused" to true)) }
       if (event is VideoRecordEvent.Resume) emitRecordingState(mapOf("paused" to false))
       if (event is VideoRecordEvent.Finalize) {
+        hdrTrace?.pause()
+        if (hdrRollTrace === hdrTrace) hdrRollTrace = null
         recording = null
         persistentRec = false
         val okPiece = file.exists() && file.length() > 0
@@ -1500,6 +1519,17 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
         playSound(android.media.MediaActionSound.STOP_VIDEO_RECORDING)
         post { updateGestures() }
         val ok = file.exists() && file.length() > 0
+        if (ok && !event.hasError() && hdrCrop > 1.001f) {
+          hdrProcessingBusy = true
+          emitRecordingState(mapOf("processing" to true))
+          HdrVideoStabilizer.process(context, file, hdrCrop, hdrTrace?.snapshot() ?: emptyList()) { result, warning ->
+            hdrProcessingBusy = false
+            emitRecordingFinished(mapOf("path" to result.absolutePath,
+              "durationMs" to event.recordingStats.recordedDurationNanos / 1_000_000.0,
+              "slowMotion" to false, "error" to warning))
+          }
+          return@start
+        }
         emitRecordingFinished(
           mapOf(
             "path" to if (ok) file.absolutePath else null,

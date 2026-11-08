@@ -1,17 +1,30 @@
-# iCam camera redesign and capture quality
+# iCam: capture processing and grouped modes
 
-The camera uses black surroundings, compact smoked-glass controls, warm edge highlights and yellow selection accents, following the supplied camera photos. A white photo shutter or red recording button sits above a Photo/Video selector, with thumbnail and flip controls alongside. The grid button opens all existing modes. Android glass uses a static sheen to avoid repeatedly blurring the live camera feed.
+Photo and Video are the two main tabs. Each has a separate subtype row:
 
-## Capture changes
+- Photo: Standard, Portrait, Night Sight, Macro (when supported), Pro.
+- Video: Standard, Slo-mo and Dual (when supported), Action, Pro video.
 
-- Front and rear cameras share the stabilization crop policy. Action reserves more crop space; Horizon also levels the front camera. Rotation crop expands immediately to prevent exposed corners and relaxes gradually. Motion estimates compensate for exposure changes and reject local outliers. Fixed frame cadence is preferred when supported.
-- SDR tone adaptation limits brightening around highlights, smooths exposure transitions and makes small white-balance corrections only when neutral samples are available. Manual white-balance presets remain respected. These changes do not add HDR10 recording or recover clipped sensor detail.
-- Photo finishing uses restrained colour, neighbourhood-limited sharpening and JPEG quality 97. Adjustable skin smoothing uses detected face regions, feathers the boundary, protects edges and preserves complexion rather than whitening skin. Video smoothing also protects edges and retains texture.
+Pro's photo/video toggle remains available. All spring animations and overshoot have been replaced with fixed-duration transitions. Scroll containers do not bounce. The gallery and flip controls are anchored to the shutter row so the additional subtype row cannot overlap them.
+
+## Stabilization and framing
+
+Both SDR and HDR disable CameraX electronic preview/video stabilization to avoid stacking a camera crop with the processing crop. Optical stabilization can still assist. Front-camera processing reserves are smaller: 1.06x standard, 1.10x cinematic, 1.16x Action, 1.08x Horizon, with extra geometry only when required by roll. Camera flips reset manual zoom to 1x; Dual does not force a selfie zoom.
+
+SDR processing happens live in PortraitProcessor. HDR capture stays wide and records HLG or HDR10. After recording, disposable 160x90 proxies measure motion; the full-resolution HDR frames are transformed through Media3's HDR pipeline and exported as HEVC with HDR_MODE_KEEP_HDR. Proxy pixels never become output video pixels. Gravity samples for Action/Horizon use the recorded timeline with pauses excluded. Transforms interpolate at the original frame rate. Cropping accounts for both translation and roll to avoid black corners.
+
+HDR processing needs Android 13+ and a compatible HDR decoder, GPU and HEVC encoder. Unsupported HDR exports, tone-mapping fallbacks, processing errors, or mismatched output colour metadata/resolution retain the original recording and show a message. No automatic conversion to SDR is accepted. HDR processing occurs after stop, so its viewfinder shows the uncropped capture rather than the final stabilized framing. Recording is disabled while that export completes.
+
+## Photo quality
+
+Photo finishing uses restrained colour, limited sharpening and JPEG quality 97. Detected-face smoothing feathers boundaries, preserves complexion and protects facial features. SDR video tone adaptation limits highlight brightening and uses small neutral-sample white-balance corrections. This does not recover already-clipped sensor detail.
 
 ## Validation
 
-`npm run typecheck`, `node scripts/check-photo-look.cjs`, and the control-preservation audit pass. Seven standalone Kotlin unit tests cover crop bounds, frame cadence, motion estimation, smoothing and tone policies. The photo test compiles the actual Skia shader and checks noise reduction, complexion, facial contrast and unchanged background. The default preservation audit still rejects backend changes; this task uses its explicit `--allow-capture-quality` scope.
+- TypeScript type check, actual Skia photo shader rendering and mode grouping checks pass.
+- Fourteen Kotlin tests pass: crop policy, motion estimation, tone limits, interpolation, pause timing, mirror direction and coverage of transformed frame corners.
+- The HDR processor and geometry compile against Android API 34 classes and the exact Media3 1.4.1 dependencies.
+- The scoped preservation audit confirms 143 unaffected control bindings. Authorized HDR callbacks, grouped controls and motion changes are scoped separately.
+- Full Android app compilation, HDR export on a physical phone and front/rear walking footage still require verification. No APK was built for this revision.
 
-The pull-request workflow compiles the Android camera module and runs its unit tests without release signing. Physical-device camera validation is still required: test front/rear walking footage, Action, Horizon, low light, mixed lighting and multiple skin tones. Cropping cannot remove motion blur from a slow shutter, and results depend on camera hardware and available CameraX stabilization.
-
-The older Figma import and reference files in this folder describe an earlier design. New preview artwork is a design mockup with sample viewfinder imagery, not an Android screenshot or evidence of capture quality. Browser rendering was unavailable because the browser executable could not launch in this workspace.
+The CI workflow compiles the complete Android camera module and runs its tests. The older Figma and preview artwork in this folder represent an earlier interface, not the updated grouped controls or evidence of capture quality.

@@ -36,7 +36,7 @@ export function SettingsSheet(p: SettingsProps) {
       <View style={[s.sheetWrap, { paddingBottom: p.bottomInset + 8 }]}>
         <Glass radius={32} style={s.sheet} tint="rgba(17,17,16,0.93)" intensity={70}>
           <View style={s.grabber} />
-          <ScrollView contentContainerStyle={{ padding: 22, paddingTop: 16, gap: 20 }}>
+          <ScrollView bounces={false} overScrollMode="never" contentContainerStyle={{ padding: 22, paddingTop: 16, gap: 20 }}>
             <View style={s.sheetHeader}>
               <View style={{ flex: 1 }}>
                 <Text style={s.eyebrow}>YOUR CAMERA, YOUR WAY</Text>

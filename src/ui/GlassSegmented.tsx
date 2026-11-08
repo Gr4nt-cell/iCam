@@ -2,7 +2,7 @@ import { MaterialCommunityIcons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { LinearGradient } from 'expo-linear-gradient';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import Animated, { useAnimatedStyle, useSharedValue, withSpring, withTiming } from 'react-native-reanimated';
+import Animated, { useAnimatedStyle, useSharedValue, withTiming } from 'react-native-reanimated';
 import {
   PanResponder,
   Pressable,
@@ -37,9 +37,8 @@ type Props = {
 };
 
 const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
-/** Soft glide with a hint of overshoot; runs on the UI thread so camera work never stutters it */
-const GLIDE = { damping: 22, stiffness: 240, mass: 0.9 };
-const PRESS = { damping: 18, stiffness: 320 };
+/** Fixed-duration transitions settle directly without spring overshoot. */
+const GLIDE = { duration: 160 };
 
 /**
  * Liquid-glass segmented selector. The selection pill is a rounded, translucent glass lens that
@@ -86,8 +85,8 @@ export function GlassSegmented({
     const l = layouts.current[k];
     if (!l) return;
     if (animate && opacity.value > 0) {
-      x.value = withSpring(l.x, GLIDE);
-      w.value = withSpring(l.w, GLIDE);
+      x.value = withTiming(l.x, GLIDE);
+      w.value = withTiming(l.w, GLIDE);
     } else {
       x.value = l.x;
       w.value = l.w;
@@ -149,7 +148,7 @@ export function GlassSegmented({
           dragging.current = true;
           dragStart.current = l?.x ?? 0;
           hoverRef.current = live.current.value;
-          scale.value = withSpring(1.035, PRESS);
+          scale.value = 1;
         },
         onPanResponderMove: (_, g) => {
           const keys = live.current.items.map((i) => i.key).filter((k) => layouts.current[k]);
@@ -164,7 +163,7 @@ export function GlassSegmented({
           if (k && k !== hoverRef.current) {
             hoverRef.current = k;
             setHover(k);
-            w.value = withSpring(layouts.current[k].w, GLIDE);
+            w.value = withTiming(layouts.current[k].w, GLIDE);
             Haptics.selectionAsync();
           }
         },
@@ -177,7 +176,7 @@ export function GlassSegmented({
 
   const finishDrag = (wasTap: boolean) => {
     dragging.current = false;
-    scale.value = withSpring(1, PRESS);
+    scale.value = 1;
     const k = wasTap ? live.current.value : hoverRef.current ?? live.current.value;
     hoverRef.current = null;
     setHover(null);
@@ -264,6 +263,8 @@ export function GlassSegmented({
         <ScrollView
           ref={scrollRef}
           horizontal
+          bounces={false}
+          overScrollMode="never"
           style={{ flexGrow: 0 }}
           showsHorizontalScrollIndicator={false}
           scrollEventThrottle={16}

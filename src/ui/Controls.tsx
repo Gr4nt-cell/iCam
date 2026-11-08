@@ -17,15 +17,14 @@ import RAnimated, {
   FadeInDown,
   FadeOut,
   FadeOutDown,
-  ZoomIn,
   useAnimatedStyle,
   useSharedValue,
-  withSpring,
   withTiming,
 } from 'react-native-reanimated';
 import type { CaptureMode, Lens } from '../camera/hardware';
 import { Glass, GlassCircle } from './Glass';
 import { GlassSegmented } from './GlassSegmented';
+import { modeGroup, modesForGroup } from '../camera/modeGroups';
 
 export const MODES: { key: CaptureMode; label: string }[] = [
   { key: 'night', label: 'Night Sight' },
@@ -252,42 +251,34 @@ export function ModeCarousel({
   modes,
   onChange,
   disabled,
+  proVideo = false,
+  onProVideo,
 }: {
   mode: CaptureMode;
   modes: { key: CaptureMode; label: string }[];
   onChange: (m: CaptureMode) => void;
   disabled?: boolean;
+  proVideo?: boolean;
+  onProVideo?: (video: boolean) => void;
 }) {
-  const [expanded, setExpanded] = useState(false);
   const compact = useWindowDimensions().width < 360;
+  const group = modeGroup(mode, proVideo);
+  const grouped = modesForGroup(modes, group);
   return (
     <View style={styles.modeBar}>
-      {expanded ? <Glass radius={24} style={{ position: 'absolute', bottom: 62, width: 300, alignSelf: 'center' }}>
-      <GlassSegmented
-        items={modes}
-        value={mode}
-        onChange={(k) => onChange(k as CaptureMode)}
-        scrollable
-        disabled={disabled}
-        height={36}
-        fontSize={13}
-        paddingH={13}
-      />
-      </Glass> : null}
-      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-        <Glass radius={27}>
-          <GlassSegmented items={[{ key: 'video', label: 'VIDEO' }, { key: 'photo', label: 'PHOTO' }]}
-            value={mode} onChange={(key) => onChange(key as CaptureMode)} disabled={disabled}
-            height={compact ? 38 : 42} fontSize={compact ? 11 : 13} paddingH={compact ? 8 : 12} minItemWidth={compact ? 56 : 68} />
-        </Glass>
-        <Pressable accessibilityRole="button" accessibilityLabel="All camera modes" accessibilityState={{ expanded }}
-          disabled={disabled} onPress={() => setExpanded(v => !v)}>
-          <GlassCircle size={compact ? 36 : 42} active={expanded || !['photo', 'video'].includes(mode)}>
-            <MaterialCommunityIcons name="dots-grid" size={20} color={expanded || !['photo', 'video'].includes(mode) ? '#ffe16b' : '#fff'} />
-          </GlassCircle>
-        </Pressable>
-      </View>
-      {!['photo', 'video'].includes(mode) ? <Text style={styles.specialMode}>{modes.find(item => item.key === mode)?.label.toUpperCase()}</Text> : null}
+      <Glass radius={24} style={{ maxWidth: '100%', alignSelf: 'center' }}>
+        <GlassSegmented items={grouped} value={mode}
+          onChange={(key) => {
+            if (key === 'pro') onProVideo?.(group === 'video');
+            onChange(key as CaptureMode);
+          }} scrollable disabled={disabled}
+          height={32} fontSize={compact ? 11 : 12} paddingH={compact ? 10 : 12} />
+      </Glass>
+      <Glass radius={27}>
+        <GlassSegmented items={[{ key: 'photo', label: 'PHOTO' }, { key: 'video', label: 'VIDEO' }]}
+          value={group} onChange={(key) => onChange(key as CaptureMode)} disabled={disabled}
+          height={compact ? 38 : 42} fontSize={compact ? 11 : 13} paddingH={compact ? 16 : 20} minItemWidth={82} />
+      </Glass>
     </View>
   );
 }
@@ -308,14 +299,14 @@ export function Shutter({
   const scale = useRef(new Animated.Value(1)).current;
   const isVideo = kind === 'video';
   const press = (to: number) =>
-    Animated.spring(scale, { toValue: to, useNativeDriver: true, speed: 40, bounciness: 8 }).start();
+    Animated.timing(scale, { toValue: to, duration: 100, useNativeDriver: true }).start();
 
   return (
     <Pressable
       accessibilityRole="button"
       accessibilityLabel={recording ? 'Stop recording' : kind === 'video' ? 'Start recording' : 'Take photo'}
       accessibilityState={{ busy, disabled: busy && !recording }}
-      onPressIn={() => press(0.9)}
+      onPressIn={() => press(0.98)}
       onPressOut={() => press(1)}
       onPress={onPress}
       disabled={busy && !recording}
@@ -338,7 +329,7 @@ export function Shutter({
 function RecMorph({ recording }: { recording: boolean }) {
   const t = useSharedValue(recording ? 1 : 0);
   useEffect(() => {
-    t.value = withSpring(recording ? 1 : 0, { damping: 18, stiffness: 260 });
+    t.value = withTiming(recording ? 1 : 0, { duration: 160 });
   }, [recording, t]);
   const st = useAnimatedStyle(() => {
     const size = 62 - 32 * t.value;
@@ -366,7 +357,7 @@ export function Thumb({
     <Pressable accessibilityRole="button" accessibilityLabel="Open latest capture" onPress={onPress} disabled={!uri && !enabled}>
       <Glass radius={27} style={styles.thumb}>
         {uri ? (
-          <RAnimated.View key={uri} entering={ZoomIn.duration(260)} style={StyleSheet.absoluteFill}>
+          <RAnimated.View key={uri} entering={FadeIn.duration(160)} style={StyleSheet.absoluteFill}>
             <Image source={{ uri }} style={styles.thumbImg} />
           </RAnimated.View>
         ) : isVideo ? (
@@ -497,13 +488,13 @@ export function Slider({
 /* ---------------- Focus ring ---------------- */
 
 export function FocusRing({ x, y }: { x: number; y: number }) {
-  const anim = useRef(new Animated.Value(1.6)).current;
+  const anim = useRef(new Animated.Value(1)).current;
   const opacity = useRef(new Animated.Value(1)).current;
   useEffect(() => {
-    anim.setValue(1.6);
+    anim.setValue(1);
     opacity.setValue(1);
     Animated.sequence([
-      Animated.spring(anim, { toValue: 1, useNativeDriver: true, speed: 18 }),
+      Animated.timing(anim, { toValue: 1, duration: 120, useNativeDriver: true }),
       Animated.delay(1400),
       Animated.timing(opacity, { toValue: 0, duration: 400, useNativeDriver: true }),
     ]).start();
@@ -538,7 +529,7 @@ export const styles = StyleSheet.create({
   zoomPillActive: { backgroundColor: 'rgba(255,255,255,0.92)' },
   zoomText: { color: '#fff', fontSize: 13, fontWeight: '600' },
   zoomTextActive: { color: '#111', fontWeight: '700' },
-  modeBar: { alignSelf: 'center', maxWidth: '72%', alignItems: 'center' },
+  modeBar: { alignSelf: 'center', width: '100%', paddingHorizontal: 14, gap: 10, alignItems: 'center' },
   specialMode: { color: '#ffe16b', fontSize: 9, fontWeight: '700', letterSpacing: 2, marginTop: 5 },
   modeChip: { paddingHorizontal: 14, height: 36, borderRadius: 18, justifyContent: 'center' },
   modeChipActive: { backgroundColor: 'rgba(214,228,255,0.95)' },

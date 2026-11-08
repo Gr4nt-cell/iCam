@@ -4,12 +4,24 @@ import kotlin.math.*
 
 /** One policy for initial binding and front/back changes. Cropping reserves real motion headroom. */
 internal object VideoStabilityPolicy {
-  fun crop(mode: String, stabilization: String): Float = when {
-    mode == "action" -> 1.28f
-    stabilization == "off" -> 1f
-    stabilization == "horizon" -> 1.24f
-    stabilization == "standard" -> 1.10f
-    else -> 1.20f
+  fun crop(mode: String, stabilization: String, frontCamera: Boolean = false, hardwareStabilized: Boolean = false): Float {
+    // Selfie sensors have less field of view to spare. Avoid a full second EIS crop
+    // when the phone already stabilizes; retain a small reserve for software motion.
+    if (frontCamera) return when {
+      mode == "action" -> if (hardwareStabilized) 1.08f else 1.16f
+      stabilization == "off" -> 1f
+      stabilization == "horizon" -> if (hardwareStabilized) 1.04f else 1.08f
+      hardwareStabilized -> 1f
+      stabilization == "standard" -> 1.06f
+      else -> 1.10f
+    }
+    return when {
+      mode == "action" -> 1.28f
+      stabilization == "off" -> 1f
+      stabilization == "horizon" -> 1.24f
+      stabilization == "standard" -> 1.10f
+      else -> 1.20f
+    }
   }
   fun rotationCrop(width: Float, height: Float, angle: Float, previous: Float): Float {
     if (width <= 0 || height <= 0 || !angle.isFinite()) return 1f

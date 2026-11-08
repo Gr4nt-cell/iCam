@@ -1,0 +1,18 @@
+const fs=require('node:fs'),vm=require('node:vm'),assert=require('node:assert/strict'),ts=require('typescript');
+const text=fs.readFileSync('src/camera/modeGroups.ts','utf8');
+const js=ts.transpileModule(text,{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2020}}).outputText;
+const moduleExports={};vm.runInNewContext(js,{exports:moduleExports,Set});
+const {modeGroup,modesForGroup}=moduleExports;
+const keys=['photo','portrait','night','macro','pro','video','slowmo','dual','action','pvideo'];
+const modes=keys.map(key=>({key,label:key}));
+const photo=Array.from(modesForGroup(modes,'photo'),x=>x.key),video=Array.from(modesForGroup(modes,'video'),x=>x.key);
+assert.deepEqual(photo,['photo','portrait','night','macro','pro']);
+assert.deepEqual(video,['video','slowmo','dual','action','pvideo','pro']);
+for(const key of keys)assert(photo.includes(key)||video.includes(key),`Lost mode ${key}`);
+for(const key of photo.filter(k=>k!=='pro'))assert.equal(modeGroup(key),'photo');
+for(const key of video.filter(k=>k!=='pro'))assert.equal(modeGroup(key),'video');
+assert.equal(modeGroup('pro',false),'photo');assert.equal(modeGroup('pro',true),'video');
+const restricted=modes.filter(x=>!['dual','slowmo','macro'].includes(x.key));
+assert(!Array.from(modesForGroup(restricted,'photo'),x=>x.key).includes('macro'));
+assert(!Array.from(modesForGroup(restricted,'video'),x=>x.key).some(x=>['dual','slowmo'].includes(x)));
+console.log('PASS: every mode is grouped correctly; Pro works in both groups; hardware capability filtering is preserved.');

@@ -3,7 +3,7 @@ import * as Haptics from 'expo-haptics';
 import * as MediaLibrary from 'expo-media-library';
 import { StatusBar } from 'expo-status-bar';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import Animated, { FadeIn, FadeInDown, FadeOut, FadeOutDown, LinearTransition, ZoomIn, ZoomOut } from 'react-native-reanimated';
+import Animated, { FadeIn, FadeInDown, FadeOut, FadeOutDown, LinearTransition } from 'react-native-reanimated';
 import { AppState, PanResponder, PermissionsAndroid, Pressable, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
@@ -471,7 +471,7 @@ function CameraScreen() {
   /* ---------- capture: video ---------- */
   const toggleRecording = useCallback(async () => {
     const c = cam.current;
-    if (!c) return;
+    if (!c || busy) return;
     if (recording) {
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
       await c.stopRecording();
@@ -485,7 +485,7 @@ function CameraScreen() {
       setRecording(false);
       flashToast(String(e?.message ?? e), 4000);
     });
-  }, [recording, flashToast]);
+  }, [recording, busy, flashToast]);
 
   useEffect(() => {
     if (!recording || paused) return;
@@ -504,7 +504,7 @@ function CameraScreen() {
 
   // Front/back can be switched mid-recording in Video and Action (the clip continues)
   // Video / Action: switching cameras mid-recording records a new piece; pieces are joined at the end
-  const canFlipWhileRecording = mode === 'video' || mode === 'action';
+  const canFlipWhileRecording = !video.hdr && (mode === 'video' || mode === 'action');
 
   const runCountdown = useCallback(async (secs: number) => {
     for (let t = secs; t > 0; t--) {
@@ -736,12 +736,18 @@ function CameraScreen() {
             w?.(e.nativeEvent);
           }}
           onRecordingState={(e) => {
-            const st = e.nativeEvent as { paused?: boolean; merging?: boolean };
-            if (st.merging) {
+            const st = e.nativeEvent as { paused?: boolean; merging?: boolean; processing?: boolean };
+            if (st.processing) {
+              setRecording(false);
+              setPaused(false);
+              setBusy(true);
+              setProcessing(true);
+            } else if (st.merging) {
               setProcessing(true); // quiet: only the thumbnail's processing ring shows
             } else if (typeof st.paused === 'boolean') setPaused(st.paused);
           }}
           onRecordingFinished={async (e) => {
+            setBusy(false);
             setRecording(false);
             setPaused(false);
             setProcessing(false);
@@ -919,7 +925,7 @@ function CameraScreen() {
 
       {countdown > 0 && (
         <View style={[StyleSheet.absoluteFill, styles.center]} pointerEvents="none">
-          <Animated.Text key={countdown} entering={ZoomIn.duration(260)} exiting={FadeOut.duration(200)} style={styles.countdown}>
+          <Animated.Text key={countdown} entering={FadeIn.duration(160)} exiting={FadeOut.duration(200)} style={styles.countdown}>
             {countdown}
           </Animated.Text>
         </View>
@@ -993,11 +999,11 @@ function CameraScreen() {
           <View style={styles.shutterDeck}>
             <View style={styles.shutterRow}>
               {recording && mode !== 'slowmo' ? (
-                <Animated.View key="pause" entering={ZoomIn.duration(220)} exiting={ZoomOut.duration(160)} style={styles.galleryAnchor}>
+                <Animated.View key="pause" entering={FadeIn.duration(160)} exiting={FadeOut.duration(120)} style={styles.galleryAnchor}>
                   <IconButton icon={paused ? 'record' : 'pause'} size={56} onPress={togglePause} />
                 </Animated.View>
               ) : (
-                <Animated.View key="thumb" entering={ZoomIn.duration(220)} exiting={ZoomOut.duration(160)} style={styles.galleryAnchor}>
+                <Animated.View key="thumb" entering={FadeIn.duration(160)} exiting={FadeOut.duration(120)} style={styles.galleryAnchor}>
                   <Thumb uri={last?.uri} processing={processing} onPress={openLast} isVideo={!!last?.isVideo} enabled={!!last} />
                 </Animated.View>
               )}
@@ -1016,13 +1022,15 @@ function CameraScreen() {
                   onPress={() => {
                     if (recording && !canFlipWhileRecording) return;
                     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                    setZoom(1);
+                    setLensId(null);
                     setFacing((f) => (f === 'back' ? 'front' : 'back'));
                   }}
                 />
               )}
               </View>
             </View>
-            <ModeCarousel mode={mode} modes={visibleModes} onChange={changeMode} disabled={recording} />
+            <ModeCarousel mode={mode} modes={visibleModes} onChange={changeMode} disabled={recording || busy} proVideo={proVideo} onProVideo={setProVideo} />
             <View style={styles.quickActions}>
               <Pressable
                 hitSlop={8}
@@ -1114,12 +1122,12 @@ function CameraScreen() {
 
 const SUBBAR_MOVE = LinearTransition.duration(300);
 /** Shared motion: things that move glide; things that appear fade/scale in */
-const GLIDE = LinearTransition.springify().damping(22).stiffness(220);
+const GLIDE = LinearTransition.duration(160);
 
 /** Small top-bar control that pops in/out while its neighbours glide aside */
 function Pop({ children }: { children: React.ReactNode }) {
   return (
-    <Animated.View entering={ZoomIn.duration(200)} exiting={ZoomOut.duration(150)} layout={GLIDE}>
+    <Animated.View entering={FadeIn.duration(160)} exiting={FadeOut.duration(120)} layout={GLIDE}>
       {children}
     </Animated.View>
   );
@@ -1137,8 +1145,8 @@ function Panel({ children }: { children: React.ReactNode }) {
 const styles = StyleSheet.create({
   topShade: { position: 'absolute', left: 0, right: 0, top: 0, backgroundColor: '#000' },
   instrumentCluster: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 2, height: 48, gap: 2 },
-  galleryAnchor: { position: 'absolute', bottom: 56, left: 22, zIndex: 3 },
-  flipAnchor: { position: 'absolute', bottom: 54, right: 22, zIndex: 3 },
+  galleryAnchor: { position: 'absolute', bottom: 20, left: 22, zIndex: 3 },
+  flipAnchor: { position: 'absolute', bottom: 18, right: 22, zIndex: 3 },
   root: { flex: 1, backgroundColor: '#000' },
   center: { alignItems: 'center', justifyContent: 'center' },
   dim: { color: 'rgba(255,255,255,0.6)' },
@@ -1180,7 +1188,7 @@ const styles = StyleSheet.create({
   exposureMarker: { position: 'absolute', left: 8, right: 8, top: '50%', height: 2, marginTop: -1, backgroundColor: '#ffe16b' },
   bottom: { position: 'absolute', left: 0, right: 0, bottom: 0, gap: 14, zIndex: 8 },
   zoomFloat: { alignSelf: 'center', marginBottom: 4 },
-  shutterRow: { height: 92, alignItems: 'center', justifyContent: 'center', position: 'static' },
+  shutterRow: { height: 92, alignItems: 'center', justifyContent: 'center', position: 'relative' },
   shutterDeck: { alignSelf: 'center', width: '100%', maxWidth: 620, backgroundColor: 'rgba(0,0,0,0.94)', paddingTop: 18, paddingBottom: 8, gap: 16 },
   quickActions: { alignSelf: 'center', flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 12, minHeight: 30, paddingHorizontal: 6 },
   quickAction: { minHeight: 32, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, paddingHorizontal: 10, borderRadius: 16, backgroundColor: 'rgba(255,255,255,0.055)' },

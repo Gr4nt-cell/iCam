@@ -18,7 +18,7 @@ export class ErrorBoundary extends React.Component<{ children: React.ReactNode }
       <View style={{ flex: 1, backgroundColor: '#000', padding: 24, paddingTop: 72, gap: 12 }}>
         <Text style={{ color: '#fff', fontSize: 22, fontWeight: '700' }}>iCam hit a problem</Text>
         <Text style={{ color: 'rgba(255,255,255,0.7)' }}>Screenshot this and send it so it can be fixed.</Text>
-        <ScrollView style={{ flex: 1, backgroundColor: 'rgba(255,255,255,0.06)', borderRadius: 16, padding: 12 }}>
+        <ScrollView bounces={false} overScrollMode="never" style={{ flex: 1, backgroundColor: 'rgba(255,255,255,0.06)', borderRadius: 16, padding: 12 }}>
           <Text selectable style={{ color: '#ffb4ab', fontFamily: 'monospace', fontSize: 12 }}>
             {String(error.message)}
             {'\n\n'}
