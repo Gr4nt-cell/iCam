@@ -92,7 +92,6 @@ export type ReadyEvent = {
   zoomMin: number;
   zoomMax: number;
   hasFlash: boolean;
-  horizonLock?: boolean;
 };
 
 export type ICameraProps = ViewProps & {
@@ -123,7 +122,7 @@ export type ICameraProps = ViewProps & {
   aperture?: number;
   /** 'country' | 'auto' | '50' | '60' | 'off' */
   antibanding?: string;
-  stabilization?: 'off' | 'standard' | 'cinematic' | 'horizon';
+  stabilization?: 'off' | 'standard' | 'cinematic';
   /** Skin smoothing 0..1 for video (photos are smoothed when processed) */
   faceSmoothing?: number;
   /** Live filter [sat, contrast, warmth, fade, mono, vignette] */

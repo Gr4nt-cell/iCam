@@ -1,6 +1,7 @@
 /* Static regression audit: requires the base revision as argv[2] (default HEAD). */
 const fs=require('fs'),cp=require('child_process'),ts=require('typescript'),assert=require('assert/strict');
 const base=process.argv[2]||'HEAD';
+const viewfinder=process.argv.includes('--allow-viewfinder-settings');
 const rebuild=process.argv.includes('--allow-stabilization-rebuild');
 const hdr=process.argv.includes('--allow-hdr-processing');
 const grouped=process.argv.includes('--allow-mode-grouping');
@@ -30,6 +31,11 @@ function approvedPrefix(prefix){
 function normalized(node,source){
  if(ts.isJsxAttribute(node)){
   const text=node.getText(source);
+  if(viewfinder){
+   if(['onBrightness','onShadows'].includes(node.name.text))return node.name.text+':settings-slider';
+   if(node.name.text==='options'&&text.includes("'standard'")&&text.includes("'cinematic'"))return 'options:off-standard-cinematic';
+   if(node.name.text==='onResetDefaults')return 'onResetDefaults:reviewed-reset';
+  }
   if(rebuild&&['aspect','previewFit'].includes(node.name.text))return node.name.text+':approved-wide-preview';
   if(xiaomi&&node.name.text==='style'&&text.includes('rearCameraFrame'))return canonicalAttr('style={StyleSheet.absoluteFill}');
   if(liveRecord&&node.name.text==='options'&&text.includes('p.video.hdr'))return canonicalAttr("options={['off','standard','cinematic','horizon']}");
@@ -54,11 +60,24 @@ for(const file of files){
  if(grouped&&file==='src/ui/Controls.tsx')code=code.replace(/export function ModeCarousel[\s\S]*?(?=\/\* ---------------- Shutter)/,'export function ModeCarousel(){return null;}\n');
  const src=parse(code,file),list=[];function walk(n){
  if(grouped&&ts.isJsxSelfClosingElement(n)&&n.tagName.getText(src)==='ModeCarousel')return;
+if(viewfinder&&ts.isJsxAttribute(n)){
+ const text=n.getText(src);
+ if(n.name.text==='onPress'&&['nudgeExposure(','setTimer((t)','setFlash((f)','stabilization !== \'horizon\'','setShowLook(','pokeSliders()'].some(t=>text.includes(t)))return;
+ if(n.name.text==='disabled'&&text.includes("!(isPhotoShot || mode === 'video' || mode === 'action')"))return;
+}
 if(ts.isJsxAttribute(n)&&(/^on[A-Z]/.test(n.name.text)||['disabled','value','min','max','items','modes','stops','options'].includes(n.name.text)))list.push(normalized(n,src).replace(/setZoom\(1\);\s*setLensId\(null\);\s*(?=setFacing)/g, ''));ts.forEachChild(n,walk);}walk(src);return list;}
  const current=attrs(after);for(const old of attrs(before)){const i=current.indexOf(old);assert(i>=0,`${file}: lost or changed control binding ${old}`);current.splice(i,1);handlers++;}
  if(file==='App.tsx'){
   function state(code){let prefix=approvedPrefix(code.slice(0,code.indexOf('  if (perms.camera === null)')));if(rear)prefix=prefix.replace(/^import \{ CameraScreenPicker[^\n]+\n/m,'').replace(/  \/\/ Display switching owns[\s\S]*?(?=  const sliderTimer =)/,'').replace('    if (screens.switching) return;\n','').replace(', screens.switching','');if(photoSkin)prefix=prefix.replace(/^import \{ DEFAULT_PHOTO_SMOOTHING[^\n]+\n/m,'').replace(/^  const \[photoSmoothing[^\n]+\n/m,'').replace(/^    photoSmoothing\?: number;\n/m,'').replace(/^        setPhotoSmoothing[^\n]+\n/m,'').replace(/, photoSmoothing(?=, pip|, filter)/g,'').replace('smoothing: captureSmoothing(mode, photoSmoothing, smoothing)','smoothing');if(motion)prefix=prefix.replace(', ZoomIn, ZoomOut','');if(hardware)prefix=prefix.replace(/^\s*\/\/ (v2: HDR video|HDR defaults off,)[^\n]*\n/gm,'').replace('...v.video, hdr: false','...v.video');if(hdr)prefix=prefix.replace('if (!c || busy) return;','if (!c) return;').replace('}, [recording, busy, flashToast]);','}, [recording, flashToast]);');return hdr?prefix.replace(/const canFlipWhileRecording = [^;]+;/,'const canFlipWhileRecording = HDR_RESTRICTED;'):prefix;}
-  assert.equal(state(after),state(before),'Unreviewed camera state or capture logic changed');
+  if(!viewfinder)assert.equal(state(after),state(before),'Unreviewed camera state or capture logic changed');
+  else {
+   // This request intentionally moves controls and removes Horizon. Capture/recording functions stay exact.
+   function captureBodies(code){const src=parse(code,file),found={};function walk(n){
+    if(ts.isVariableDeclaration(n)&&['shootPhoto','toggleRecording','togglePause','saveToGallery','onShutter','onGesture','openLast'].includes(n.name.getText(src)))found[n.name.getText(src)]=printer.printNode(ts.EmitHint.Unspecified,n,src);
+    ts.forEachChild(n,walk);
+   }walk(src);return found;}
+   assert.deepEqual(captureBodies(after),captureBodies(before),'Capture, save or recording behavior changed');
+  }
   function camera(code){const src=parse(code,file);let out;function walk(n){if(ts.isJsxSelfClosingElement(n)&&n.tagName.getText(src)==='ICameraView')out=n.attributes.properties.filter(p=>!(ts.isJsxAttribute(p)&&((hardware&&p.name.text==='manualControls')||(xiaomi&&p.name.text==='rearSelfie')))).map(p=>normalized(p,src)).join("\n");ts.forEachChild(n,walk);}walk(src);return out;}
   assert.equal(camera(after),camera(before),'Native camera props changed');
  }
@@ -66,6 +85,7 @@ if(ts.isJsxAttribute(n)&&(/^on[A-Z]/.test(n.name.text)||['disabled','value','min
 const quality=process.argv.includes('--allow-capture-quality');
 const offline=process.argv.includes('--allow-offline-stabilization');
 const reviewed=new Set([
+ ...(viewfinder ? ['src/camera/viewfinder.ts','src/camera/hardware.ts','src/ui/DualPip.tsx','modules/icamera/index.ts'] : []),
  ...(rebuild ? ['modules/icamera/android/src/main/java/expo/modules/icamera/SteadyFrame.kt','modules/icamera/android/src/test/java/expo/modules/icamera/SteadyFrameTest.kt','modules/icamera/android/src/test/java/expo/modules/icamera/VideoToneTest.kt','modules/icamera/android/src/main/java/expo/modules/icamera/LiveRollFilter.kt','modules/icamera/android/src/main/java/expo/modules/icamera/RecordingStabilityPolicy.kt','modules/icamera/android/src/main/java/expo/modules/icamera/HdrVideoStabilizer.kt','modules/icamera/android/src/main/java/expo/modules/icamera/OfflineVideoMotion.kt','modules/icamera/android/src/main/java/expo/modules/icamera/VideoProcessingTransform.kt','modules/icamera/android/src/test/java/expo/modules/icamera/LiveRollFilterTest.kt','modules/icamera/android/src/test/java/expo/modules/icamera/RecordingStabilityPolicyTest.kt','modules/icamera/android/src/test/java/expo/modules/icamera/OfflineVideoMotionTest.kt','modules/icamera/android/src/test/java/expo/modules/icamera/VideoProcessingTransformTest.kt'] : []),
  'modules/icamera/android/build.gradle',
  'modules/icamera/android/src/main/java/expo/modules/icamera/VideoTuning.kt',

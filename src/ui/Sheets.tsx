@@ -11,6 +11,7 @@ import { GlassSegmented } from './GlassSegmented';
 type SettingsProps = {
   visible: boolean;
   onClose: () => void;
+  captureControls: React.ReactNode;
   photo: PhotoSettings;
   video: VideoSettings;
   onPhoto: (p: PhotoSettings) => void;
@@ -46,6 +47,8 @@ export function SettingsSheet(p: SettingsProps) {
                 <MaterialCommunityIcons name="close" size={22} color="#fff" />
               </Pressable>
             </View>
+
+            <Section title="Capture controls">{p.captureControls}</Section>
 
             <Section title="Photo processing">
               <Row label="Processing" hint="Natural colour and detail, with your phone’s HDR, Portrait and Night processing when available." >
@@ -101,17 +104,17 @@ export function SettingsSheet(p: SettingsProps) {
                   onChange={(v) => p.onVideo({ ...p.video, fps: Number(v) as VideoSettings['fps'] })}
                 />
               </Row>
-              <Row label="HDR video" hint={p.supportsVideoHdr ? 'Keep HDR highlights and colour. Stabilization is processed after recording.' : 'HDR video is not reported by this camera.'}>
+              <Row label="HDR video" hint={p.supportsVideoHdr ? 'Keep 10-bit HDR highlights and colour, with supported phone stabilization during recording.' : 'HDR video is not reported by this camera.'}>
                 <Toggle value={p.video.hdr} disabled={!p.supportsVideoHdr && !p.video.hdr}
-                  onChange={(hdr) => p.onVideo({ ...p.video, hdr, stabilization: hdr && p.video.stabilization === 'horizon' ? 'cinematic' : p.video.stabilization })} />
+                  onChange={(hdr) => p.onVideo({ ...p.video, hdr })} />
               </Row>
               <Row
                 label="Stabilization"
-                hint={p.video.hdr ? 'HDR uses supported phone stabilization while recording. Horizon lock requires HDR off.' : p.video.stabilization === 'horizon' ? 'Fixed wide framing; large tilts can show black corners rather than adding more zoom.' : 'Shared phone stabilization is preferred. The rebuilt live fallback uses one small fixed margin for preview and recording. Stop only finalizes the clip.'}
+                hint={p.video.hdr ? 'HDR uses supported phone stabilization during recording.' : 'Phone stabilization is preferred. The live fallback corrects shake and rotation within a fixed crop; intentional pans remain smooth.'}
               >
                 <Segmented
-                  options={p.video.hdr ? ['off', 'standard', 'cinematic'] : ['off', 'standard', 'cinematic', 'horizon']}
-                  labels={p.video.hdr ? ['Off', 'Std', 'Cinema'] : ['Off', 'Std', 'Cinema', 'Horizon']}
+                  options={['off', 'standard', 'cinematic']}
+                  labels={['Off', 'Std', 'Cinema']}
                   value={p.video.stabilization}
                   onChange={(v) => p.onVideo({ ...p.video, stabilization: v as VideoSettings['stabilization'] })}
                 />

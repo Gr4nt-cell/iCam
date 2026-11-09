@@ -13,12 +13,14 @@ const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v
  * (position is locked while recording).
  */
 export function DualPipFrame({
+  frameSize,
   pip,
   locked,
   onMove,
   onLiveMove,
   onSwap,
 }: {
+  frameSize?: { width: number; height: number };
   pip: Pip;
   locked: boolean;
   onMove: (x: number, y: number) => void;
@@ -26,7 +28,8 @@ export function DualPipFrame({
   onLiveMove?: (x: number, y: number) => void;
   onSwap: () => void;
 }) {
-  const { width: W, height: H } = useWindowDimensions();
+  const window = useWindowDimensions();
+  const { width: W, height: H } = frameSize ?? window;
   const fw = pip.size * W;
   const fh = fw * (4 / 3); // matches the 3:4 inset the camera draws
   const cx = clamp(pip.x * W, fw / 2, W - fw / 2);

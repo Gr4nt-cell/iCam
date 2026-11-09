@@ -60,14 +60,9 @@ class PortraitProcessor : SurfaceProcessor {
 
   @Volatile var strength = 0.6f
 
-  /** Background blur on/off (off = this processor only does horizon lock / mirroring). */
+  /** Background blur on/off (off = this processor only does image stabilization / mirroring). */
   @Volatile var blurEnabled = true
 
-  /** Horizon lock: counter-rotate every frame by the phone's roll so the horizon stays level. */
-  @Volatile var horizonLock = false
-  @Volatile var stabilizeRoll = false
-  /** Phone roll in radians (0 = upright portrait, + = rotated anticlockwise), from the gravity sensor. */
-  @Volatile var targetRoll = 0f
   @Volatile var frontCamera = false
   /** Mirror the recorded video (selfie mirroring done here so it works with every effect). */
   @Volatile var mirrorVideo = false
@@ -712,8 +707,7 @@ class PortraitProcessor : SurfaceProcessor {
     GLES20.glReadPixels(0, 0, MW, MH, GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE, motBuf)
     val luma=IntArray(MW*MH) { motBuf.get(it*4).toInt() and 0xff }
     GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
-    correction=steady.update(luma, MW, MH, ts, stabilityMargin,
-      if(horizonLock || stabilizeRoll) { if(frontCamera)-targetRoll else targetRoll } else Float.NaN, horizonLock, inW.toFloat()/inH)
+    correction=steady.update(luma, MW, MH, ts, stabilityMargin, inW.toFloat()/inH)
   }
 
   /* ---------------- segmentation ---------------- */
@@ -1219,7 +1213,7 @@ class PortraitProcessor : SurfaceProcessor {
         float ca = cos(uSteadyAngle), sa = sin(uSteadyAngle);
         p = vec2(ca*p.x + sa*p.y, -sa*p.x + ca*p.y);
         uv = 0.5 + p / uSensorSize / uCrop + uShift;
-        // Horizon keeps a bounded margin instead of zooming further at every tilt.
+        // A fixed, bounded margin prevents zoom pumping and exposed borders.
         if (any(lessThan(uv,vec2(0.0))) || any(greaterThan(uv,vec2(1.0)))) {
           gl_FragColor=vec4(0.0,0.0,0.0,1.0); return;
         }

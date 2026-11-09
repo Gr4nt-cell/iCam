@@ -8,7 +8,7 @@ export type VideoSettings = {
   hdr: boolean;
   /** Anti-flicker for indoor lights: by country, camera auto, 50 Hz, 60 Hz or off */
   antibanding?: 'country' | 'auto' | '50' | '60' | 'off';
-  stabilization: 'cinematic' | 'standard' | 'off' | 'horizon';
+  stabilization: 'cinematic' | 'standard' | 'off';
 };
 
 export type PhotoSettings = {

@@ -4,10 +4,6 @@ import android.Manifest
 import android.annotation.SuppressLint
 import android.content.Context
 import android.content.pm.PackageManager
-import android.hardware.Sensor
-import android.hardware.SensorEvent
-import android.hardware.SensorEventListener
-import android.hardware.SensorManager
 import android.hardware.camera2.CaptureRequest
 import android.hardware.camera2.params.RggbChannelVector
 import android.util.Range
@@ -130,7 +126,6 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
   private var manualControls = false
   fun setManualControls(v: Boolean) { manualControls = v; applyControls() }
   private var hdrVideo = false
-  private var latestRoll = 0f
   private var stabilization = "cinematic"
   private var nightExtension = true
 
@@ -214,7 +209,7 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
   fun setHdrVideo(v: Boolean) = rebindOnChange(hdrVideo, v) { hdrVideo = it }
   private var antibanding = "country"
   fun setAntibanding(v: String) = rebindOnChange(antibanding, v) { antibanding = it }
-  fun setStabilization(v: String) = rebindOnChange(stabilization, v) { stabilization = it }
+  fun setStabilization(v: String) = rebindOnChange(stabilization, if(v in listOf("off","standard","cinematic")) v else "cinematic") { stabilization = it }
   fun setNightExtension(v: Boolean) = rebindOnChange(nightExtension, v) { nightExtension = it }
   fun setAudio(v: Boolean) { audio = v }
   fun setAspect(v: String) = rebindOnChange(aspect, v) { aspect = it }
@@ -346,7 +341,7 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
 
   fun setPreviewFit(v: Boolean) {
     previewFit = v
-    previewView.scaleType = PreviewView.ScaleType.FIT_CENTER
+    previewView.scaleType = if(previewFit) PreviewView.ScaleType.FIT_CENTER else PreviewView.ScaleType.FILL_CENTER
   }
 
   private fun resolutionSelector(): androidx.camera.core.resolutionselector.ResolutionSelector =
@@ -489,33 +484,6 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
     pipPreview.scaleX = if (pipFront && !mirror) -1f else 1f
   }
 
-  /* ---- gravity sensor for horizon lock ---- */
-  private var sensorOn = false
-  private val gravity = FloatArray(3)
-  private val rollListener = object : SensorEventListener {
-    override fun onSensorChanged(e: SensorEvent) {
-      if (e.sensor.type == Sensor.TYPE_ACCELEROMETER) {
-        for (i in 0..2) gravity[i] = gravity[i] * 0.85f + e.values[i] * 0.15f
-      } else for (i in 0..2) gravity[i] = e.values[i]
-      val gx = gravity[0]
-      val gy = gravity[1]
-      // Phone lying flat: the roll is undefined, keep the last angle
-      if (Math.hypot(gx.toDouble(), gy.toDouble()) < 3.0) return
-      latestRoll = Math.atan2(gx.toDouble(), gy.toDouble()).toFloat()
-      portraitProcessor?.targetRoll = latestRoll
-    }
-    override fun onAccuracyChanged(s: Sensor?, a: Int) {}
-  }
-
-  private fun setRollSensor(on: Boolean) {
-    if (on == sensorOn) return
-    val sm = context.getSystemService(Context.SENSOR_SERVICE) as? SensorManager ?: return
-    if (on) {
-      val sensor = sm.getDefaultSensor(Sensor.TYPE_GRAVITY) ?: sm.getDefaultSensor(Sensor.TYPE_ACCELEROMETER) ?: return
-      sm.registerListener(rollListener, sensor, SensorManager.SENSOR_DELAY_GAME)
-    } else sm.unregisterListener(rollListener)
-    sensorOn = on
-  }
   fun setEvBias(v: Double) { ev = v; applyControls() }
   fun setIso(v: Int) { iso = v; applyControls() }
   fun setShutterNs(v: Long) { shutterNs = v; applyControls() }
@@ -549,7 +517,6 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
     recording = null
     if (ownRec != null) stopOwnRecording()
     provider?.unbindAll()
-    setRollSensor(false)
     palm.setEnabled(false)
     portraitProcessor?.release()
     portraitProcessor = null
@@ -600,7 +567,6 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
         camera = null; imageCapture = null; videoCapture = null
         usingNightExtension = false; activeExtension = null; slowFps = 0
         effectPreview = false; macroZoom = null; ownMode = false
-        setRollSensor(false)
         if (!active) return@withProvider
         if (mode != "dual") { dualComposed = false; pendingDualRecord = false }
         pipContainer.visibility = View.GONE
@@ -612,7 +578,7 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
           "macro" -> bindMacro(p, owner)
           else -> bindPhoto(p, owner)
         }
-        previewView.scaleType = PreviewView.ScaleType.FIT_CENTER
+        previewView.scaleType = if(previewFit) PreviewView.ScaleType.FIT_CENTER else PreviewView.ScaleType.FILL_CENTER
         applyZoom()
         applyPreviewColor()
         postDelayed({ applyPreviewColor() }, 400) // the viewfinder's surface view appears asynchronously
@@ -633,7 +599,6 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
             "zoomMin" to ((z?.minZoomRatio ?: 1f) / baseZoom).toDouble(),
             "zoomMax" to ((z?.maxZoomRatio ?: 1f) / baseZoom).toDouble(),
             "hasFlash" to (camera?.cameraInfo?.hasFlashUnit() ?: false),
-            "horizonLock" to sensorOn,
             "recordingFps" to boundFrameRate,
           ),
         )
@@ -729,7 +694,6 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
           if(epoch!=stabilityEpoch || !requestedSharedStability || !effectPreview)return@post
           videoHardwareStabilized=false
           portraitProcessor?.let { proc ->
-            proc.horizonLock=false;proc.stabilizeRoll=false
             proc.stabilityMargin=CaptureStability.crop(mode,stabilization,facing=="front",false)
           }
           emitError("Hardware stabilization was not confirmed for this configuration. Live software correction is active.")
@@ -780,8 +744,6 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
         val proc = portraitProcessor ?: PortraitProcessor().also { portraitProcessor = it }
         proc.blurEnabled = false
         proc.enhance = true
-        proc.horizonLock = false
-        proc.stabilizeRoll = false
         proc.stabilityMargin = 1f
         proc.frontCamera = facing == "front"
         proc.mirrorVideo = false
@@ -841,6 +803,7 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
 
   private fun buildRecorder(quality: Quality, bitrate: Int): Recorder =
     Recorder.Builder()
+      .setAspectRatio(androidx.camera.core.AspectRatio.RATIO_16_9)
       .setQualitySelector(
         QualitySelector.from(quality, FallbackStrategy.lowerQualityOrHigherThan(Quality.SD)),
       )
@@ -869,10 +832,7 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
         val proc = portraitProcessor
         camera = if (proc != null && effectPreview) {
           proc.frontCamera = front
-          proc.horizonLock = CaptureStability.horizon(mode, stabilization) && !videoHardwareStabilized
-          proc.stabilizeRoll = !videoHardwareStabilized && (mode == "action" || stabilization != "off")
           proc.stabilityMargin = CaptureStability.crop(mode, stabilization, front, videoHardwareStabilized)
-          setRollSensor(mode == "action" || stabilization != "off")
           val group = UseCaseGroup.Builder().addUseCase(preview).addUseCase(vc).addEffect(PortraitVideoEffect(proc)).build()
           p.bindToLifecycle(owner, sel, group)
         } else {
@@ -921,13 +881,10 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
     // SDR effects crop and stabilize each frame before the encoder receives it.
     // HDR stays in CameraX's 10-bit path and uses supported hardware EIS / OIS live.
     val hdr = hdrRange != null
-    if (hdr && stabilization == "horizon") throw IllegalStateException("Live Horizon lock needs SDR. Turn off HDR or choose Standard stabilization.")
-    val horizon = !hdr && CaptureStability.horizon(mode, stabilization)
-    if (horizon) emitError("Horizon uses a fixed wide margin. Large tilts can show black corners instead of zooming further.")
     val wantStab = action || stabilization != "off"
     val sharedSupported=try{Preview.getPreviewCapabilities(info).isStabilizationSupported}catch(_:Throwable){false}
     val videoSupported=try{Recorder.getVideoCapabilities(info).isStabilizationSupported}catch(_:Throwable){false}
-    val stabilityPlan=CaptureStability.plan(wantStab,stabilization=="horizon",sharedSupported,videoSupported,hdr)
+    val stabilityPlan=CaptureStability.plan(wantStab,sharedSupported,videoSupported,hdr)
     val previewStab=stabilityPlan.preview == true
     requestedSharedStability=previewStab
     val hardwareEis=stabilityPlan.hardware
@@ -947,7 +904,7 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
     hdrRange?.let { vb.setDynamicRange(it) }
     val vc = vb.build()
     if (useEffect) {
-      // GPU effect on preview + recording: background blur, horizon lock, mirroring
+      // GPU effect on preview + recording: background blur, image stabilization, mirroring
       try {
         val proc = portraitProcessor ?: PortraitProcessor().also { portraitProcessor = it }
         proc.strength = bokeh
@@ -956,9 +913,6 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
         proc.filter = if (filterActive(filterParams)) filterParams else null
         proc.smoothing = faceSmoothing
         effectPreview = true
-        proc.horizonLock = horizon && !hardwareEis
-        proc.stabilizeRoll = wantStab && !hardwareEis
-        proc.targetRoll = latestRoll
         proc.frontCamera = selfieVideo
         proc.mirrorVideo = false
         proc.mirrorAll = rearSelfie
@@ -1002,7 +956,6 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
           encFps = range?.upper ?: targetFps
           encBitrate = if (uhd) 60_000_000 else if (encFps >= 60) 30_000_000 else 20_000_000
           videoCapture = null
-          setRollSensor(wantStab)
           return
         }
         val group = UseCaseGroup.Builder()
@@ -1014,7 +967,6 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
         proc.fixedRotation = ((camera?.cameraInfo?.sensorRotationDegrees ?: -90) / 90).let { if (it < 0) -1 else it % 4 }
         videoCapture = vc
         // Horizon lock crops only as much as the current tilt needs, so normal framing is kept
-        setRollSensor(wantStab)
         applyAperture()
         return
       } catch (e: Throwable) {
@@ -1022,13 +974,11 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
         videoHardwareStabilized = false
         effectPreview = false
         ownMode = false
-        if(stabilization=="horizon")throw IllegalStateException("The camera rejected live Horizon processing. Try a lower frame rate or Standard stabilization.",e)
         if (portraitVideo) emitError("Background blur isn't supported here – recording without it")
       }
     }
-    setRollSensor(false)
     // A native-only fallback can use video EIS, but its Preview flag must remain unspecified.
-    val fallbackPlan=if(useEffect)CaptureStability.plan(wantStab,false,sharedSupported,videoSupported,true) else stabilityPlan
+    val fallbackPlan=if(useEffect)CaptureStability.plan(wantStab,sharedSupported,videoSupported,true) else stabilityPlan
     videoHardwareStabilized=fallbackPlan.hardware
     requestedSharedStability=fallbackPlan.preview == true
     val plainVc = if(useEffect) {
@@ -1053,7 +1003,7 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
         catch(failure:Throwable){throw IllegalStateException("HDR recording is unavailable with these settings",failure)}
       }else{
         // Retry a conservative shared 1080p/30 session; never pretend the failed request is active.
-        val nativePlan=CaptureStability.plan(wantStab,false,sharedSupported,videoSupported,true)
+        val nativePlan=CaptureStability.plan(wantStab,sharedSupported,videoSupported,true)
         videoHardwareStabilized=nativePlan.hardware
         requestedSharedStability=nativePlan.preview == true
         val plain=VideoCapture.Builder(buildRecorder(Quality.FHD,20_000_000))
@@ -1067,7 +1017,6 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
     if(hdr && wantStab && !videoHardwareStabilized)emitError(if(oisSupported(info))
       "This HDR setting uses optical stabilization only. Choose SDR for live software stabilization."
       else "Live HDR stabilization is unavailable on this lens. Choose SDR for software stabilization.")
-    setRollSensor(wantStab)
   }
 
   /** Macro: the tele-macro or dedicated macro camera found from lens data, with close-focus AF. */
@@ -1195,10 +1144,10 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
 
     // Picture-in-picture box in normalized device coordinates (origin centre, +y up).
     // Size it to the inset camera's own 3:4 portrait shape so faces aren't stretched.
-    // The composited stream is 3:4 portrait; the full-screen preview centre-crops its sides.
+    // The recorder and fitted viewfinder both use 9:16 portrait (16:9 sensor output).
     // Convert screen-space position/size (what the user drags) into the stream's NDC.
     val viewAspect = if (height > 0) width.toFloat() / height else 9f / 20f
-    val outAspect = 3f / 4f
+    val outAspect = if(width>height) 16f/9f else 9f/16f
     val visX = (viewAspect / outAspect).coerceAtMost(1f) // share of stream width that is on screen
     val visY = (outAspect / viewAspect).coerceAtMost(1f)
     val sx = (pipSize * visX).coerceIn(0.1f, 0.8f)

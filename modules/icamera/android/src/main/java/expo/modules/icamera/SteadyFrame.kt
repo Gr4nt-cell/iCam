@@ -12,14 +12,12 @@ internal data class CaptureStabilityPlan(val preview: Boolean?, val video: Boole
 internal object CaptureStability {
   fun crop(mode: String, setting: String, front: Boolean = false, hardware: Boolean = false): Float = when {
     hardware || (mode != "action" && setting == "off") -> 1f
-    setting == "horizon" -> if (front) 1.06f else 1.10f
     mode == "action" -> if (front) 1.08f else 1.12f
     setting == "cinematic" -> if (front) 1.05f else 1.08f
     else -> 1.04f
   }
-  fun horizon(mode: String, setting: String) = setting == "horizon"
-  fun plan(enabled: Boolean, horizon: Boolean, shared: Boolean, video: Boolean, hdr: Boolean) = when {
-    !enabled || horizon -> CaptureStabilityPlan(false, false)
+  fun plan(enabled: Boolean, shared: Boolean, video: Boolean, hdr: Boolean) = when {
+    !enabled -> CaptureStabilityPlan(false, false)
     // CameraX 1.5.1: Preview ON + Video OFF disables both. Unspecified is a real third state.
     shared -> CaptureStabilityPlan(true, null)
     hdr && video -> CaptureStabilityPlan(null, true)
@@ -32,10 +30,53 @@ internal object CaptureStability {
       ?: ranges.minWithOrNull(compareBy<Pair<Int, Int>> { abs(it.second - target) }.thenBy { it.second - it.first })
 }
 
-internal data class FrameTranslation(val x: Double, val y: Double, val confidence: Double)
+internal data class FrameTranslation(val x: Double, val y: Double, val confidence: Double, val angle: Double = 0.0)
 
-/** Grid-distributed corner patches, a two-level pyramid, exposure-normalised SSD and round-trip checks. */
+/** Grid-distributed corner patches, a two-level pyramid, exposure-normalised SSD, round-trip checks and robust rigid-motion consensus. */
 internal object PyramidTranslation {
+  private data class Track(val x: Double, val y: Double, val dx: Double, val dy: Double)
+  private data class Rigid(val x: Double, val y: Double, val angle: Double) {
+    fun error(t: Track): Double {
+      val c=cos(angle);val s=sin(angle)
+      return hypot(c*t.x-s*t.y+x-t.x-t.dx,s*t.x+c*t.y+y-t.y-t.dy)
+    }
+  }
+  private fun fit(tracks: List<Track>): Rigid {
+    val ax=tracks.map{it.x}.average();val ay=tracks.map{it.y}.average()
+    val bx=tracks.map{it.x+it.dx}.average();val by=tracks.map{it.y+it.dy}.average()
+    var dot=0.0;var cross=0.0
+    for(t in tracks){val x=t.x-ax;val y=t.y-ay;val u=t.x+t.dx-bx;val v=t.y+t.dy-by
+      dot+=x*u+y*v;cross+=x*v-y*u
+    }
+    val angle=atan2(cross,dot);val c=cos(angle);val s=sin(angle)
+    return Rigid(bx-c*ax+s*ay,by-s*ax-c*ay,angle)
+  }
+  private fun consensus(tracks: List<Track>): Pair<Rigid,List<Track>>? {
+    var best=emptyList<Track>();var error=Double.POSITIVE_INFINITY
+    fun score(model: Rigid){
+      if(abs(model.angle)>.12)return
+      val inliers=tracks.filter{model.error(it)<1.25}
+      val residual=inliers.sumOf{model.error(it).pow(2)}
+      if(inliers.size>best.size || inliers.size==best.size && residual<error){best=inliers;error=residual}
+    }
+    for(t in tracks)score(Rigid(t.dx,t.dy,0.0))
+    for(i in tracks.indices)for(j in i+1 until tracks.size){
+      val a=tracks[i];val b=tracks[j]
+      val dx=b.x-a.x;val dy=b.y-a.y
+      val ux=dx+b.dx-a.dx;val uy=dy+b.dy-a.dy
+      val length=hypot(dx,dy)
+      if(length<20 || hypot(ux,uy)/length !in .94..1.06)continue
+      val angle=atan2(dx*uy-dy*ux,dx*ux+dy*uy)
+      val c=cos(angle);val sn=sin(angle)
+      score(Rigid(a.x+a.dx-c*a.x+sn*a.y,a.y+a.dy-sn*a.x-c*a.y,angle))
+    }
+    if(best.size<5 || best.size.toDouble()/tracks.size<.6)return null
+    val model=fit(best)
+    val refined=tracks.filter{model.error(it)<1.25}
+    if(refined.size<5 || refined.size.toDouble()/tracks.size<.6)return null
+    return fit(refined) to refined
+  }
+
   private fun half(a: IntArray, w: Int, h: Int): IntArray = IntArray(w / 2 * (h / 2)) { i ->
     val x = i % (w / 2) * 2; val y = i / (w / 2) * 2
     (a[y*w+x] + a[y*w+x+1] + a[(y+1)*w+x] + a[(y+1)*w+x+1]) / 4
@@ -57,10 +98,11 @@ internal object PyramidTranslation {
     }
     return Triple(bx,by,best)
   }
-  fun measure(previous: IntArray, current: IntArray, width: Int, height: Int): FrameTranslation? {
+  fun measure(previous: IntArray, current: IntArray, width: Int, height: Int, sensorAspect: Double=width.toDouble()/height): FrameTranslation? {
     if (width<80 || height<48 || width%2!=0 || height%2!=0 || previous.size!=width*height || current.size!=previous.size) return null
     val pa=half(previous,width,height); val pb=half(current,width,height)
-    val tracks=ArrayList<Pair<Double,Double>>()
+    val tracks=ArrayList<Track>()
+    val sx=sensorAspect/(width.toDouble()/height)
     for (gy in 0..3) for (gx in 0..5) {
       val x0=12+gx*(width-24)/6; val y0=12+gy*(height-24)/4
       val x1=12+(gx+1)*(width-24)/6; val y1=12+(gy+1)*(height-24)/4
@@ -76,9 +118,9 @@ internal object PyramidTranslation {
         if(corner>score){score=corner;bx=x;by=y}
       }
       if(score<=180)continue
-      val coarse=search(pa,pb,width/2,height/2,bx/2,by/2,0,0,4)
+      val coarse=search(pa,pb,width/2,height/2,bx/2,by/2,0,0,6)
       val fine=search(previous,current,width,height,bx,by,coarse.first*2,coarse.second*2,2)
-      if(!fine.third.isFinite() || fine.third>500 || abs(fine.first)>=10 || abs(fine.second)>=10)continue
+      if(!fine.third.isFinite() || fine.third>500 || abs(fine.first)>=14 || abs(fine.second)>=14)continue
       val reverse=search(current,previous,width,height,bx+fine.first,by+fine.second,-fine.first,-fine.second,2)
       if(hypot((fine.first+reverse.first).toDouble(),(fine.second+reverse.second).toDouble())>1.1)continue
       fun sub(axisX: Boolean): Double {
@@ -87,14 +129,12 @@ internal object PyramidTranslation {
         val curvature=minus-2*fine.third+plus
         return if(fine.third>.001 && curvature.isFinite() && curvature>0.01) (0.5*(minus-plus)/curvature).coerceIn(-.5,.5) else 0.0
       }
-      tracks.add(fine.first+sub(true) to fine.second+sub(false))
+      tracks.add(Track((bx-width/2.0)*sx,by-height/2.0,(fine.first+sub(true))*sx,fine.second+sub(false)))
     }
     if(tracks.size<5)return null
-    // A moving person/foreground patch cannot win by one very strong feature alone.
-    val seed=tracks.maxByOrNull { a -> tracks.count { b -> hypot(a.first-b.first,a.second-b.second)<1.25 } }!!
-    val inliers=tracks.filter { hypot(it.first-seed.first,it.second-seed.second)<1.25 }
-    if(inliers.size<5 || inliers.size.toDouble()/tracks.size<.55)return null
-    return FrameTranslation(inliers.map{it.first}.average()/width,inliers.map{it.second}.average()/height,inliers.size.toDouble()/24)
+    // Distributed background consensus rejects independently moving faces/foreground patches.
+    val (model,inliers)=consensus(tracks) ?: return null
+    return FrameTranslation(model.x/(width*sx),model.y/height,inliers.size.toDouble()/24,model.angle)
   }
 }
 
@@ -106,21 +146,19 @@ internal class SteadyFrame {
   private var timestamp=0L
   private var x=0.0;private var y=0.0
   private var vx=0.0;private var vy=0.0
-  private var rollReady=false
-  private var lastRoll=0.0;private var roll=0.0;private var rollBase=0.0;private var reference=0.0
+  private var angle=0.0;private var angularVelocity=0.0
   private var oldWidth=0;private var oldHeight=0
   var lastConfidence=0.0
     private set
-  fun reset(){previous=null;timestamp=0L;x=0.0;y=0.0;vx=0.0;vy=0.0;rollReady=false;lastConfidence=0.0}
-  fun update(luma: IntArray?, width: Int, height: Int, nanos: Long, crop: Float, rawRoll: Float, horizon: Boolean,
-    sensorAspect: Float=width.toFloat()/height): SteadyTransform {
+  fun reset(){previous=null;timestamp=0L;x=0.0;y=0.0;vx=0.0;vy=0.0;angle=0.0;angularVelocity=0.0;lastConfidence=0.0}
+  fun update(luma: IntArray?, width: Int, height: Int, nanos: Long, crop: Float, sensorAspect: Float=width.toFloat()/height): SteadyTransform {
     if(width!=oldWidth || height!=oldHeight){reset();oldWidth=width;oldHeight=height}
     val dt=if(timestamp>0) (nanos-timestamp)/1e9 else 0.0
     if(timestamp>0 && (dt<=0 || dt>.2))reset()
     timestamp=nanos
     val seconds=if(dt in .001.. .2)dt else 1.0/30
-    if(crop<=1f){previous=null;x=0.0;y=0.0;rollReady=false;return SteadyTransform()}
-    val motion=if(luma!=null && previous!=null)PyramidTranslation.measure(previous!!,luma,width,height)else null
+    if(crop<=1f){previous=null;x=0.0;y=0.0;angle=0.0;angularVelocity=0.0;return SteadyTransform()}
+    val motion=if(luma!=null && previous!=null)PyramidTranslation.measure(previous!!,luma,width,height,sensorAspect.toDouble())else null
     previous=luma
     lastConfidence=motion?.confidence ?: 0.0
     // Follow the low-frequency pan velocity; reserve the crop for high-frequency shake.
@@ -128,26 +166,16 @@ internal class SteadyFrame {
     if(motion!=null){
       vx+=(motion.x/seconds-vx)*panBlend;vy+=(motion.y/seconds-vy)*panBlend
       x+=motion.x-vx*seconds;y+=motion.y-vy*seconds
-    }else{vx*=exp(-seconds/.12);vy*=exp(-seconds/.12)}
+      angularVelocity+=(motion.angle/seconds-angularVelocity)*panBlend
+      angle+=motion.angle-angularVelocity*seconds
+    }else{vx*=exp(-seconds/.12);vy*=exp(-seconds/.12);angularVelocity*=exp(-seconds/.12)}
     val decay=exp(-seconds/if(motion==null).09 else .8)
-    x*=decay;y*=decay
-    var correction=0.0
-    if(rawRoll.isFinite()){
-      if(!rollReady){lastRoll=rawRoll.toDouble();roll=lastRoll;rollBase=roll;reference=round(roll/(PI/2))*(PI/2);rollReady=true}
-      else {
-        val delta=atan2(sin(rawRoll-lastRoll),cos(rawRoll-lastRoll))
-        if(abs(delta)<.7)roll+=delta else{roll=rawRoll.toDouble();rollBase=roll;reference=round(roll/(PI/2))*(PI/2)}
-        lastRoll=rawRoll.toDouble()
-      }
-      rollBase+=(roll-rollBase)*(1-exp(-seconds/.45))
-      correction=if(horizon)roll-reference else roll-rollBase
-    }
+    x*=decay;y*=decay;angle*=decay
     val aspect=sensorAspect.toDouble().coerceIn(.2,5.0)
-    // Normal modes spend at most a quarter of their margin on roll. Never stack a second zoom.
-    if(!horizon){
-      val maxAngle=(crop-1.0)/(max(aspect,1/aspect)*4)
-      correction=correction.coerceIn(-maxAngle,maxAngle)
-    }
+    // Reserve part of the fixed crop for translation; never rotate far enough to expose borders.
+    val maxAngle=(crop-1.0)/(max(aspect,1/aspect)*4)
+    angle=angle.coerceIn(-maxAngle*2,maxAngle*2)
+    val correction=-maxAngle*tanh(angle/maxAngle.coerceAtLeast(.00001))
     val c=abs(cos(correction));val s=abs(sin(correction))
     val lx=max(0.0,.5-(c+s/aspect)/(2*crop)-.001)
     val ly=max(0.0,.5-(c+s*aspect)/(2*crop)-.001)

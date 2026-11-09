@@ -27,6 +27,8 @@ import {
   type PhotoSettings,
   type VideoSettings,
 } from './src/camera/hardware';
+import { cameraViewport, restoreStabilization } from './src/camera/viewfinder';
+import { GlassSegmented } from './src/ui/GlassSegmented';
 import { rearCameraFrame, cameraFocusPoint, mirrorPhoto } from './src/camera/rearLayout';
 import { filterByKey, type FilterKey } from './src/processing/filters';
 import { processSingle, type PhotoMeta } from './src/processing/pipeline';
@@ -133,7 +135,6 @@ function CameraScreen() {
   const [filter, setFilter] = useState<FilterKey>('natural');
   const [smoothing, setSmoothing] = useState(0);
   const [photoSmoothing, setPhotoSmoothing] = useState(DEFAULT_PHOTO_SMOOTHING);
-  const [showLook, setShowLook] = useState(false);
   const [manual, setManual] = useState<ManualSettings>(AUTO_MANUAL);
   const [proVideo, setProVideo] = useState(false);
   const [dualPrimary, setDualPrimary] = useState<'back' | 'front'>('back');
@@ -169,7 +170,6 @@ function CameraScreen() {
   const [last, setLast] = useState<Last | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const [focus, setFocus] = useState<{ x: number; y: number; key: number } | null>(null);
-  const [showSliders, setShowSliders] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [viewerOpen, setViewerOpen] = useState(false);
   const [appActive, setAppActive] = useState(true);
@@ -201,7 +201,7 @@ function CameraScreen() {
         setRemember(true);
         if (v.photo) setPhoto((p) => ({ ...p, ...v.photo }));
         // HDR defaults off, but preserve an explicitly saved choice now that HDR processing is supported.
-        if (v.video) setVideo((x) => ({ ...x, ...v.video, stabilization: v.video?.hdr && v.video.stabilization === 'horizon' ? 'cinematic' : v.video?.stabilization ?? x.stabilization }));
+        if (v.video) setVideo((x) => ({ ...x, ...v.video, stabilization: restoreStabilization(v.video?.stabilization) }));
         if (v.mode) setMode(v.mode === 'pvideo' ? 'video' : v.mode); // Portrait video was removed
         if (typeof v.mirrorSelfie === 'boolean') setMirrorSelfie(v.mirrorSelfie);
         if (v.filter === 'natural' || v.filter === 'mono') setFilter(v.filter);
@@ -328,25 +328,16 @@ function CameraScreen() {
   useEffect(() => {
     if (screens.onSecondary && !wasSecondary.current && !recording && !busy) {
       setFacing('back'); setLensId(null); setZoom(1);
-      setShowLook(false); setShowSliders(false); setSettingsOpen(false); setViewerOpen(false);
+      setSettingsOpen(false); setViewerOpen(false);
     }
     wasSecondary.current = screens.onSecondary;
   }, [screens.onSecondary, recording, busy]);
-
-  const sliderTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const pokeSliders = useCallback(() => {
-    setShowSliders(true);
-    if (sliderTimer.current) clearTimeout(sliderTimer.current);
-    sliderTimer.current = setTimeout(() => setShowSliders(false), 4500);
-  }, []);
 
   const changeMode = useCallback(
     (m: CaptureMode) => {
       if (recording || m === mode) return;
       Haptics.selectionAsync();
       setMode(m);
-      setShowSliders(false);
-      if (VIDEO_MODES.includes(m)) setShowLook(false);
     },
     [recording, mode],
   );
@@ -572,28 +563,11 @@ function CameraScreen() {
     if (!ok) flashToast('No gallery app is available to open it');
   }, [last, flashToast]);
 
-  /* ---------- exposure +/- (1/3 EV steps, every mode) ---------- */
-  const nudgeExposure = useCallback(
-    (dir: 1 | -1) => {
-      Haptics.selectionAsync();
-      if (mode === 'pro') {
-        const ev = clamp(Math.round((manual.ev + dir / 3) * 3) / 3, -2, 2);
-        setManual({ ...manual, ev });
-        flashToast(`Exposure ${ev > 0 ? '+' : ''}${ev.toFixed(1)} EV`, 1200);
-      } else {
-        // brightness ±1 maps to ±2 EV, so 1/3 EV = 1/6 brightness
-        const b = clamp(Math.round((brightness + dir / 6) * 6) / 6, -1, 1);
-        setBrightness(b);
-        const ev = b * 2;
-        flashToast(`Exposure ${ev > 0 ? '+' : ''}${ev.toFixed(1)} EV`, 1200);
-      }
-    },
-    [mode, manual, brightness, flashToast],
-  );
+  const viewport = cameraViewport(win.width, win.height, isVideoMode, aspect, insets.top, insets.bottom);
 
   /* ---------- gestures: tap-to-focus, pinch-to-zoom, swipe modes ---------- */
-  const live = useRef({ zoom, zoomRange, mode, recording, visibleModes, maxZoom, rear: screens.onSecondary, width: win.width, height: win.height });
-  live.current = { zoom, zoomRange, mode, recording, visibleModes, maxZoom, rear: screens.onSecondary, width: win.width, height: win.height };
+  const live = useRef({ zoom, zoomRange, mode, recording, visibleModes, maxZoom, rear: screens.onSecondary, width: win.width, height: win.height, frame: viewport });
+  live.current = { zoom, zoomRange, mode, recording, visibleModes, maxZoom, rear: screens.onSecondary, width: win.width, height: win.height, frame: viewport };
   const gesture = useRef({ pinchStart: 0, zoomStart: 1, pinched: false });
   const onShutterRef = useRef(onShutter);
   onShutterRef.current = onShutter;
@@ -627,9 +601,8 @@ function CameraScreen() {
             const { locationX: x, locationY: y } = e.nativeEvent;
             const point=cameraFocusPoint(x,y,L.width,L.height,L.rear);
             if(!point)return;
-            setFocus({ x, y, key: Date.now() });
+            setFocus({ x: x + (L.rear ? 0 : L.frame.left), y: y + (L.rear ? 0 : L.frame.top), key: Date.now() });
             cam.current?.focus(point.x, point.y).catch(() => {});
-            if (L.mode !== 'pro') pokeSliders();
           } else if (Math.abs(g.dx) > 70 && Math.abs(g.dx) > Math.abs(g.dy) * 1.5 && !L.recording) {
             const list = L.visibleModes;
             const idx = list.findIndex((m) => m.key === L.mode);
@@ -638,7 +611,7 @@ function CameraScreen() {
           }
         },
       }),
-    [pokeSliders],
+    [],
   );
 
   /* ---------- render ---------- */
@@ -653,8 +626,6 @@ function CameraScreen() {
     );
   }
 
-  const flashIcon = flash === 'on' ? 'flash' : flash === 'auto' ? 'flash-auto' : 'flash-off';
-  const timerIcon = timer === 3 ? 'timer-3' : timer === 10 ? 'timer-10' : 'timer-off-outline';
   const mm = String(Math.floor(recSeconds / 60)).padStart(2, '0');
   const ss = String(recSeconds % 60).padStart(2, '0');
 
@@ -676,8 +647,8 @@ function CameraScreen() {
             : mode === 'dual'
               ? 'DUAL'
               : mode === 'action'
-                ? 'ACTION · HORIZON LOCK'
-                : `${video.resolution === '4k' ? '4K' : '1080p'} · ${video.fps}${video.stabilization === 'horizon' ? ' · LOCK' : ''}`;
+                ? 'ACTION'
+                : `${video.resolution === '4k' ? '4K' : '1080p'} · ${video.fps}`;
 
   const topStatus = mode === 'action' ? 'ACTION' : mode === 'video' ? 'VIDEO' : mode === 'macro' ? 'MACRO' : badge;
   const qualityLabel = mode === 'action' ? `${ready?.recordingFps ?? (facing === 'front' ? 30 : 60)} FPS` : mode === 'pro' && proVideo ? '4K · 60' : mode === 'video' ? (video.resolution === '4k' ? '4K' : '1080p') + ' · ' + (ready?.recordingFps ?? video.fps) : aspect === 'full' ? 'SENSOR' : aspect;
@@ -690,7 +661,7 @@ function CameraScreen() {
       {cameraModuleAvailable ? (
         <ICameraView
           ref={cam}
-          style={screens.onSecondary ? {...rearCameraFrame(win.width,win.height),position: 'absolute',borderRadius:16,overflow:'hidden'} : StyleSheet.absoluteFill}
+          style={screens.onSecondary ? {...rearCameraFrame(win.width,win.height),position: 'absolute',borderRadius:16,overflow:'hidden'} : { ...viewport, position: 'absolute', overflow: 'hidden' }}
           mode={mode === 'pro' && proVideo ? 'video' : mode}
           facing={facing}
           dualPrimary={dualPrimary}
@@ -732,7 +703,7 @@ function CameraScreen() {
           nightExtension={photo.vendorNight}
           dualPip={pip}
           aspect={aspect === '16:9' ? '16:9' : '4:3'}
-          previewFit={true}
+          previewFit={!isPhotoShot || aspect !== '1:1'}
           bokeh={bokeh}
           onPortraitStatus={(e) => {
             if (e.nativeEvent.blur === false) {
@@ -803,46 +774,14 @@ function CameraScreen() {
         </View>
       )}
 
-      <View style={StyleSheet.absoluteFill} {...responder.panHandlers} />
+      <View style={screens.onSecondary ? StyleSheet.absoluteFill : { ...viewport, position: 'absolute' }} {...responder.panHandlers} />
       {!screens.onSecondary && <>
-      <View pointerEvents="none" style={[styles.topShade, { height: insets.top + 72 }]} />
-      {isPhotoShot && aspect === '1:1' && (() => {
-        // Letterboxed 3:4 preview; shade the parts outside the square crop
-        const areaH = Math.min(win.height, (win.width * 4) / 3);
-        const top = (win.height - areaH) / 2;
-        const bar = (areaH - win.width) / 2;
-        return (
-          <>
-            <View pointerEvents="none" style={[styles.cropBar, { top, height: bar }]} />
-            <View pointerEvents="none" style={[styles.cropBar, { top: top + areaH - bar, height: bar }]} />
-          </>
-        );
-      })()}
       {focus && <FocusRing key={focus.key} x={focus.x} y={focus.y} />}
 
-      {showSliders && <View style={styles.exposureRail} pointerEvents="box-none">
-        <Pressable hitSlop={8} onPress={() => nudgeExposure(1)} style={styles.exposureButton}>
-          <GlassCircle size={34}><MaterialCommunityIcons name="plus" size={16} color="#fff" /></GlassCircle>
-        </Pressable>
-        <Glass radius={18} style={styles.exposureTrack}>
-          <View style={styles.exposureLine} />
-          <View style={styles.exposureMarker} />
-        </Glass>
-        <Pressable hitSlop={8} onPress={() => nudgeExposure(-1)} style={styles.exposureButton}>
-          <GlassCircle size={34}><MaterialCommunityIcons name="minus" size={16} color="#fff" /></GlassCircle>
-        </Pressable>
-      </View>}
-
       {/* Floating camera instruments */}
-      <View style={[styles.top, { top: insets.top + 12 }]} pointerEvents="box-none">
+      <View style={[styles.top, { top: viewport.top + 8, left: viewport.left + 10, right: win.width - viewport.left - viewport.width + 10 }]} pointerEvents="box-none">
         <View style={styles.topRow}>
           <Glass radius={26} style={styles.topPill}>
-            {mode !== 'dual' && (
-              <Pressable accessibilityRole="button" accessibilityLabel={`Timer: ${timer === 0 ? 'off' : `${timer} seconds`}`} hitSlop={8} style={styles.topTool} onPress={() => setTimer((t) => (t === 0 ? 3 : t === 3 ? 10 : 0))}>
-                <MaterialCommunityIcons name={timerIcon} size={17} color="#fff" />
-                <Text style={styles.timerText}>{timer === 0 ? 'OFF' : String(timer) + 's'}</Text>
-              </Pressable>
-            )}
             {(isPhotoShot || isVideoMode) && (
               <Pressable
                 accessibilityRole="button"
@@ -868,11 +807,6 @@ function CameraScreen() {
           {screens.available && <Pressable accessibilityRole="button" accessibilityLabel="Switch camera screen" disabled={recording || busy || processing || countdown > 0 || screens.switching} onPress={() => screens.setOpen(true)} style={styles.controlButton}>
             <MaterialCommunityIcons name="monitor-cellphone" size={22} color="#ffe16b" />
           </Pressable>}
-          <Pressable accessibilityRole="button" accessibilityLabel={`Flash: ${flash}`} hitSlop={8} disabled={ready?.hasFlash === false} onPress={() => setFlash((f) => (f === 'off' ? 'auto' : f === 'auto' ? 'on' : 'off'))} style={styles.controlButton}>
-            <GlassCircle size={44} active={flash !== 'off'}>
-              <MaterialCommunityIcons name={flashIcon} size={21} color={ready?.hasFlash === false ? 'rgba(255,255,255,0.35)' : '#fff'} />
-            </GlassCircle>
-          </Pressable>
           <Pressable accessibilityRole="button" accessibilityLabel="Camera settings" hitSlop={8} onPress={() => setSettingsOpen(true)} style={styles.controlButton}>
             <GlassCircle size={44}><MaterialCommunityIcons name="tune-variant" size={21} color="#fff" /></GlassCircle>
           </Pressable>
@@ -884,17 +818,6 @@ function CameraScreen() {
             <Text numberOfLines={1} style={styles.topMetaLabel}>{topStatus}</Text>
           </View>
           <View style={styles.topMetaTools}>
-            {mode === 'video' && facing === 'back' && !video.hdr && (
-              <Pop>
-                <Pressable hitSlop={8} style={styles.metaTool} onPress={() => {
-                  const on = video.stabilization !== 'horizon';
-                  setVideo((v) => ({ ...v, stabilization: on ? 'horizon' : 'cinematic' }));
-                  flashToast(on ? 'Horizon lock on' : 'Horizon lock off');
-                }}>
-                  <MaterialCommunityIcons name="rotate-left" size={17} color={video.stabilization === 'horizon' ? '#ffe16b' : '#fff'} />
-                </Pressable>
-              </Pop>
-            )}
             {(facing === 'front' || mode === 'dual') && (
               <Pop>
                 <Pressable hitSlop={8} style={styles.metaTool} onPress={() => setMirrorSelfie((v) => !v)}>
@@ -923,7 +846,8 @@ function CameraScreen() {
       </View>
 
       {mode === 'dual' && (
-        <DualPipFrame
+        <View style={{ ...viewport, position: 'absolute' }} pointerEvents="box-none"><DualPipFrame
+          frameSize={viewport}
           pip={pip}
           locked={recording}
           onMove={(x, y) => setPip((p) => ({ ...p, x, y }))}
@@ -935,7 +859,7 @@ function CameraScreen() {
             Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
             setDualPrimary((p) => (p === 'back' ? 'front' : 'back'));
           }}
-        />
+        /></View>
       )}
 
       {captureReq && (
@@ -959,50 +883,7 @@ function CameraScreen() {
         </View>
       )}
 
-      {/* Floating lower camera deck */}
-      <View style={[styles.bottom, { paddingBottom: insets.bottom + 14 }]} pointerEvents="box-none">
-        <Toast text={toast} />
-        {showLook && (isPhotoShot || mode === 'video' || mode === 'action') && (
-          <Panel>
-            <LookPanel
-              filter={filter}
-              onFilter={setFilter}
-              smoothing={captureSmoothing(mode, photoSmoothing, smoothing)}
-              onSmoothing={mode === 'photo' || mode === 'portrait' ? setPhotoSmoothing : setSmoothing}
-              blur={mode === 'portrait' ? bokeh : undefined}
-              onBlur={setBokeh}
-            />
-          </Panel>
-        )}
-        {mode === 'pro' && !showLook && (
-          <Panel>
-            <ProPanel
-              value={manual}
-              onChange={setManual}
-              caps={caps}
-              video={proVideo}
-              onToggleVideo={() => !recording && setProVideo((v) => !v)}
-            />
-          </Panel>
-        )}
-        {showSliders && mode !== 'pro' && (
-          <Panel>
-            <ToneSliders
-              brightness={brightness}
-              shadows={shadows}
-              showShadows={isPhotoShot}
-              onBrightness={(v) => {
-                setBrightness(v);
-                pokeSliders();
-              }}
-              onShadows={(v) => {
-                setShadows(v);
-                pokeSliders();
-              }}
-            />
-          </Panel>
-        )}
-        <Animated.View layout={GLIDE} style={styles.zoomFloat}>
+        <Animated.View layout={GLIDE} style={[styles.zoomFloat, { position: 'absolute', bottom: win.height - viewport.top - viewport.height + 12, left: viewport.left, width: viewport.width }]}>
           <ZoomPills
             stops={stops}
             zoom={shownZoom}
@@ -1023,12 +904,16 @@ function CameraScreen() {
             onDial={setZoom}
           />
         </Animated.View>
+      {/* Floating lower camera deck */}
+      <View style={[styles.bottom, { paddingBottom: insets.bottom + 6 }, win.width > win.height && { left: undefined, right: 4, width: 176 }]} pointerEvents="box-none">
+        <Toast text={toast} />
+
         <Animated.View layout={GLIDE}>
           <View style={styles.shutterDeck}>
             <View style={styles.shutterRow}>
               {recording && mode !== 'slowmo' ? (
                 <Animated.View key="pause" entering={FadeIn.duration(160)} exiting={FadeOut.duration(120)} style={styles.galleryAnchor}>
-                  <IconButton icon={paused ? 'record' : 'pause'} size={56} onPress={togglePause} />
+                  <IconButton icon={paused ? 'record' : 'pause'} size={44} onPress={togglePause} />
                 </Animated.View>
               ) : (
                 <Animated.View key="thumb" entering={FadeIn.duration(160)} exiting={FadeOut.duration(120)} style={styles.galleryAnchor}>
@@ -1040,7 +925,7 @@ function CameraScreen() {
               {mode === 'dual' ? (
                 <IconButton
                   icon="swap-horizontal"
-                  size={56}
+                  size={44}
                   onPress={() => {
                     if (recording) return;
                     setZoom(1);
@@ -1050,7 +935,7 @@ function CameraScreen() {
               ) : (
                 <IconButton
                   icon="camera-flip-outline"
-                  size={56}
+                  size={44}
                   onPress={() => {
                     if (recording && !canFlipWhileRecording) return;
                     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
@@ -1063,27 +948,7 @@ function CameraScreen() {
               </View>
             </View>
             <ModeCarousel mode={mode} modes={visibleModes} onChange={changeMode} disabled={recording || busy} proVideo={proVideo} onProVideo={setProVideo} />
-            <View style={styles.quickActions}>
-              <Pressable
-                hitSlop={8}
-                disabled={!(isPhotoShot || mode === 'video' || mode === 'action')}
-                onPress={() => setShowLook((v) => !v)}
-                style={[styles.quickAction, !(isPhotoShot || mode === 'video' || mode === 'action') && { opacity: 0.45 }]}
-              >
-                <MaterialCommunityIcons name="palette-outline" size={15} color={showLook || filter !== 'natural' || captureSmoothing(mode, photoSmoothing, smoothing) > 0.01 ? '#ffe16b' : '#fff'} />
-                <Text style={styles.quickActionLabel}>LOOK</Text>
-                <Text numberOfLines={1} style={styles.quickActionValue}>{filter.toUpperCase()}</Text>
-              </Pressable>
-              <View style={styles.quickDivider} />
-              <Pressable
-                hitSlop={8}
-                onPress={() => mode === 'pro' ? setSettingsOpen(true) : pokeSliders()}
-                style={styles.quickAction}
-              >
-                <MaterialCommunityIcons name="tune-variant" size={15} color={showSliders ? '#ffe16b' : '#fff'} />
-                <Text style={styles.quickActionLabel}>{mode === 'pro' ? 'SETUP' : 'EXPOSURE'}</Text>
-              </Pressable>
-            </View>
+
           </View>
         </Animated.View>
         {mode === 'night' && ready?.nightExtension && (
@@ -1099,6 +964,24 @@ function CameraScreen() {
       <SettingsSheet
         visible={settingsOpen}
         onClose={() => setSettingsOpen(false)}
+        captureControls={
+          <View style={{ gap: 16 }}>
+            <Text style={styles.settingLabel}>Timer</Text>
+            <GlassSegmented items={[{ key: '0', label: 'Off' }, { key: '3', label: '3 seconds' }, { key: '10', label: '10 seconds' }]}
+              value={String(timer)} onChange={(v) => setTimer(Number(v) as 0 | 3 | 10)} height={36} />
+            <Text style={styles.settingLabel}>{isVideoMode ? 'Video light' : 'Flash'}</Text>
+            <GlassSegmented items={(isVideoMode ? ['off', 'on'] : ['off', 'auto', 'on']).map((key) => ({ key, label: key[0].toUpperCase() + key.slice(1) }))}
+              value={isVideoMode && flash === 'auto' ? 'off' : flash} onChange={(v) => setFlash(v as Flash)} disabled={ready?.hasFlash === false} height={36} />
+            <Text style={styles.settingLabel}>Exposure</Text>
+            {mode === 'pro' ? <ProPanel value={manual} onChange={setManual} caps={caps} video={proVideo}
+              onToggleVideo={() => !recording && setProVideo((v) => !v)} /> :
+              <ToneSliders brightness={brightness} shadows={shadows} showShadows={isPhotoShot} onBrightness={setBrightness} onShadows={setShadows} />}
+            <Text style={styles.settingLabel}>Filters and skin</Text>
+            <LookPanel filter={filter} onFilter={setFilter} smoothing={captureSmoothing(mode, photoSmoothing, smoothing)}
+              onSmoothing={mode === 'photo' || mode === 'portrait' ? setPhotoSmoothing : setSmoothing}
+              blur={mode === 'portrait' ? bokeh : undefined} onBlur={setBokeh} />
+          </View>
+        }
         photo={photo}
         video={video}
         onPhoto={setPhoto}
@@ -1120,6 +1003,7 @@ function CameraScreen() {
         onResetDefaults={() => {
           clearSettings();
           setRemember(false);
+          setFlash('off'); setTimer(0);
           setPhoto({ frames: 4, vendorNight: true, highlightBracket: true });
           setVideo({ resolution: '1080p', fps: 30, hdr: false, stabilization: 'cinematic' });
           setMirrorSelfie(true);
@@ -1180,20 +1064,11 @@ function Pop({ children }: { children: React.ReactNode }) {
   );
 }
 
-/** Bottom panel (filters, Pro, sliders) that rises in and sinks away */
-function Panel({ children }: { children: React.ReactNode }) {
-  return (
-    <Animated.View entering={FadeInDown.duration(240)} exiting={FadeOutDown.duration(180)} layout={GLIDE}>
-      {children}
-    </Animated.View>
-  );
-}
-
 const styles = StyleSheet.create({
-  topShade: { position: 'absolute', left: 0, right: 0, top: 0, backgroundColor: '#000' },
   instrumentCluster: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 2, height: 48, gap: 2 },
-  galleryAnchor: { position: 'absolute', bottom: 20, left: 22, zIndex: 3 },
-  flipAnchor: { position: 'absolute', bottom: 18, right: 22, zIndex: 3 },
+  galleryAnchor: { position: 'absolute', bottom: 14, left: 6, zIndex: 3 },
+  flipAnchor: { position: 'absolute', bottom: 14, right: 6, zIndex: 3 },
+  settingLabel: { color: '#fff', fontSize: 14, fontWeight: '600' },
   root: { flex: 1, backgroundColor: '#000' },
   center: { alignItems: 'center', justifyContent: 'center' },
   dim: { color: 'rgba(255,255,255,0.6)' },
@@ -1201,53 +1076,23 @@ const styles = StyleSheet.create({
   topRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12 },
   controlButton: { width: 44, height: 44, alignItems: 'center', justifyContent: 'center' },
   topPill: { minWidth: 100, maxWidth: 200, flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 10, height: 44 },
-  topBadge: { maxWidth: 66, color: '#fff', fontSize: 10, fontWeight: '800', letterSpacing: 0.35, textAlign: 'center' },
-  statusDivider: { width: StyleSheet.hairlineWidth, height: 18, backgroundColor: 'rgba(255,255,255,0.32)' },
-  topTool: { height: 34, minWidth: 38, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 4, paddingHorizontal: 4 },
-  timerText: { color: '#fff', fontSize: 12, fontWeight: '600', letterSpacing: 0.2 },
   qualityChip: { minWidth: 48, maxWidth: 78, height: 34, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 2, paddingHorizontal: 3 },
   qualityText: { color: '#fff', fontSize: 12, fontWeight: '600', letterSpacing: 0.2 },
   topMetaRow: { flexDirection: 'row', alignItems: 'center', gap: 7, marginHorizontal: 2 },
   topMetaChip: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 4, minHeight: 24, maxWidth: '70%' },
   statusDot: { width: 4, height: 4, borderRadius: 2, backgroundColor: '#ffe16b' },
   topMetaLabel: { color: 'rgba(255,255,255,0.85)', fontSize: 10, fontWeight: '600', letterSpacing: 1.8, textShadowColor: '#000', textShadowRadius: 4 },
-  topMetaValue: { color: 'rgba(255,255,255,0.8)', fontSize: 10, fontWeight: '600', letterSpacing: 0.2 },
   topMetaTools: { flexDirection: 'row', alignItems: 'center', gap: 4 },
   metaTool: { width: 30, height: 30, alignItems: 'center', justifyContent: 'center' },
-  cameraSideLabel: { flexShrink: 1, marginLeft: 'auto', color: 'rgba(255,255,255,0.86)', fontSize: 8, fontWeight: '700', letterSpacing: 1, textShadowColor: 'rgba(0,0,0,0.7)', textShadowRadius: 5 },
   subBar: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, paddingHorizontal: 12, height: 34, borderRadius: 18, overflow: 'hidden' },
   recordingBar: { alignSelf: 'center' },
-  subBarIcon: { width: 28, height: 28, borderRadius: 14, alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(255,255,255,0.16)' },
-  subBarTime: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingRight: 8 },
-  badge: { color: '#fff', fontSize: 12, fontWeight: '800', letterSpacing: 0.6 },
-  recBadge: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 12, height: 32 },
   recLed: { width: 8, height: 8, borderRadius: 4, backgroundColor: '#ff453a' },
   recText: { color: '#fff', fontWeight: '700', fontVariant: ['tabular-nums'] },
   countdown: { color: '#fff', fontSize: 96, fontWeight: '200' },
-  viewfinderGrid: { position: 'absolute', left: '7%', right: '7%', top: '27%', bottom: '35%', borderWidth: StyleSheet.hairlineWidth, borderColor: 'rgba(255,255,255,0.25)', borderRadius: 3 },
-  gridLine: { position: 'absolute', backgroundColor: 'rgba(255,255,255,0.22)' },
-  gridVertical: { top: 0, bottom: 0, width: StyleSheet.hairlineWidth },
-  gridHorizontal: { left: 0, right: 0, height: StyleSheet.hairlineWidth },
-  exposureRail: { position: 'absolute', right: 18, top: '35%', alignItems: 'center', gap: 8, zIndex: 5 },
-  exposureButton: { width: 36, height: 36, alignItems: 'center', justifyContent: 'center' },
-  exposureTrack: { width: 34, height: 92, alignItems: 'center', justifyContent: 'center' },
-  exposureLine: { position: 'absolute', top: 12, bottom: 12, left: 16, width: 1, backgroundColor: 'rgba(255,255,255,0.52)' },
-  exposureMarker: { position: 'absolute', left: 8, right: 8, top: '50%', height: 2, marginTop: -1, backgroundColor: '#ffe16b' },
-  bottom: { position: 'absolute', left: 0, right: 0, bottom: 0, gap: 14, zIndex: 8 },
+  bottom: { position: 'absolute', left: 0, right: 0, bottom: 0, gap: 6, zIndex: 8 },
   zoomFloat: { alignSelf: 'center', marginBottom: 4 },
-  shutterRow: { height: 92, alignItems: 'center', justifyContent: 'center', position: 'relative' },
-  shutterDeck: { alignSelf: 'center', width: '100%', maxWidth: 620, backgroundColor: 'rgba(0,0,0,0.94)', paddingTop: 18, paddingBottom: 8, gap: 16 },
-  quickActions: { alignSelf: 'center', flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 12, minHeight: 30, paddingHorizontal: 6 },
-  quickAction: { minHeight: 32, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, paddingHorizontal: 10, borderRadius: 16, backgroundColor: 'rgba(255,255,255,0.055)' },
-  quickActionLabel: { color: 'rgba(255,255,255,0.72)', fontSize: 9, fontWeight: '600', letterSpacing: 1.4 },
-  quickActionValue: { maxWidth: 72, color: '#ffe16b', fontSize: 9, fontWeight: '600', letterSpacing: 0.2 },
-  quickDivider: { width: 0, height: 0 },
-  dock: { marginHorizontal: 14, paddingTop: 10, paddingBottom: 12, gap: 13, shadowColor: '#000', shadowOpacity: 0.22, shadowRadius: 20, shadowOffset: { width: 0, height: 6 }, elevation: 10 },
-  blurRow: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 14, height: 50, marginHorizontal: 24 },
-  blurLabel: { color: '#fff', fontSize: 13, fontWeight: '600' },
-  cropBar: { position: 'absolute', left: 0, right: 0, backgroundColor: 'rgba(0,0,0,0.55)' },
-  aspectChip: { color: '#fff', fontSize: 12, fontWeight: '800', borderWidth: 1.5, borderColor: '#fff', borderRadius: 6, paddingHorizontal: 5, paddingVertical: 1 },
-  zoomRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 12 },
+  shutterRow: { height: 72, alignItems: 'center', justifyContent: 'center', position: 'relative' },
+  shutterDeck: { alignSelf: 'center', width: '100%', maxWidth: 620, backgroundColor: 'rgba(0,0,0,0.94)', paddingTop: 4, paddingBottom: 2, gap: 4 },
   nightReadyWrap: { alignSelf: 'center', marginTop: -2 },
   nightReady: { flexDirection: 'row', alignItems: 'center', gap: 7, paddingHorizontal: 12, height: 30 },
   nightReadyText: { color: '#fff', fontSize: 11, fontWeight: '700' },
