@@ -203,7 +203,11 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
   fun setFacing(v: String) = rebindOnChange(facing, v) { facing = it; zoom = 1f; defaultFrontFallback = false }
   fun setDualPrimary(v: String) = rebindOnChange(dualPrimary, v) { dualPrimary = it; zoom = 1f }
   fun setMirror(v: Boolean) = rebindOnChange(mirror, v) { mirror = it }
-  fun setActive(v: Boolean) = rebindOnChange(active, v) { active = it; post { updateGestures() } }
+  fun setActive(v: Boolean) = rebindOnChange(active, v) {
+    active=it
+    if(!it){cancelPendingStart();stopAfterSwitch=true;recording?.stop();if(ownRec!=null)stopOwnRecording()}
+    post { updateGestures() }
+  }
   fun setVideoQuality(v: String) = rebindOnChange(videoQuality, v) { videoQuality = it }
   fun setFps(v: Int) = rebindOnChange(fps, v) { fps = it }
   fun setHdrVideo(v: Boolean) = rebindOnChange(hdrVideo, v) { hdrVideo = it }
@@ -513,6 +517,7 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
   override fun onDetachedFromWindow() {
     super.onDetachedFromWindow()
     try { orientationListener.disable() } catch (_: Throwable) {}
+    cancelPendingStart();stopAfterSwitch=true
     recording?.stop()
     recording = null
     if (ownRec != null) stopOwnRecording()
@@ -526,7 +531,7 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
 
   /** Release camera-owned surfaces before Android reparents this activity to another display. */
   internal fun pauseForDisplaySwitch() {
-    check(recording==null && ownRec==null) { "Finish recording before switching screens" }
+    check(recording==null && ownRec==null && !startingRec) { "Finish recording before switching screens" }
     removeCallbacks(rebindAction);rebindQueued=false
     stabilityEpoch++;requestedSharedStability=false
     provider?.unbindAll()
@@ -562,6 +567,7 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
 
   private fun rebind() {
     if (!isAttachedToWindow || RearDisplayRouter.isMoving) return
+    if(startingRec)cancelPendingStart()
     if (recording != null) {
       // Front/back switch mid-video (Xiaomi-style): close this piece, re-open on the other camera,
       // keep recording into a new piece; pieces are joined into one video when recording stops.
@@ -598,7 +604,12 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
         postDelayed({ applyPreviewColor() }, 400) // the viewfinder's surface view appears asynchronously
         if (pendingDualRecord && mode == "dual" && dualComposed) {
           pendingDualRecord = false
-          postDelayed({ startRecording() }, 250)
+          val token=recordingStart.begin()
+          postDelayed({
+            if(recordingStart.consume(token))try{startRecording()}catch(e:Exception){
+              emitRecordingFinished(mapOf("durationMs" to 0.0,"slowMotion" to false,"error" to (e.message ?: "Recording failed")))
+            }
+          },250)
         }
         setTorch(torch)
         applyControls()
@@ -861,6 +872,8 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
     }
   }
 
+  @OptIn(ExperimentalCamera2Interop::class)
+  @androidx.annotation.OptIn(markerClass = [ExperimentalCamera2Interop::class])
   private fun bindVideo(p: ProcessCameraProvider, owner: LifecycleOwner) {
     stabilityEpoch++;sharedOffSamples=0;sharedFallbackApplied=false;requestedSharedStability=false
     val sel = selector(facing)
@@ -1044,7 +1057,7 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
       .build()
     fun <T> macroOpts(b: androidx.camera.core.ExtendableBuilder<T>) {
       val ext = androidx.camera.camera2.interop.Camera2Interop.Extender(b)
-      if (m.parentId != null) ext.setPhysicalCameraId(m.id)
+      if (android.os.Build.VERSION.SDK_INT >= 28 && m.parentId != null) ext.setPhysicalCameraId(m.id)
       ext.setCaptureRequestOption(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
     }
     val pb = Preview.Builder().setResolutionSelector(resolutionSelector())
@@ -1300,8 +1313,8 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
    * Captures [count] frames back to back. A non-zero [evShift] temporarily biases exposure first
    * (HDR+ shoots under-exposed bursts). Emits onPhotosCaptured with every saved path.
    */
-  fun captureBurst(count: Int, evShift: Double, shortEv: Double) {
-    val ic = imageCapture ?: run { emitError("Photos aren't available in this mode"); return }
+  fun captureBurst(count: Int, evShift: Double, shortEv: Double, requestId: String) {
+    val ic = imageCapture ?: throw IllegalStateException("Photos are not ready in this mode")
     val n = count.coerceIn(1, 8)
     val withShort = shortEv < 0 && n > 1 && !usingNightExtension && mode != "pro"
     val paths = ArrayList<String>()
@@ -1320,7 +1333,7 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
       ic.flashMode = firstFlash
       applyControls()
       emitPhotosCaptured(
-        mapOf("paths" to paths, "evs" to evs, "meta" to metas,
+        mapOf("requestId" to requestId,"paths" to paths, "evs" to evs, "meta" to metas,
           "shortIndex" to if (withShort && paths.size >= 2 && evs.last() < evs.first() - 0.5) paths.size - 1 else -1,
           "error" to error, "nightExtension" to usingNightExtension),
       )
@@ -1399,34 +1412,34 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
   }
 
   @SuppressLint("MissingPermission")
-  fun startRecording() {
-    if(joiningVideo)return;
-    if (mode == "dual" && !dualComposed) {
-      dualComposed = true
-      pendingDualRecord = true
-      scheduleRebind()
-      return
-    }
-    if (ownMode) {
-      if (ownRec != null || startingRec) return
-      if (soundOn) {
-        startingRec = true
-        playSound(android.media.MediaActionSound.START_VIDEO_RECORDING)
-        postDelayed({ startingRec = false; beginOwnRecording() }, 550)
-      } else beginOwnRecording()
-      return
-    }
-    val vc0 = videoCapture ?: run { emitError("Video isn't available in this mode"); return }
-    if (recording != null || startingRec) return
-    // Start tone first, then the microphone, so the tone isn't recorded into the video
-    if (soundOn) {
-      startingRec = true
-      playSound(android.media.MediaActionSound.START_VIDEO_RECORDING)
-      postDelayed({ startingRec = false; beginRecording(videoCapture ?: vc0) }, 550)
-    } else beginRecording(vc0)
+  private val recordingStart=RecordingStartGate()
+  private val startingRec get()=recordingStart.pending
+  private fun cancelPendingStart() {
+    val pending=recordingStart.cancel() || pendingDualRecord
+    pendingDualRecord=false
+    if(pending)emitRecordingFinished(mapOf("durationMs" to 0.0,"slowMotion" to false,"error" to "Recording cancelled"))
   }
-
-  private var startingRec = false
+  fun startRecording() {
+    check(isAttachedToWindow && active && !RearDisplayRouter.isMoving) { "Camera is not active" }
+    if(joiningVideo || startingRec || recording!=null || ownRec!=null)return
+    stopAfterSwitch=false
+    if(mode=="dual" && !dualComposed){dualComposed=true;pendingDualRecord=true;scheduleRebind();return}
+    if(!ownMode)check(videoCapture!=null) { "Video is not ready in this mode" }
+    fun begin(){
+      if(!isAttachedToWindow || !active || RearDisplayRouter.isMoving){
+        emitRecordingFinished(mapOf("durationMs" to 0.0,"slowMotion" to false,"error" to "Recording cancelled"));return
+      }
+      if(ownMode)beginOwnRecording() else beginRecording(videoCapture ?: throw IllegalStateException("Video is not ready"))
+    }
+    if(soundOn){
+      val token=recordingStart.begin()
+      playSound(android.media.MediaActionSound.START_VIDEO_RECORDING)
+      postDelayed({
+        if(!recordingStart.consume(token))return@postDelayed
+        try{begin()}catch(e:Exception){emitRecordingFinished(mapOf("durationMs" to 0.0,"slowMotion" to false,"error" to (e.message ?: "Recording failed")))}
+      },550)
+    }else begin()
+  }
 
   /* ---------------- own recorder (Video / Action) ---------------- */
   private var ownMode = false
@@ -1449,7 +1462,7 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
 
   private fun beginOwnRecording() {
     if (ownRec != null) return
-    val proc = portraitProcessor ?: run { emitError("Video isn't ready yet"); return }
+    val proc = portraitProcessor ?: throw IllegalStateException("Video is not ready yet")
     // Lock the video's orientation to how the phone is held now (portrait, landscape, upside down)
     proc.encDeviceDeg = deviceDeg
     proc.encHint = (proc.inRotation + deviceDeg) % 360
@@ -1525,6 +1538,7 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
     palm.setEnabled(false)
     keepScreenOn = true
     rootView?.keepScreenOn = true
+    try {
     recording = pending.start(executor) { event ->
       if(event is VideoRecordEvent.Start || event is VideoRecordEvent.Resume){processedAtStart=recordProcessor?.processedVideoFrames() ?: 0L;auditStartDuration=event.recordingStats.recordedDurationNanos;auditPaused=false}
       if(event is VideoRecordEvent.Pause)auditPaused=true
@@ -1538,7 +1552,7 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
       if (event is VideoRecordEvent.Finalize) {
         recording = null
         persistentRec = false
-        val okPiece = file.exists() && file.length() > 0
+        val okPiece = RecordedClip.hasVideoSample(file)
         if (segmentSwitching) {
           // A camera switch: keep this piece, bind the other camera, then record the next piece
           if (okPiece) { segments.add(file); segmentDurUs.add(event.recordingStats.recordedDurationNanos / 1000); segmentMs += event.recordingStats.recordedDurationNanos / 1_000_000.0 }
@@ -1561,13 +1575,13 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
         portraitProcessor?.let { it.holdTimeline = false; it.resetTimeline() }
         playSound(android.media.MediaActionSound.STOP_VIDEO_RECORDING)
         post { updateGestures() }
-        val ok = file.exists() && file.length() > 0
+        val ok = RecordedClip.hasVideoSample(file)
         emitRecordingFinished(
           mapOf(
             "path" to if (ok) file.absolutePath else null,
             "durationMs" to event.recordingStats.recordedDurationNanos / 1_000_000.0,
             "slowMotion" to (mode == "slowmo"),
-            "error" to (routingFailure ?: if (event.hasError()) "Recorder error ${event.error}" else null),
+            "error" to (routingFailure ?: if(!ok) "No playable video frames were recorded" else if (event.hasError()) "Recorder error ${event.error}" else null),
           ),
         )
         if (mode == "dual" && dualComposed) {
@@ -1576,9 +1590,15 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
         }
       }
     }
+    }catch(e:Exception){
+      keepScreenOn=false;rootView?.keepScreenOn=false
+      portraitProcessor?.let { it.holdTimeline=false;it.resetTimeline() }
+      updateGestures();throw e
+    }
   }
 
   fun stopRecording() {
+    if(startingRec || pendingDualRecord){cancelPendingStart();return}
     if (ownRec != null) { stopOwnRecording(); return }
     // Stopped while switching cameras: finish with the pieces recorded so far
     if (segmentSwitching && recording == null) { stopAfterSwitch = true; return }
@@ -1598,6 +1618,9 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
 
   /** After the other camera is bound, start the next piece (retries while the camera opens). */
   private fun continueAfterSwitch(tries: Int = 0) {
+    if(stopAfterSwitch || !active || !isAttachedToWindow){
+      stopAfterSwitch=false;segmentSwitching=false;keepScreenOn=false;rootView?.keepScreenOn=false;finishMultiCamera();return
+    }
     val vc = videoCapture
     val open = camera?.cameraInfo?.cameraState?.value?.type == androidx.camera.core.CameraState.Type.OPEN
     if (vc == null || camera == null || !open) {
@@ -1643,7 +1666,7 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
       val fastOut = File(context.cacheDir, "iCam_video_${System.currentTimeMillis()}.mp4")
       val ok = try { FastJoin.join(parts, fastOut) } catch (e: Throwable) { false }
       post {
-        if (ok) {
+        if (ok && RecordedClip.hasVideoSample(fastOut)) {
           parts.forEach { try { it.delete() } catch (_: Throwable) {} }
           finishJoinedVideo(fastOut,dur)
         } else {
@@ -1659,6 +1682,7 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
   }
 
   /** Full join (decode → effects → encode); used when the pieces can't simply be copied together. */
+  @androidx.annotation.OptIn(markerClass = [androidx.media3.common.util.UnstableApi::class])
   private fun transformJoin(parts: List<File>, durs: List<Long>, dur: Double, sessionRotation: Int) {
     val portrait = sessionRotation == android.view.Surface.ROTATION_0 || sessionRotation == android.view.Surface.ROTATION_180
     val w = if (portrait) 1080 else 1920
@@ -1696,8 +1720,11 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
         .setAudioMimeType(androidx.media3.common.MimeTypes.AUDIO_AAC)
         .addListener(object : androidx.media3.transformer.Transformer.Listener {
           override fun onCompleted(c: androidx.media3.transformer.Composition, r: androidx.media3.transformer.ExportResult) {
-            parts.forEach { try { it.delete() } catch (_: Throwable) {} }
-            finishJoinedVideo(out,dur)
+            if(RecordedClip.hasVideoSample(out)){
+              parts.forEach { try { it.delete() } catch (_: Throwable) {} }
+              finishJoinedVideo(out,dur)
+            }else emitRecordingFinished(mapOf("path" to parts[0].absolutePath,"durationMs" to dur,"slowMotion" to false,
+              "extraPaths" to parts.drop(1).map{it.absolutePath},"error" to "Joined output had no video frames; saved the original clips"))
           }
           override fun onError(c: androidx.media3.transformer.Composition, r: androidx.media3.transformer.ExportResult, e: androidx.media3.transformer.ExportException) {
             // Couldn't join: keep every piece (each is a valid video) rather than lose anything

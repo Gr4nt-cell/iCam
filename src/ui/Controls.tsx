@@ -386,14 +386,16 @@ export function IconButton({
   onPress,
   active,
   size = 44,
+  disabled=false,
 }: {
   icon: React.ComponentProps<typeof MaterialCommunityIcons>['name'];
   onPress: () => void;
   active?: boolean;
   size?: number;
+  disabled?: boolean;
 }) {
   return (
-    <Pressable accessibilityRole="button" accessibilityLabel={icon === "camera-flip-outline" ? "Switch camera" : icon === "swap-horizontal" ? "Swap dual cameras" : icon === "pause" ? "Pause recording" : icon === "record" ? "Resume recording" : icon.replace(/-/g, " ")} onPress={onPress} hitSlop={8}>
+    <Pressable accessibilityRole="button" accessibilityLabel={icon === "camera-flip-outline" ? "Switch camera" : icon === "swap-horizontal" ? "Swap dual cameras" : icon === "pause" ? "Pause recording" : icon === "record" ? "Resume recording" : icon.replace(/-/g, " ")} onPress={onPress} disabled={disabled} accessibilityState={{disabled}} hitSlop={8}>
       <GlassCircle size={size} active={active}>
         <MaterialCommunityIcons name={icon} size={size * 0.48} color={active ? '#111' : '#fff'} />
       </GlassCircle>

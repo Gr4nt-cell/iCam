@@ -1,4 +1,5 @@
 import { File, Paths } from 'expo-file-system';
+import { savedPreferences, devicePreferences } from './camera/savedPreferences';
 
 /** Settings persisted between launches when "Remember settings" is on. */
 const FILE = 'icam-settings.json';
@@ -7,7 +8,7 @@ export async function loadSettings<T extends object>(): Promise<Partial<T> | nul
   try {
     const f = new File(Paths.document, FILE);
     if (!f.exists) return null;
-    return JSON.parse(await f.text()) as Partial<T>;
+    return savedPreferences(JSON.parse(await f.text())) as Partial<T> | null;
   } catch {
     return null;
   }
@@ -40,7 +41,7 @@ export async function loadDeviceFlags(): Promise<DeviceFlags> {
   try {
     const f = new File(Paths.document, DEVICE_FILE);
     if (!f.exists) return {};
-    return JSON.parse(await f.text()) as DeviceFlags;
+    return devicePreferences(JSON.parse(await f.text()));
   } catch {
     return {};
   }

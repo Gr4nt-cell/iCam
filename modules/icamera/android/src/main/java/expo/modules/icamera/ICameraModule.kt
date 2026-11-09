@@ -73,7 +73,11 @@ class ICameraModule : Module() {
       val activity = appContext.currentActivity ?: throw IllegalStateException("No activity")
       val base = if (isVideo) android.provider.MediaStore.Video.Media.EXTERNAL_CONTENT_URI
         else android.provider.MediaStore.Images.Media.EXTERNAL_CONTENT_URI
-      val uri = android.content.ContentUris.withAppendedId(base, id.toLong())
+      val uri = if(id.startsWith("file://")){
+        val file=java.io.File(android.net.Uri.parse(id).path ?: throw IllegalArgumentException("Invalid capture path"))
+        require(file.isFile) { "Capture file is no longer available" }
+        androidx.core.content.FileProvider.getUriForFile(activity,activity.packageName+".FileSystemFileProvider",file)
+      }else android.content.ContentUris.withAppendedId(base,id.toLong())
       val view = android.content.Intent(android.content.Intent.ACTION_VIEW).apply {
         setDataAndType(uri, if (isVideo) "video/*" else "image/*")
         addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
@@ -120,34 +124,42 @@ class ICameraModule : Module() {
     AsyncFunction("finishCapture") { path: String, isVideo: Boolean ->
       val act = appContext.currentActivity ?: throw IllegalStateException("No activity")
       val src = java.io.File(android.net.Uri.parse(path).path ?: path.removePrefix("file://"))
+      require(src.isFile && src.length()>0) { "Capture file is empty or missing" }
       val req = act.intent
       @Suppress("DEPRECATION")
       val out: android.net.Uri? = req?.getParcelableExtra(android.provider.MediaStore.EXTRA_OUTPUT)
         ?: req?.clipData?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.uri
       val result = android.content.Intent()
       if (out != null) {
-        act.contentResolver.openOutputStream(out, "w")?.use { o -> src.inputStream().use { it.copyTo(o) } }
+        requireNotNull(act.contentResolver.openOutputStream(out, "w")) { "Could not open the destination" }.use { o -> src.inputStream().use { it.copyTo(o) } }
         result.data = out
       } else if (isVideo) {
         // No destination given: store it in Movies/iCam and return its content address
         val values = android.content.ContentValues().apply {
           put(android.provider.MediaStore.Video.Media.DISPLAY_NAME, src.name)
           put(android.provider.MediaStore.Video.Media.MIME_TYPE, "video/mp4")
-          if (android.os.Build.VERSION.SDK_INT >= 29) put(android.provider.MediaStore.Video.Media.RELATIVE_PATH, "Movies/iCam")
+          if (android.os.Build.VERSION.SDK_INT >= 29) {
+            put(android.provider.MediaStore.Video.Media.RELATIVE_PATH,"Movies/iCam")
+            put(android.provider.MediaStore.Video.Media.IS_PENDING,1)
+          }
         }
         val uri = act.contentResolver.insert(android.provider.MediaStore.Video.Media.EXTERNAL_CONTENT_URI, values)
           ?: throw IllegalStateException("Couldn't save the video")
-        act.contentResolver.openOutputStream(uri, "w")?.use { o -> src.inputStream().use { it.copyTo(o) } }
+        try{
+          requireNotNull(act.contentResolver.openOutputStream(uri,"w")) { "Could not open the video destination" }.use { o->src.inputStream().use{it.copyTo(o)} }
+          if(android.os.Build.VERSION.SDK_INT>=29)act.contentResolver.update(uri,android.content.ContentValues().apply{put(android.provider.MediaStore.Video.Media.IS_PENDING,0)},null,null)
+        }catch(e:Exception){act.contentResolver.delete(uri,null,null);throw e}
         result.data = uri
         result.addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
       } else {
         // No destination given: the convention is a small preview bitmap in "data"
-        val opts = android.graphics.BitmapFactory.Options().apply { inSampleSize = 8 }
-        val bmp = android.graphics.BitmapFactory.decodeFile(src.absolutePath, opts)
+        val bounds=android.graphics.BitmapFactory.Options().apply{inJustDecodeBounds=true}
+        android.graphics.BitmapFactory.decodeFile(src.absolutePath,bounds)
+        val opts=android.graphics.BitmapFactory.Options().apply { inSampleSize=CaptureOutputPolicy.thumbnailSample(bounds.outWidth,bounds.outHeight) }
+        val bmp=requireNotNull(android.graphics.BitmapFactory.decodeFile(src.absolutePath,opts)) { "The captured image could not be decoded" }
         result.putExtra("data", bmp)
       }
-      act.setResult(android.app.Activity.RESULT_OK, result)
-      act.finish()
+      act.runOnUiThread { act.setResult(android.app.Activity.RESULT_OK,result);act.finish() }
       true
     }
 
@@ -156,7 +168,7 @@ class ICameraModule : Module() {
       act.setResult(android.app.Activity.RESULT_CANCELED)
       act.finish()
       true
-    }
+    }.runOnQueue(expo.modules.kotlin.functions.Queues.MAIN)
 
     Function("aiAvailable") {
       val ctx = appContext.reactContext ?: return@Function false
@@ -215,8 +227,8 @@ class ICameraModule : Module() {
         )
       }
 
-      AsyncFunction("capture") { view: ICameraView, count: Int, evShift: Double, shortEv: Double ->
-        view.captureBurst(count, evShift, shortEv)
+      AsyncFunction("capture") { view: ICameraView, count: Int, evShift: Double, shortEv: Double, requestId: String ->
+        view.captureBurst(count, evShift, shortEv, requestId)
       }.runOnQueue(expo.modules.kotlin.functions.Queues.MAIN)
       AsyncFunction("movePip") { view: ICameraView, x: Double, y: Double ->
         view.movePip(x.toFloat(), y.toFloat())
@@ -239,7 +251,7 @@ class ICameraModule : Module() {
   private fun capabilities(ctx: Context, provider: ProcessCameraProvider, ext: ExtensionsManager?): Map<String, Any?> {
     val pm = ctx.packageManager
     val concurrent = try {
-      pm.hasSystemFeature(PackageManager.FEATURE_CAMERA_CONCURRENT) &&
+      android.os.Build.VERSION.SDK_INT >= 30 && pm.hasSystemFeature(PackageManager.FEATURE_CAMERA_CONCURRENT) &&
         provider.availableConcurrentCameraInfos.any { pair ->
           pair.any { it.lensFacing == CameraSelector.LENS_FACING_BACK } &&
             pair.any { it.lensFacing == CameraSelector.LENS_FACING_FRONT }
@@ -247,7 +259,7 @@ class ICameraModule : Module() {
     } catch (e: Throwable) { false }
 
     val cameras = provider.availableCameraInfos.mapNotNull { info ->
-      try { describe(info, ext) } catch (e: Throwable) { null }
+      try { describe(ctx, info, ext) } catch (e: Throwable) { null }
     }
     val back = cameras.firstOrNull { it["position"] == "back" } ?: cameras.firstOrNull()
 
@@ -269,7 +281,7 @@ class ICameraModule : Module() {
 
   @OptIn(ExperimentalCamera2Interop::class, ExperimentalHighSpeedVideo::class, androidx.camera.core.ExperimentalSessionConfig::class)
   @androidx.annotation.OptIn(markerClass = [ExperimentalCamera2Interop::class, ExperimentalHighSpeedVideo::class, androidx.camera.core.ExperimentalSessionConfig::class])
-  private fun describe(info: CameraInfo, ext: ExtensionsManager?): Map<String, Any?> {
+  private fun describe(ctx: Context, info: CameraInfo, ext: ExtensionsManager?): Map<String, Any?> {
     val c2 = Camera2CameraInfo.from(info)
     fun <T> ch(key: CameraCharacteristics.Key<T>): T? = try { c2.getCameraCharacteristic(key) } catch (e: Throwable) { null }
 
@@ -290,7 +302,10 @@ class ICameraModule : Module() {
       ?.getOutputSizes(android.graphics.ImageFormat.JPEG) ?: emptyArray()
     val maxPx = jpeg.maxOfOrNull { it.width.toLong() * it.height } ?: 0L
     val focal = ch(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS)?.toList() ?: emptyList()
-    val physical = try { c2.cameraCharacteristicsMap.size } catch (e: Throwable) { 1 }
+    val physical = if(android.os.Build.VERSION.SDK_INT>=28)try {
+      val manager=ctx.getSystemService(Context.CAMERA_SERVICE) as android.hardware.camera2.CameraManager
+      manager.getCameraCharacteristics(c2.cameraId).physicalCameraIds.size.coerceAtLeast(1)
+    }catch(_:Exception){1}else 1
 
     val videoCaps = Recorder.getVideoCapabilities(info)
     val qualities = videoCaps.getSupportedQualities(DynamicRange.SDR).map { qualityName(it) }

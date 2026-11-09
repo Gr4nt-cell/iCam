@@ -1,6 +1,7 @@
 /* Static regression audit: requires the base revision as argv[2] (default HEAD). */
 const fs=require('fs'),cp=require('child_process'),ts=require('typescript'),assert=require('assert/strict');
 const base=process.argv[2]||'HEAD';
+const audit=process.argv.includes('--allow-source-audit');
 const rearSwitch=process.argv.includes('--allow-rear-switch');
 const viewfinder=process.argv.includes('--allow-viewfinder-settings');
 const rebuild=process.argv.includes('--allow-stabilization-rebuild');
@@ -32,6 +33,9 @@ function approvedPrefix(prefix){
 function normalized(node,source){
  if(ts.isJsxAttribute(node)){
   const text=node.getText(source);
+  if(audit&&['onError','onPhotosCaptured','onRecordingFinished'].includes(node.name.text))return node.name.text+':audited-capture-recovery';
+  if(audit&&node.name.text==='onPress'&&text.includes('setFacing')&&text.includes('canFlipWhileRecording'))return 'onPress:guarded-camera-flip';
+  if(audit&&node.name.text==='onPress'&&text.includes('setSettingsOpen(true)'))return 'onPress:guarded-settings';
   if(rearSwitch&&node.name.text==='active')return 'active:paused-during-display-move';
   if(rearSwitch&&node.name.text==='onScreens')return 'onScreens:direct-display-toggle';
   if(rearSwitch&&node.name.text==='onPress'&&(text.includes('screens.setOpen(true)')||text.includes('screens.toggleScreen')))return 'onPress:direct-display-toggle';
@@ -77,7 +81,7 @@ if(ts.isJsxAttribute(n)&&(/^on[A-Z]/.test(n.name.text)||['disabled','value','min
   else {
    // This request intentionally moves controls and removes Horizon. Capture/recording functions stay exact.
    function captureBodies(code){const src=parse(code,file),found={};function walk(n){
-    if(ts.isVariableDeclaration(n)&&['shootPhoto','toggleRecording','togglePause','saveToGallery','onShutter','onGesture','openLast'].includes(n.name.getText(src)))found[n.name.getText(src)]=printer.printNode(ts.EmitHint.Unspecified,n,src);
+    if(ts.isVariableDeclaration(n)&&(audit?['toggleRecording']:['shootPhoto','toggleRecording','togglePause','saveToGallery','onShutter','onGesture','openLast']).includes(n.name.getText(src)))found[n.name.getText(src)]=printer.printNode(ts.EmitHint.Unspecified,n,src);
     ts.forEachChild(n,walk);
    }walk(src);return found;}
    assert.deepEqual(captureBodies(after),captureBodies(before),'Capture, save or recording behavior changed');
@@ -89,6 +93,7 @@ if(ts.isJsxAttribute(n)&&(/^on[A-Z]/.test(n.name.text)||['disabled','value','min
 const quality=process.argv.includes('--allow-capture-quality');
 const offline=process.argv.includes('--allow-offline-stabilization');
 const reviewed=new Set([
+ ...(audit ? ['src/settings.ts','src/camera/savedPreferences.ts','modules/icamera/android/src/main/java/expo/modules/icamera/RecordedClip.kt','modules/icamera/android/src/main/java/expo/modules/icamera/CaptureOutputPolicy.kt','modules/icamera/android/src/test/java/expo/modules/icamera/CaptureOutputPolicyTest.kt','src/camera/captureSession.ts','modules/icamera/android/src/main/java/expo/modules/icamera/RecordingStartGate.kt','modules/icamera/android/src/test/java/expo/modules/icamera/RecordingStartGateTest.kt'] : []),
  ...(rearSwitch ? ['modules/icamera/android/src/main/java/expo/modules/icamera/UiRefresh.kt','modules/icamera/android/src/main/java/expo/modules/icamera/UiRefreshPolicy.kt','modules/icamera/android/src/test/java/expo/modules/icamera/UiRefreshPolicyTest.kt','modules/icamera/android/src/main/java/expo/modules/icamera/SurfaceRetirement.kt','modules/icamera/android/src/test/java/expo/modules/icamera/SurfaceRetirementTest.kt'] : []),
  ...(viewfinder ? ['src/camera/viewfinder.ts','src/camera/hardware.ts','src/ui/DualPip.tsx','modules/icamera/index.ts'] : []),
  ...(rebuild ? ['modules/icamera/android/src/main/java/expo/modules/icamera/SteadyFrame.kt','modules/icamera/android/src/test/java/expo/modules/icamera/SteadyFrameTest.kt','modules/icamera/android/src/test/java/expo/modules/icamera/VideoToneTest.kt','modules/icamera/android/src/main/java/expo/modules/icamera/LiveRollFilter.kt','modules/icamera/android/src/main/java/expo/modules/icamera/RecordingStabilityPolicy.kt','modules/icamera/android/src/main/java/expo/modules/icamera/HdrVideoStabilizer.kt','modules/icamera/android/src/main/java/expo/modules/icamera/OfflineVideoMotion.kt','modules/icamera/android/src/main/java/expo/modules/icamera/VideoProcessingTransform.kt','modules/icamera/android/src/test/java/expo/modules/icamera/LiveRollFilterTest.kt','modules/icamera/android/src/test/java/expo/modules/icamera/RecordingStabilityPolicyTest.kt','modules/icamera/android/src/test/java/expo/modules/icamera/OfflineVideoMotionTest.kt','modules/icamera/android/src/test/java/expo/modules/icamera/VideoProcessingTransformTest.kt'] : []),

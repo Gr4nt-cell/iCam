@@ -280,9 +280,8 @@ class PortraitProcessor : SurfaceProcessor {
   private fun render() {
     val s = st ?: return
     if (released) return
-    EGL14.eglMakeCurrent(display, pbuffer, pbuffer, context)
-    try { s.updateTexImage() } catch (e: Throwable) { return }
-    s.getTransformMatrix(stM)
+    if(!EGL14.eglMakeCurrent(display,pbuffer,pbuffer,context))return
+    try { s.updateTexImage();s.getTransformMatrix(stM) } catch (e: Throwable) { return }
     if (!android.opengl.Matrix.invertM(stInv, 0, stM, 0)) android.opengl.Matrix.setIdentityM(stInv, 0)
     frame++
 
