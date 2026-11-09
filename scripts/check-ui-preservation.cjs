@@ -1,6 +1,7 @@
 /* Static regression audit: requires the base revision as argv[2] (default HEAD). */
 const fs=require('fs'),cp=require('child_process'),ts=require('typescript'),assert=require('assert/strict');
 const base=process.argv[2]||'HEAD';
+const rearSwitch=process.argv.includes('--allow-rear-switch');
 const viewfinder=process.argv.includes('--allow-viewfinder-settings');
 const rebuild=process.argv.includes('--allow-stabilization-rebuild');
 const hdr=process.argv.includes('--allow-hdr-processing');
@@ -31,6 +32,9 @@ function approvedPrefix(prefix){
 function normalized(node,source){
  if(ts.isJsxAttribute(node)){
   const text=node.getText(source);
+  if(rearSwitch&&node.name.text==='active')return 'active:paused-during-display-move';
+  if(rearSwitch&&node.name.text==='onScreens')return 'onScreens:direct-display-toggle';
+  if(rearSwitch&&node.name.text==='onPress'&&(text.includes('screens.setOpen(true)')||text.includes('screens.toggleScreen')))return 'onPress:direct-display-toggle';
   if(viewfinder){
    if(['onBrightness','onShadows'].includes(node.name.text))return node.name.text+':settings-slider';
    if(node.name.text==='options'&&text.includes("'standard'")&&text.includes("'cinematic'"))return 'options:off-standard-cinematic';
@@ -85,6 +89,7 @@ if(ts.isJsxAttribute(n)&&(/^on[A-Z]/.test(n.name.text)||['disabled','value','min
 const quality=process.argv.includes('--allow-capture-quality');
 const offline=process.argv.includes('--allow-offline-stabilization');
 const reviewed=new Set([
+ ...(rearSwitch ? ['modules/icamera/android/src/main/java/expo/modules/icamera/UiRefresh.kt','modules/icamera/android/src/main/java/expo/modules/icamera/UiRefreshPolicy.kt','modules/icamera/android/src/test/java/expo/modules/icamera/UiRefreshPolicyTest.kt','modules/icamera/android/src/main/java/expo/modules/icamera/SurfaceRetirement.kt','modules/icamera/android/src/test/java/expo/modules/icamera/SurfaceRetirementTest.kt'] : []),
  ...(viewfinder ? ['src/camera/viewfinder.ts','src/camera/hardware.ts','src/ui/DualPip.tsx','modules/icamera/index.ts'] : []),
  ...(rebuild ? ['modules/icamera/android/src/main/java/expo/modules/icamera/SteadyFrame.kt','modules/icamera/android/src/test/java/expo/modules/icamera/SteadyFrameTest.kt','modules/icamera/android/src/test/java/expo/modules/icamera/VideoToneTest.kt','modules/icamera/android/src/main/java/expo/modules/icamera/LiveRollFilter.kt','modules/icamera/android/src/main/java/expo/modules/icamera/RecordingStabilityPolicy.kt','modules/icamera/android/src/main/java/expo/modules/icamera/HdrVideoStabilizer.kt','modules/icamera/android/src/main/java/expo/modules/icamera/OfflineVideoMotion.kt','modules/icamera/android/src/main/java/expo/modules/icamera/VideoProcessingTransform.kt','modules/icamera/android/src/test/java/expo/modules/icamera/LiveRollFilterTest.kt','modules/icamera/android/src/test/java/expo/modules/icamera/RecordingStabilityPolicyTest.kt','modules/icamera/android/src/test/java/expo/modules/icamera/OfflineVideoMotionTest.kt','modules/icamera/android/src/test/java/expo/modules/icamera/VideoProcessingTransformTest.kt'] : []),
  'modules/icamera/android/build.gradle',

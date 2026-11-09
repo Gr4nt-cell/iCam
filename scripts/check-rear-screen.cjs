@@ -13,7 +13,14 @@ const modConfig={...config,modResults:{manifest:{application:[{activity:[main]}]
  const app=fs.readFileSync('App.tsx','utf8');
  assert(app.includes('recording || busy || processing || countdown > 0'));
  assert(app.includes('if (screens.switching) return;'));
- assert(app.includes('onScreens={() => screens.move(0, !!screens.status?.shizukuGranted)}'));
+ assert(app.includes('onScreens={screens.toggleScreen}')&&app.includes('onPress={screens.toggleScreen}'));
+ assert(app.includes('active={appActive && !viewerOpen && !screens.switching}'));
+ const router=fs.readFileSync('modules/icamera/android/src/main/java/expo/modules/icamera/RearDisplayRouter.kt','utf8');
+ assert(router.includes('it.pauseForDisplaySwitch()')&&router.includes('it.resumeAfterDisplaySwitch()'));
+ assert(router.includes('currentActivity()?.takeUnless')&&router.includes('moving.compareAndSet(false,true)'));
+ const gl=fs.readFileSync('modules/icamera/android/src/main/java/expo/modules/icamera/PortraitVideo.kt','utf8');
+ assert(gl.includes('retirement.returnInput()')&&gl.includes('retirement.beginDestroy()'));
+ assert(!gl.includes('st?.release(); st = null'));
  const service=fs.readFileSync('modules/icamera/android/src/main/java/expo/modules/icamera/RearDisplayService.kt','utf8');
  assert(service.includes('Binder.getCallingUid()==uid'));
  assert(service.includes('RearDisplayTaskMover.move'));

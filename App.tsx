@@ -1,4 +1,5 @@
 import { MaterialCommunityIcons } from '@expo/vector-icons';
+import * as ScreenOrientation from 'expo-screen-orientation';
 import * as Haptics from 'expo-haptics';
 import * as MediaLibrary from 'expo-media-library';
 import { StatusBar } from 'expo-status-bar';
@@ -8,6 +9,7 @@ import { AppState, PanResponder, PermissionsAndroid, Pressable, StyleSheet, Text
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
   cameraModuleAvailable,
+  requestUiRefreshRate,
   detectFaces,
   openMedia,
   segmentPerson,
@@ -170,6 +172,7 @@ function CameraScreen() {
   const [last, setLast] = useState<Last | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const [focus, setFocus] = useState<{ x: number; y: number; key: number } | null>(null);
+  const [deckHeight, setDeckHeight] = useState(200);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [viewerOpen, setViewerOpen] = useState(false);
   const [appActive, setAppActive] = useState(true);
@@ -324,6 +327,14 @@ function CameraScreen() {
 
   // Display switching owns no camera: the existing camera activity moves as one task.
   const screens = useCameraScreens(recording || busy || processing || countdown > 0, flashToast);
+  useEffect(() => {
+    if(!screens.status || screens.switching)return;
+    const orientation=screens.onSecondary ? ScreenOrientation.unlockAsync() : ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT_UP);
+    orientation.catch(() => {});
+  }, [screens.status?.currentId,screens.onSecondary,screens.switching]);
+  useEffect(() => {
+    if(appActive && !screens.switching)requestUiRefreshRate().catch(() => {});
+  }, [appActive,screens.status?.currentId,screens.switching]);
   const wasSecondary = useRef(false);
   useEffect(() => {
     if (screens.onSecondary && !wasSecondary.current && !recording && !busy) {
@@ -677,7 +688,7 @@ function CameraScreen() {
           mirror={mirrorSelfie}
           rearSelfie={screens.onSecondary}
           audio={perms.mic}
-          active={appActive && !viewerOpen}
+          active={appActive && !viewerOpen && !screens.switching}
           videoQuality={video.resolution === '4k' ? 'uhd' : 'fhd'}
           fps={video.fps}
           hdrVideo={video.hdr}
@@ -802,21 +813,19 @@ function CameraScreen() {
               </Pressable>
             )}
           </Glass>
-          <View style={{ flex: 1 }} />
+          <View style={styles.topMetaChip}>
+            <View style={styles.statusDot} />
+            <Text numberOfLines={1} ellipsizeMode="tail" style={styles.topMetaLabel}>{topStatus}</Text>
+          </View>
           <Glass radius={24} style={styles.instrumentCluster}>
-          {screens.available && <Pressable accessibilityRole="button" accessibilityLabel="Switch camera screen" disabled={recording || busy || processing || countdown > 0 || screens.switching} onPress={() => screens.setOpen(true)} style={styles.controlButton}>
-            <MaterialCommunityIcons name="monitor-cellphone" size={22} color="#ffe16b" />
+          {screens.available && <Pressable accessibilityRole="button" accessibilityLabel="Switch camera screen" disabled={recording || busy || processing || countdown > 0 || screens.switching} onPress={screens.toggleScreen} style={styles.controlButton}>
+            <MaterialCommunityIcons name="monitor-cellphone" size={18} color="#ffe16b" />
           </Pressable>}
           <Pressable accessibilityRole="button" accessibilityLabel="Camera settings" hitSlop={8} onPress={() => setSettingsOpen(true)} style={styles.controlButton}>
-            <GlassCircle size={44}><MaterialCommunityIcons name="tune-variant" size={21} color="#fff" /></GlassCircle>
+            <GlassCircle size={34}><MaterialCommunityIcons name="tune-variant" size={18} color="#fff" /></GlassCircle>
           </Pressable>
           </Glass>
         </View>
-        <View style={styles.topMetaRow}>
-          <View style={styles.topMetaChip}>
-            <View style={styles.statusDot} />
-            <Text numberOfLines={1} style={styles.topMetaLabel}>{topStatus}</Text>
-          </View>
           <View style={styles.topMetaTools}>
             {(facing === 'front' || mode === 'dual') && (
               <Pop>
@@ -833,8 +842,6 @@ function CameraScreen() {
               </Pop>
             )}
           </View>
-
-        </View>
         {recording && (
           <Animated.View layout={SUBBAR_MOVE} style={styles.recordingBar}>
             <Glass radius={18} style={styles.subBar} tint="rgba(255,59,48,0.45)">
@@ -883,7 +890,7 @@ function CameraScreen() {
         </View>
       )}
 
-        <Animated.View layout={GLIDE} style={[styles.zoomFloat, { position: 'absolute', bottom: win.height - viewport.top - viewport.height + 12, left: viewport.left, width: viewport.width }]}>
+        <Animated.View layout={GLIDE} style={[styles.zoomFloat, { position: 'absolute', bottom: win.width > win.height ? win.height - viewport.top - viewport.height + 12 : Math.max(win.height - viewport.top - viewport.height + 12, deckHeight + 12), left: viewport.left, width: viewport.width }]}>
           <ZoomPills
             stops={stops}
             zoom={shownZoom}
@@ -905,23 +912,23 @@ function CameraScreen() {
           />
         </Animated.View>
       {/* Floating lower camera deck */}
-      <View style={[styles.bottom, { paddingBottom: insets.bottom + 6 }, win.width > win.height && { left: undefined, right: 4, width: 176 }]} pointerEvents="box-none">
+      <View style={[styles.bottom, { width: win.width > win.height ? 176 : win.width, left: win.width > win.height ? win.width - 180 : 0, paddingBottom: insets.bottom + 6 }]} onLayout={(e) => { const height=e.nativeEvent.layout.height;setDeckHeight(previous => Math.abs(previous-height)<1 ? previous : height); }} pointerEvents="box-none">
         <Toast text={toast} />
 
-        <Animated.View layout={GLIDE}>
-          <View style={styles.shutterDeck}>
-            <View style={styles.shutterRow}>
+        <View style={{ width: '100%', alignItems: 'center' }}>
+          <View style={[styles.shutterDeck, { width: win.width > win.height ? 176 : win.width, backgroundColor: isVideoMode ? 'transparent' : '#000' }]} >
+            <View style={[styles.shutterRow, { width: win.width > win.height ? 176 : win.width }]} >
               {recording && mode !== 'slowmo' ? (
-                <Animated.View key="pause" entering={FadeIn.duration(160)} exiting={FadeOut.duration(120)} style={styles.galleryAnchor}>
+                <Animated.View key="pause" entering={FadeIn.duration(160)} exiting={FadeOut.duration(120)} style={[styles.galleryAnchor, { left: (win.width > win.height ? 176 : win.width) * .18 - 22 }]}>
                   <IconButton icon={paused ? 'record' : 'pause'} size={44} onPress={togglePause} />
                 </Animated.View>
               ) : (
-                <Animated.View key="thumb" entering={FadeIn.duration(160)} exiting={FadeOut.duration(120)} style={styles.galleryAnchor}>
+                <Animated.View key="thumb" entering={FadeIn.duration(160)} exiting={FadeOut.duration(120)} style={[styles.galleryAnchor, { left: (win.width > win.height ? 176 : win.width) * .18 - 22 }]}>
                   <Thumb uri={last?.uri} processing={processing} onPress={openLast} isVideo={!!last?.isVideo} enabled={!!last} />
                 </Animated.View>
               )}
               <Shutter kind={shutterKind} recording={recording} busy={busy || countdown > 0 || screens.switching} onPress={onShutter} />
-              <View style={styles.flipAnchor}>
+              <View style={[styles.flipAnchor, { right: (win.width > win.height ? 176 : win.width) * .18 - 22 }]}>
               {mode === 'dual' ? (
                 <IconButton
                   icon="swap-horizontal"
@@ -950,7 +957,7 @@ function CameraScreen() {
             <ModeCarousel mode={mode} modes={visibleModes} onChange={changeMode} disabled={recording || busy} proVideo={proVideo} onProVideo={setProVideo} />
 
           </View>
-        </Animated.View>
+        </View>
         {mode === 'night' && ready?.nightExtension && (
           <Animated.View entering={FadeInDown.duration(200)} exiting={FadeOutDown.duration(160)} style={styles.nightReadyWrap}>
             <Glass radius={18} style={styles.nightReady}>
@@ -1043,7 +1050,7 @@ function CameraScreen() {
           canFlip={!recording || canFlipWhileRecording}
           onFlip={() => { setZoom(1); setLensId(null); setFacing(f => f === 'back' ? 'front' : 'back'); }}
           onPause={async () => { try { if (paused) await cam.current?.resumeRecording(); else await cam.current?.pauseRecording(); } catch { flashToast('Could not change recording state'); } }}
-          onScreens={() => screens.move(0, !!screens.status?.shizukuGranted)} />
+          onScreens={screens.toggleScreen} />
       </>}
       <CameraScreenPicker screens={screens} locked={recording || busy || processing || countdown > 0} />
 
@@ -1065,34 +1072,34 @@ function Pop({ children }: { children: React.ReactNode }) {
 }
 
 const styles = StyleSheet.create({
-  instrumentCluster: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 2, height: 48, gap: 2 },
-  galleryAnchor: { position: 'absolute', bottom: 14, left: 6, zIndex: 3 },
-  flipAnchor: { position: 'absolute', bottom: 14, right: 6, zIndex: 3 },
+  instrumentCluster: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 1, height: 36, gap: 0 },
+  galleryAnchor: { position: 'absolute', top: 14, left: 12, zIndex: 3 },
+  flipAnchor: { position: 'absolute', top: 14, right: 12, zIndex: 3 },
   settingLabel: { color: '#fff', fontSize: 14, fontWeight: '600' },
   root: { flex: 1, backgroundColor: '#000' },
   center: { alignItems: 'center', justifyContent: 'center' },
   dim: { color: 'rgba(255,255,255,0.6)' },
   top: { position: 'absolute', left: 18, right: 18, alignItems: 'stretch', gap: 10, zIndex: 8 },
-  topRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12 },
-  controlButton: { width: 44, height: 44, alignItems: 'center', justifyContent: 'center' },
-  topPill: { minWidth: 100, maxWidth: 200, flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 10, height: 44 },
-  qualityChip: { minWidth: 48, maxWidth: 78, height: 34, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 2, paddingHorizontal: 3 },
+  topRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 6 },
+  controlButton: { width: 34, height: 34, alignItems: 'center', justifyContent: 'center' },
+  topPill: { minWidth: 60, maxWidth: 100, flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 7, height: 34 },
+  qualityChip: { minWidth: 48, maxWidth: 78, height: 30, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 2, paddingHorizontal: 3 },
   qualityText: { color: '#fff', fontSize: 12, fontWeight: '600', letterSpacing: 0.2 },
   topMetaRow: { flexDirection: 'row', alignItems: 'center', gap: 7, marginHorizontal: 2 },
-  topMetaChip: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 4, minHeight: 24, maxWidth: '70%' },
+  topMetaChip: { flex: 1, minWidth: 0, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 4, paddingHorizontal: 2, minHeight: 34 },
   statusDot: { width: 4, height: 4, borderRadius: 2, backgroundColor: '#ffe16b' },
-  topMetaLabel: { color: 'rgba(255,255,255,0.85)', fontSize: 10, fontWeight: '600', letterSpacing: 1.8, textShadowColor: '#000', textShadowRadius: 4 },
-  topMetaTools: { flexDirection: 'row', alignItems: 'center', gap: 4 },
+  topMetaLabel: { color: 'rgba(255,255,255,0.85)', fontSize: 9, flexShrink: 1, textAlign: 'center', fontWeight: '600', letterSpacing: 0.7, textShadowColor: '#000', textShadowRadius: 4 },
+  topMetaTools: { position: 'absolute', top: 38, right: 0, flexDirection: 'row', alignItems: 'center', gap: 4 },
   metaTool: { width: 30, height: 30, alignItems: 'center', justifyContent: 'center' },
   subBar: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, paddingHorizontal: 12, height: 34, borderRadius: 18, overflow: 'hidden' },
   recordingBar: { alignSelf: 'center' },
   recLed: { width: 8, height: 8, borderRadius: 4, backgroundColor: '#ff453a' },
   recText: { color: '#fff', fontWeight: '700', fontVariant: ['tabular-nums'] },
   countdown: { color: '#fff', fontSize: 96, fontWeight: '200' },
-  bottom: { position: 'absolute', left: 0, right: 0, bottom: 0, gap: 6, zIndex: 8 },
-  zoomFloat: { alignSelf: 'center', marginBottom: 4 },
+  bottom: { position: 'absolute', left: 0, bottom: 0, alignItems: 'center', gap: 6, zIndex: 8 },
+  zoomFloat: { alignSelf: 'center', alignItems: 'center', marginBottom: 2 },
   shutterRow: { height: 72, alignItems: 'center', justifyContent: 'center', position: 'relative' },
-  shutterDeck: { alignSelf: 'center', width: '100%', maxWidth: 620, backgroundColor: 'rgba(0,0,0,0.94)', paddingTop: 4, paddingBottom: 2, gap: 4 },
+  shutterDeck: { alignSelf: 'center', maxWidth: 700, backgroundColor: 'rgba(0,0,0,0.94)', paddingTop: 4, paddingBottom: 2, gap: 4 },
   nightReadyWrap: { alignSelf: 'center', marginTop: -2 },
   nightReady: { flexDirection: 'row', alignItems: 'center', gap: 7, paddingHorizontal: 12, height: 30 },
   nightReadyText: { color: '#fff', fontSize: 11, fontWeight: '700' },

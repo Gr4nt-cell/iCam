@@ -138,7 +138,7 @@ export function ZoomPills({
       }}
     >
       <DimView dim={dial}>
-        <Glass radius={24} style={styles.zoomBar}>
+        <Glass radius={18} style={styles.zoomBar}>
           <GlassSegmented
             items={stops.map((s) => ({ key: s.label, label: s.label }))}
             value={stops[activeIdx].label}
@@ -149,10 +149,10 @@ export function ZoomPills({
               const st = stops.find((s) => s.label === k);
               if (st) onSelect(st.zoom, st);
             }}
-            height={38}
-            fontSize={13}
-            paddingH={8}
-            minItemWidth={38}
+            height={28}
+            fontSize={11}
+            paddingH={5}
+            minItemWidth={30}
           />
         </Glass>
       </DimView>

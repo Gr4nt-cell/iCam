@@ -1,5 +1,6 @@
-import React, {useCallback,useEffect,useState} from 'react';
+import React, {useCallback,useEffect,useRef,useState} from 'react';
 import {Alert,AppState,Linking,Modal,Pressable,ScrollView,StyleSheet,Text,View,useWindowDimensions} from 'react-native';
+import {File,Paths} from 'expo-file-system';
 import {MaterialCommunityIcons} from '@expo/vector-icons';
 import {getCameraDisplays,moveCameraDisplay,requestRearDisplayAccess,type CameraDisplays} from '../../modules/icamera';
 import type {CaptureMode,Lens} from '../camera/hardware';
@@ -15,21 +16,36 @@ export function useCameraScreens(locked: boolean,notify: (message: string)=>void
   const [rootEnabled,setRootEnabled]=useState(false);
   const [pendingTarget,setPendingTarget]=useState<number|null>(null);
   const [message,setMessage]=useState<string|null>(null);
+  const moving=useRef(false);
   const dimensions=useWindowDimensions();
-  const refresh=useCallback(()=>{getCameraDisplays().then(setStatus).catch(()=>undefined)},[]);
+  useEffect(()=>{try{const file=new File(Paths.document,'icam-rear-access.json');if(file.exists)file.text().then(text=>{if(JSON.parse(text).root===true)setRootEnabled(true)}).catch(()=>{})}catch{}},[]);
+  const enableRoot=()=>{setRootEnabled(true);try{const file=new File(Paths.document,'icam-rear-access.json');file.create({overwrite:true});file.write(JSON.stringify({root:true}))}catch{}};
+  const refresh=useCallback(async()=>{try{const result=await getCameraDisplays();setStatus(result);return result}catch{return null}},[]);
   useEffect(()=>{refresh();const subscription=AppState.addEventListener('change',s=>{if(s==='active')refresh()});return()=>subscription.remove()},[refresh,dimensions.width,dimensions.height]);
   useEffect(()=>{if(status&&!status.displays.some(d=>d.isRear))setOpen(false)},[status]);
   useEffect(()=>{if(!open)return;const id=setInterval(refresh,1500);return()=>clearInterval(id)},[open,refresh]);
-  const move=async(target: number,privileged: boolean,root=rootEnabled)=>{
-    if(locked||switching)return;
-    setSwitching(true);setMessage(null);setPendingTarget(target);
+  const move=async(target: number,privileged: boolean,root=rootEnabled||!!status?.rootGranted)=>{
+    if(locked||moving.current)return;
+    moving.current=true;setSwitching(true);setMessage(null);setPendingTarget(target);
     try{
       const result=await moveCameraDisplay(target,privileged,root);
-      refresh();
+      await refresh();
       if(result.moved){setOpen(false);notify(target===0?'Camera on front screen':'Camera on rear screen')}
       else {setOpen(true);const text=result.message||'This screen is restricted. Enable Shizuku access below.';setMessage(text);notify(text);}
     }catch(e){setOpen(true);const text=e instanceof Error?e.message:'Screen switch failed';setMessage(text);notify(text)}
-    finally{setSwitching(false);refresh()}
+    finally{await refresh();await new Promise(resolve=>setTimeout(resolve,150));moving.current=false;setSwitching(false)}
+  };
+  const toggleScreen=async()=>{
+    if(locked||moving.current)return;
+    try{
+      const current=await getCameraDisplays();
+      if(!current)return;
+      setStatus(current);
+      const onRear=current.displays.some(d=>d.id===current.currentId&&d.isRear);
+      const target=onRear?0:current.displays.find(d=>d.isRear)?.id;
+      if(target===undefined){notify('Rear display is not available');return;}
+      await move(target,current.shizukuGranted,rootEnabled||current.rootGranted);
+    }catch(e){notify(e instanceof Error?e.message:'Screen switch failed')}
   };
   const authorize=async()=>{
     try{const state=await requestRearDisplayAccess();
@@ -40,8 +56,8 @@ export function useCameraScreens(locked: boolean,notify: (message: string)=>void
       refresh();
     }catch{notify('Shizuku access is unavailable')}
   };
-  return {status,open,setOpen,switching,message,refresh,move,authorize,rootEnabled,
-    useRoot:()=>{const target=pendingTarget ?? status?.displays.find(d=>d.id!==0)?.id;if(target===undefined)return;setRootEnabled(true);move(target,!!status?.shizukuGranted,true)},onSecondary:!!status&&status.displays.some(d=>d.id===status.currentId&&d.isRear),available:!!status&&status.displays.some(d=>d.isRear)};
+  return {status,open,setOpen,toggleScreen,switching,message,refresh,move,authorize,rootEnabled,
+    useRoot:()=>{const target=pendingTarget ?? status?.displays.find(d=>d.id!==0)?.id;if(target===undefined)return;enableRoot();move(target,!!status?.shizukuGranted,true)},onSecondary:!!status&&status.displays.some(d=>d.id===status.currentId&&d.isRear),available:!!status&&status.displays.some(d=>d.isRear)};
 }
 
 export function CameraScreenPicker({screens,locked}:{screens:ReturnType<typeof useCameraScreens>;locked:boolean}) {

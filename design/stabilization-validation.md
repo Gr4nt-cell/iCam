@@ -30,3 +30,16 @@ The main camera now uses an explicit capture-ratio rectangle: portrait video/16:
 Horizon lock is removed from the UI, native API and processor. Older saved values migrate to Cinema. The software fallback estimates a rigid image transform from distributed corner matches, rejecting foreground motion with pairwise consensus. It handles roll shake as well as translation and uses a time-based pan-following controller. The search handles larger inter-frame displacement. Correction uses the same current-frame transform for preview and encoder and the existing fixed crop. Hardware EIS still has no stacked software crop; HDR remains native 10-bit.
 
 Validation includes 20 viewport configurations (small/tall portrait and landscape, all capture ratios), legacy setting migration, native focus placement, 24 Kotlin tests including combined roll/translation, foreground occlusion, pan settling, and roll-shake residuals at 30/60 fps. These are deterministic synthetic motion tests, not proof of physical-device or iPhone-relative quality. Physical saved recordings in daylight, low light, front/back and 4K/60 remain necessary.
+
+
+## Compact controls, full-width video and safe display handoff
+
+Zoom selector is 28 dp tall (plus its glass padding), and top instruments use 34–36 dp capsules. The mode label sits between them. The bottom deck has an explicit screen-relative width and gallery/shutter/flip centers at 18%/50%/82%, eliminating intrinsic-width/animation alignment dependence.
+
+Video now uses the full available width at its true 16:9 ratio; on short windows controls overlay the image rather than squeezing its width. Zoom stays above the lower control deck. Square and sensor photos keep their selected frame ratios.
+
+Rear/front buttons switch directly using fresh display status. Help appears only when access is needed; existing Shizuku/system access and an explicitly enabled root preference are reused. The camera is quiesced on the main thread before moving the task. Rebinds are blocked while moving, verification uses the current activity after recreation, and surfaces are rebuilt afterward. GL input textures remain owned by their SurfaceRequest result callbacks; context destruction waits until all inputs return. Repeated release is idempotent.
+
+The UI requests up to 120 Hz from the current display without choosing another resolution or changing recording frame rate. API 35+ UI views cast a refresh-rate vote, excluding the camera's native surface subtree. The request is reapplied after foregrounding and display moves, with fallback for 60/90 Hz displays. This is a refresh request, not a measured guarantee of sustained 120 fps; OS power/thermal policy and frame workload still apply. Reference: https://developer.android.com/develop/ui/views/animations/adaptive-refresh-rate
+
+Validation includes 30 Kotlin tests (motion/policies, surface retirement callback order, idempotent release and refresh selection), hook tests for one-tap targets, duplicate taps and rejected moves, viewport ratio/full-width guards, and preserved capture/save/recording callbacks. The physical HyperOS crash and delivered UI frame cadence still need confirmation on the device.

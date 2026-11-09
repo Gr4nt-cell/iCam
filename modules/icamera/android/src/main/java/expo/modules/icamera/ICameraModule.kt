@@ -46,6 +46,10 @@ class ICameraModule : Module() {
       }
     }
 
+    AsyncFunction("requestUiRefreshRate") {
+      appContext.currentActivity?.let { UiRefresh.apply(it) } ?: 0f
+    }.runOnQueue(expo.modules.kotlin.functions.Queues.MAIN)
+
     AsyncFunction("getCameraDisplays") {
       RearDisplayRouter.status(appContext.currentActivity ?: throw IllegalStateException("No camera activity"))
     }.runOnQueue(expo.modules.kotlin.functions.Queues.MAIN)
@@ -54,7 +58,7 @@ class ICameraModule : Module() {
       .runOnQueue(expo.modules.kotlin.functions.Queues.MAIN)
 
     AsyncFunction("moveCameraDisplay") { target: Int, privileged: Boolean, root: Boolean ->
-      RearDisplayRouter.move(appContext.currentActivity ?: throw IllegalStateException("No camera activity"),target,privileged,root)
+      RearDisplayRouter.move(appContext.currentActivity ?: throw IllegalStateException("No camera activity"),target,privileged,root) { appContext.currentActivity }
     }
 
     /** Finds faces in a photo (upright, normalized 0..1 boxes) for face-priority exposure. */

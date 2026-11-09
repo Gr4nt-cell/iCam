@@ -173,7 +173,7 @@ class PortraitProcessor : SurfaceProcessor {
   private val stInv = FloatArray(16)
   private val outM = FloatArray(16)
   private var frame = 0L
-  private var released = false
+  @Volatile private var released = false
 
   // Segmentation state
   @Volatile private var segBusy = false
@@ -223,11 +223,14 @@ class PortraitProcessor : SurfaceProcessor {
     val surface = Surface(surfaceTexture)
     surfaceTexture.setOnFrameAvailableListener({ render() }, handler)
     st = surfaceTexture
+    retirement.acquireInput()
     request.provideSurface(surface, executor) {
       surfaceTexture.setOnFrameAvailableListener(null)
       surfaceTexture.release()
       surface.release()
       if (st === surfaceTexture) st = null
+      retirement.returnInput()
+      finishRelease()
     }
   }
 
@@ -239,15 +242,26 @@ class PortraitProcessor : SurfaceProcessor {
       surfaceOutput.close()
     }
     val es = EGL14.eglCreateWindowSurface(display, config, surface, intArrayOf(EGL14.EGL_NONE), 0)
+    if(es==EGL14.EGL_NO_SURFACE){surfaceOutput.close();return}
     outputs[surfaceOutput] = es to surfaceOutput.size
   }
 
+  private val releaseStarted=java.util.concurrent.atomic.AtomicBoolean(false)
+  private val retirement=SurfaceRetirement()
   fun release() {
+    if(!releaseStarted.compareAndSet(false,true))return
+    released=true
     handler.post {
-      released = true
-      outputs.forEach { (out, p) -> EGL14.eglDestroySurface(display, p.first); out.close() }
-      outputs.clear()
-      st?.release(); st = null
+      val closing=outputs.toList();outputs.clear()
+      closing.forEach { (out, p) -> if(display!=EGL14.EGL_NO_DISPLAY)EGL14.eglDestroySurface(display,p.first);out.close() }
+      st=null;retirement.closeOutputs()
+      finishRelease()
+    }
+  }
+  // SurfaceRequest owns each input until its result callback. Never release a texture twice,
+  // tear down its EGL context early, or quit the executor before CameraX returns the input.
+  private fun finishRelease() {
+      if(!released || !retirement.beginDestroy())return
       if (display != EGL14.EGL_NO_DISPLAY) {
         EGL14.eglMakeCurrent(display, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_CONTEXT)
         if (pbuffer != EGL14.EGL_NO_SURFACE) EGL14.eglDestroySurface(display, pbuffer)
@@ -258,7 +272,6 @@ class PortraitProcessor : SurfaceProcessor {
       segExecutor.shutdown()
       try { streamSeg.close(); singleSeg.close() } catch (_: Throwable) {}
       thread.quitSafely()
-    }
   }
 
   /* ---------------- rendering ---------------- */
