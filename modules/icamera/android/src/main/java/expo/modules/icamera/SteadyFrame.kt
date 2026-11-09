@@ -2,8 +2,10 @@ package expo.modules.icamera
 
 import kotlin.math.*
 
-internal data class CaptureStabilityPlan(val preview: Boolean, val video: Boolean) {
-  val hardware get() = preview || video
+internal data class CaptureStabilityPlan(val preview: Boolean?, val video: Boolean?) {
+  val hardware get() = preview == true || video == true
+  fun configurePreview(set: (Boolean) -> Unit) { preview?.let(set) }
+  fun configureVideo(set: (Boolean) -> Unit) { video?.let(set) }
 }
 
 /** A single, fixed software margin. Hardware EIS never gets a second software crop. */
@@ -18,8 +20,9 @@ internal object CaptureStability {
   fun horizon(mode: String, setting: String) = setting == "horizon"
   fun plan(enabled: Boolean, horizon: Boolean, shared: Boolean, video: Boolean, hdr: Boolean) = when {
     !enabled || horizon -> CaptureStabilityPlan(false, false)
-    shared -> CaptureStabilityPlan(true, false)
-    hdr -> CaptureStabilityPlan(false, video)
+    // CameraX 1.5.1: Preview ON + Video OFF disables both. Unspecified is a real third state.
+    shared -> CaptureStabilityPlan(true, null)
+    hdr && video -> CaptureStabilityPlan(null, true)
     else -> CaptureStabilityPlan(false, false)
   }
   fun deliveryStalled(nanos: Long, frames: Long) = nanos > 2_000_000_000L && frames <= 0L
