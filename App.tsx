@@ -714,7 +714,7 @@ function CameraScreen() {
           nightExtension={photo.vendorNight}
           dualPip={pip}
           aspect={aspect === '16:9' ? '16:9' : '4:3'}
-          previewFit={!isPhotoShot || aspect !== '1:1'}
+          previewFit={!screens.onSecondary && (!isPhotoShot || aspect !== '1:1')}
           bokeh={bokeh}
           onPortraitStatus={(e) => {
             if (e.nativeEvent.blur === false) {
