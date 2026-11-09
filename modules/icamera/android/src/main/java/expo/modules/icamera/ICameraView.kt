@@ -522,7 +522,1132 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
     recording = null
     if (ownRec != null) stopOwnRecording()
     if(!RearDisplayRouter.isMoving)provider?.unbindAll()
-    r…14689 tokens truncated…o 0.0, "slowMotion" to false, "error" to "Nothing was recorded"))
+    removeCallbacks(rebindAction);rebindQueued=false
+    palm.setEnabled(false)
+    portraitProcessor?.release()
+    portraitProcessor = null
+    camera = null
+  }
+
+  /** Release camera-owned surfaces before Android reparents this activity to another display. */
+  internal fun pauseForDisplaySwitch() {
+    check(recording==null && ownRec==null && !startingRec) { "Finish recording before switching screens" }
+    removeCallbacks(rebindAction);rebindQueued=false
+    stabilityEpoch++;requestedSharedStability=false
+    provider?.unbindAll()
+    palm.setEnabled(false)
+    portraitProcessor?.release();portraitProcessor=null
+    camera=null;imageCapture=null;videoCapture=null;currentPreview=null;effectPreview=false
+  }
+  internal fun resumeAfterDisplaySwitch() { if(isAttachedToWindow)scheduleRebind(180) }
+  private val rebindAction=Runnable { rebindQueued=false;rebind() }
+  private fun scheduleRebind(delayMs: Long = 0) {
+    if(rebindQueued)return
+    rebindQueued=true
+    postDelayed(rebindAction,delayMs)
+  }
+
+  private fun withProvider(block: (ProcessCameraProvider) -> Unit) {
+    provider?.let { return block(it) }
+    val f = ProcessCameraProvider.getInstance(context)
+    f.addListener({
+      try {
+        val p = f.get()
+        provider = p
+        val ef = ExtensionsManager.getInstanceAsync(context, p)
+        ef.addListener({
+          extensions = try { ef.get() } catch (e: Throwable) { null }
+          block(p)
+        }, executor)
+      } catch (e: Throwable) {
+        emitError("Camera unavailable: ${e.message}")
+      }
+    }, executor)
+  }
+
+  private fun rebind() {
+    if (!isAttachedToWindow || RearDisplayRouter.isMoving) return
+    if(startingRec)cancelPendingStart()
+    if (recording != null) {
+      // Front/back switch mid-video (Xiaomi-style): close this piece, re-open on the other camera,
+      // keep recording into a new piece; pieces are joined into one video when recording stops.
+      if (!segmentSwitching && (mode == "video" || mode == "action")) {
+        segmentSwitching = true
+        recording?.stop()
+      }
+      return
+    }
+    val owner = appContext.currentActivity as? LifecycleOwner
+    if (owner == null) { emitError("Camera needs an active screen"); return }
+    withProvider { p ->
+      try {
+        if(!isAttachedToWindow || RearDisplayRouter.isMoving)return@withProvider
+        stabilityEpoch++; requestedSharedStability=false
+        p.unbindAll()
+        camera = null; imageCapture = null; videoCapture = null
+        usingNightExtension = false; activeExtension = null; slowFps = 0
+        effectPreview = false; macroZoom = null; ownMode = false
+        if (!active) return@withProvider
+        if (mode != "dual") { dualComposed = false; pendingDualRecord = false }
+        pipContainer.visibility = View.GONE
+        when (mode) {
+          "dual" -> bindDual(p, owner)
+          "slowmo" -> bindSlowMo(p, owner)
+          "video", "action", "pvideo" -> bindVideo(p, owner)
+          "pro" -> bindPro(p, owner)
+          "macro" -> bindMacro(p, owner)
+          else -> bindPhoto(p, owner)
+        }
+        previewView.scaleType = if(previewFit) PreviewView.ScaleType.FIT_CENTER else PreviewView.ScaleType.FILL_CENTER
+        applyZoom()
+        applyPreviewColor()
+        postDelayed({ applyPreviewColor() }, 400) // the viewfinder's surface view appears asynchronously
+        if (pendingDualRecord && mode == "dual" && dualComposed) {
+          pendingDualRecord = false
+          val token=recordingStart.begin()
+          postDelayed({
+            if(recordingStart.consume(token))try{startRecording()}catch(e:Exception){
+              emitRecordingFinished(mapOf("durationMs" to 0.0,"slowMotion" to false,"error" to (e.message ?: "Recording failed")))
+            }
+          },250)
+        }
+        setTorch(torch)
+        applyControls()
+        val z = camera?.cameraInfo?.zoomState?.value
+        val baseZoom = PhoneCameraPolicy.zoomBase((if (mode == "dual") dualPrimary == "front" else facing == "front") , z?.minZoomRatio ?: 1f)
+        emitReady(
+          mapOf(
+            "mode" to mode,
+            "slowMotionFps" to slowFps,
+            "nightExtension" to (activeExtension == "night"),
+            "extension" to activeExtension,
+            "zoomMin" to ((z?.minZoomRatio ?: 1f) / baseZoom).toDouble(),
+            "zoomMax" to ((z?.maxZoomRatio ?: 1f) / baseZoom).toDouble(),
+            "hasFlash" to (camera?.cameraInfo?.hasFlashUnit() ?: false),
+            "recordingFps" to boundFrameRate,
+          ),
+        )
+        bindRetries = 0
+      } catch (e: Throwable) {
+        // Switching front/back: many phones can't open the new camera until the old one has closed,
+        // so CameraX briefly sees "no available camera". Wait and try again instead of failing.
+        val msg = e.message ?: e.toString()
+        if (facing == "front" && mode !in PHOTO_MODES && mode != "dual" && !defaultFrontFallback) {
+          // Some vendor wide lenses report recording capabilities but reject a complete session.
+          defaultFrontFallback = true
+          postDelayed({ rebind() }, 200)
+          return@withProvider
+        }
+        if (msg.contains("No available camera", true) && bindRetries < 8) {
+          bindRetries++
+          postDelayed({ rebind() }, 250L * bindRetries)
+        } else {
+          bindRetries = 0
+          emitError(msg)
+        }
+      }
+    }
+  }
+
+  private var bindRetries = 0
+
+  /** A specific rear lens chosen from the zoom pills (one the main camera's zoom can't reach). */
+  private var lensId: String? = null
+  fun setLensId(v: String?) = rebindOnChange(lensId, v?.takeIf { it.isNotEmpty() }) { lensId = it }
+
+  @OptIn(ExperimentalCamera2Interop::class)
+  @androidx.annotation.OptIn(markerClass = [ExperimentalCamera2Interop::class])
+  private fun selector(f: String): CameraSelector {
+    val id = lensId
+    if (f != "front" && id != null && mode != "dual" && mode != "macro") {
+      return CameraSelector.Builder()
+        .addCameraFilter { infos -> infos.filter { Camera2CameraInfo.from(it).cameraId == id }.ifEmpty { infos.take(0) } }
+        .build()
+    }
+    return if (f == "front") {
+      if (mode !in PHOTO_MODES && mode != "dual" && !defaultFrontFallback) PhoneCameraTuning.frontSelector(hdrVideo && (mode == "video" || mode == "action"))
+      else CameraSelector.DEFAULT_FRONT_CAMERA
+    } else CameraSelector.DEFAULT_BACK_CAMERA
+  }
+
+  /** Optical stabilization is used when electronic stabilization is unavailable. */
+  @OptIn(ExperimentalCamera2Interop::class)
+  @androidx.annotation.OptIn(markerClass = [ExperimentalCamera2Interop::class])
+  private fun oisSupported(info: androidx.camera.core.CameraInfo): Boolean = try {
+    Camera2CameraInfo.from(info)
+      .getCameraCharacteristic(android.hardware.camera2.CameraCharacteristics.LENS_INFO_AVAILABLE_OPTICAL_STABILIZATION)
+      ?.contains(CaptureRequest.LENS_OPTICAL_STABILIZATION_MODE_ON) == true
+  } catch (e: Throwable) { false }
+
+  /**
+   * Mains frequency of the country the phone is in. AUTO detection often misses on front cameras,
+   * so lights pulsing at 100 Hz (50 Hz mains) show up as flicker; naming the frequency fixes it.
+   */
+  private fun antibandingMode(): Int {
+    when (antibanding) {
+      "auto" -> return CaptureRequest.CONTROL_AE_ANTIBANDING_MODE_AUTO
+      "50" -> return CaptureRequest.CONTROL_AE_ANTIBANDING_MODE_50HZ
+      "60" -> return CaptureRequest.CONTROL_AE_ANTIBANDING_MODE_60HZ
+      "off" -> return CaptureRequest.CONTROL_AE_ANTIBANDING_MODE_OFF
+    }
+    val cc = try {
+      val tm = context.getSystemService(android.content.Context.TELEPHONY_SERVICE) as? android.telephony.TelephonyManager
+      (tm?.networkCountryIso?.takeIf { it.isNotBlank() } ?: tm?.simCountryIso?.takeIf { it.isNotBlank() }
+        ?: java.util.Locale.getDefault().country).uppercase()
+    } catch (e: Throwable) { "" }
+    if (cc.isBlank()) return CaptureRequest.CONTROL_AE_ANTIBANDING_MODE_AUTO
+    val hz60 = setOf("US", "CA", "MX", "PR", "GU", "VI", "AS", "MP", "BS", "BZ", "CR", "CU", "DO", "SV", "GT", "HN",
+      "HT", "NI", "PA", "JM", "TT", "BR", "CO", "VE", "EC", "PE", "SR", "GY", "KR", "TW", "PH", "SA", "LR", "BM",
+      "KN", "LC", "AG", "AW", "KY", "MS", "TC", "VG", "FM", "MH", "PW")
+    return if (cc in hz60) CaptureRequest.CONTROL_AE_ANTIBANDING_MODE_60HZ else CaptureRequest.CONTROL_AE_ANTIBANDING_MODE_50HZ
+  }
+
+  @OptIn(ExperimentalCamera2Interop::class)
+  @androidx.annotation.OptIn(markerClass = [ExperimentalCamera2Interop::class])
+  private fun newPreview(stabilized: Boolean? = null, ois: Boolean = false, matchAspect: Boolean = false): Preview {
+    val b = Preview.Builder()
+    val epoch=stabilityEpoch
+    androidx.camera.camera2.interop.Camera2Interop.Extender(b).setSessionCaptureCallback(object: android.hardware.camera2.CameraCaptureSession.CaptureCallback(){
+      override fun onCaptureCompleted(session:android.hardware.camera2.CameraCaptureSession,request:CaptureRequest,result:android.hardware.camera2.TotalCaptureResult){
+        if(epoch!=stabilityEpoch || !requestedSharedStability || sharedFallbackApplied || !effectPreview)return
+        val actual=result.get(android.hardware.camera2.CaptureResult.CONTROL_VIDEO_STABILIZATION_MODE) ?: return
+        if(actual==2){sharedOffSamples=0;return} // PREVIEW_STABILIZATION, common to both streams.
+        sharedOffSamples++
+        if(sharedOffSamples<45)return
+        sharedFallbackApplied=true
+        post {
+          if(epoch!=stabilityEpoch || !requestedSharedStability || !effectPreview)return@post
+          videoHardwareStabilized=false
+          portraitProcessor?.let { proc ->
+            proc.stabilityMargin=CaptureStability.crop(mode,stabilization,facing=="front",false)
+          }
+          emitError("Hardware stabilization was not confirmed for this configuration. Live software correction is active.")
+        }
+      }
+    })
+    // Anti-flicker for mains-powered lights (50/60 Hz): stops banding and brightness pulsing indoors
+    androidx.camera.camera2.interop.Camera2Interop.Extender(b)
+      .setCaptureRequestOption(CaptureRequest.CONTROL_AE_ANTIBANDING_MODE, antibandingMode())
+    b.setResolutionSelector(if (matchAspect) resolutionSelector() else
+      androidx.camera.core.resolutionselector.ResolutionSelector.Builder()
+        .setAspectRatioStrategy(androidx.camera.core.resolutionselector.AspectRatioStrategy.RATIO_16_9_FALLBACK_AUTO_STRATEGY).build())
+    stabilized?.let { b.setPreviewStabilizationEnabled(it) }
+    if (ois) {
+      androidx.camera.camera2.interop.Camera2Interop.Extender(b)
+        .setCaptureRequestOption(CaptureRequest.LENS_OPTICAL_STABILIZATION_MODE, CaptureRequest.LENS_OPTICAL_STABILIZATION_MODE_ON)
+    }
+    return b.build().also {
+      it.setSurfaceProvider(previewView.surfaceProvider)
+      currentPreview = it
+    }
+  }
+
+  private fun newImageCapture(): ImageCapture =
+    ImageCapture.Builder()
+      .setResolutionSelector(resolutionSelector())
+      .setCaptureMode(ImageCapture.CAPTURE_MODE_MINIMIZE_LATENCY)
+      .setJpegQuality(100)
+      .setFlashMode(flashMode())
+      .build()
+
+  /**
+   * Photo modes use the phone maker's own processing through CameraX Extensions:
+   * Photo → vendor HDR (or Auto), Portrait → vendor Bokeh (real depth), Night → vendor Night.
+   * One full-quality frame; no multi-frame merging in the app.
+   */
+  private fun bindPhoto(p: ProcessCameraProvider, owner: LifecycleOwner) {
+    val base = selector(facing)
+    if (filterActive(filterParams)) {
+      // Live filter preview through the GPU effect (phone-maker extensions can't run effects)
+      try {
+        val ic = ImageCapture.Builder()
+          .setResolutionSelector(resolutionSelector())
+          .setCaptureMode(ImageCapture.CAPTURE_MODE_MAXIMIZE_QUALITY)
+          .setJpegQuality(100)
+          .setFlashMode(flashMode())
+          .build()
+        val proc = portraitProcessor ?: PortraitProcessor().also { portraitProcessor = it }
+        proc.blurEnabled = false
+        proc.enhance = true
+        proc.stabilityMargin = 1f
+        proc.frontCamera = facing == "front"
+        proc.mirrorVideo = false
+        proc.mirrorAll = rearSelfie
+        proc.filter = filterParams
+        proc.smoothing = 0f // photos are smoothed when processed
+        val group = UseCaseGroup.Builder()
+          .addUseCase(newPreview(false, oisSupported(p.getCameraInfo(base)), true))
+          .addUseCase(ic)
+          .addEffect(PortraitVideoEffect(proc, CameraEffect.PREVIEW))
+          .build()
+        camera = p.bindToLifecycle(owner, base, group)
+        imageCapture = ic
+        effectPreview = true
+        return
+      } catch (e: Throwable) {
+        p.unbindAll()
+        effectPreview = false
+      }
+    }
+    var sel = base
+    val ext = extensions
+    val wanted: List<Pair<Int, String>> = when (mode) {
+      "night" -> if (nightExtension) listOf(ExtensionMode.NIGHT to "night") else emptyList()
+      "portrait" -> listOf(ExtensionMode.BOKEH to "bokeh")
+      "photo" -> listOf(ExtensionMode.HDR to "hdr", ExtensionMode.AUTO to "auto")
+      else -> emptyList()
+    }
+    if (ext != null) {
+      for ((m, name) in wanted) {
+        if (try { ext.isExtensionAvailable(base, m) } catch (e: Throwable) { false }) {
+          sel = ext.getExtensionEnabledCameraSelector(base, m)
+          activeExtension = name
+          usingNightExtension = true
+          break
+        }
+      }
+    }
+    val ic = ImageCapture.Builder()
+      .setResolutionSelector(resolutionSelector())
+      .setCaptureMode(ImageCapture.CAPTURE_MODE_MAXIMIZE_QUALITY)
+      .setJpegQuality(100)
+      .setFlashMode(flashMode())
+      .build()
+    val ois = activeExtension == null && oisSupported(p.getCameraInfo(base))
+    camera = try {
+      p.bindToLifecycle(owner, sel, newPreview(false, ois, true), ic)
+    } catch (e: Throwable) {
+      // Extension refused this configuration: fall back to the plain camera
+      p.unbindAll()
+      activeExtension = null
+      usingNightExtension = false
+      p.bindToLifecycle(owner, base, newPreview(false, false, true), ic)
+    }
+    imageCapture = ic
+  }
+
+  private fun buildRecorder(quality: Quality, bitrate: Int): Recorder =
+    Recorder.Builder()
+      .setAspectRatio(androidx.camera.core.AspectRatio.RATIO_16_9)
+      .setQualitySelector(
+        QualitySelector.from(quality, FallbackStrategy.lowerQualityOrHigherThan(Quality.SD)),
+      )
+      .setTargetVideoEncodingBitRate(bitrate)
+      .build()
+
+  /** Front/back switch mid-recording: same VideoCapture (same file), re-bound to the other camera. */
+  private fun switchCameraWhileRecording() {
+    val owner = appContext.currentActivity as? LifecycleOwner ?: return
+    val vc = videoCapture ?: return
+    if (portraitProcessor == null || !effectPreview) {
+      // Without the GPU pipeline the two cameras' clocks can't be joined into one playable clip
+      facing = if (facing == "front") "back" else "front"
+      emitError("Switching cameras while recording needs HDR video turned off")
+      return
+    }
+    withProvider { p ->
+      try {
+        p.unbindAll()
+        val sel = selector(facing)
+        val info = p.getCameraInfo(sel)
+        val front = facing == "front"
+        // Keep both viewfinder and recorded sensor feed wide; stabilize the saved clip.
+        val stab = !effectPreview && CaptureStability.crop(mode, stabilization) > 1.001f && (try { Preview.getPreviewCapabilities(info).isStabilizationSupported } catch (e: Throwable) { false })
+        val preview = newPreview(stab, CaptureStability.crop(mode, stabilization) > 1.001f && !stab && !videoHardwareStabilized && oisSupported(info))
+        val proc = portraitProcessor
+        camera = if (proc != null && effectPreview) {
+          proc.frontCamera = front
+          proc.stabilityMargin = CaptureStability.crop(mode, stabilization, front, videoHardwareStabilized)
+          val group = UseCaseGroup.Builder().addUseCase(preview).addUseCase(vc).addEffect(PortraitVideoEffect(proc)).build()
+          p.bindToLifecycle(owner, sel, group)
+        } else {
+          p.bindToLifecycle(owner, sel, preview, vc)
+        }
+        applyZoom()
+        setTorch(torch)
+        applyControls()
+      } catch (e: Throwable) {
+        emitError("Couldn't switch camera while recording: ${e.message}")
+      }
+    }
+  }
+
+  private fun bindVideo(p: ProcessCameraProvider, owner: LifecycleOwner) {
+    stabilityEpoch++;sharedOffSamples=0;sharedFallbackApplied=false;requestedSharedStability=false
+    val sel = selector(facing)
+    val info = p.getCameraInfo(sel)
+    val action = mode == "action"
+    val portraitVideo = mode == "pvideo"
+    val selfieVideo = facing == "front"
+    val hdrRanges = try { Recorder.getVideoCapabilities(info).supportedDynamicRanges } catch (_: Throwable) { emptySet<DynamicRange>() }
+    val hdrRange = if (!hdrVideo || portraitVideo) null else when {
+      hdrRanges.contains(DynamicRange.HLG_10_BIT) -> DynamicRange.HLG_10_BIT
+      hdrRanges.contains(DynamicRange.HDR10_10_BIT) -> DynamicRange.HDR10_10_BIT
+      else -> throw IllegalStateException("This camera cannot record HLG or HDR10 with these settings")
+    }
+    // Inspect the selected camera itself. Camera changes use separate segments; the joiner
+    // already normalizes differing dimensions instead of limiting both cameras in advance.
+    val switchable = hdrRange == null && (mode == "video" || mode == "action")
+    fun bothSupport(q: Quality) = listOf(info).all {
+      try { Recorder.getVideoCapabilities(it).getSupportedQualities(hdrRange ?: DynamicRange.SDR).contains(q) } catch (e: Throwable) { false }
+    }
+    val uhd = !action && !portraitVideo && videoQuality == "uhd" && bothSupport(Quality.UHD)
+    // Front cameras record at a steady 30 fps (also in Action): at 60 fps the exposure is too short to
+    // span the 100/120 Hz pulsing of indoor lights, which shows as flicker in dim rooms
+    val targetFps = if (selfieVideo) minOf(fps, 30) else if (action) 60 else if (portraitVideo) 30 else fps
+    val quality = if (uhd) Quality.UHD else if (bothSupport(Quality.FHD)) Quality.FHD else Quality.HD
+    // Preserve the requested 16:9 output; use this lens's supported quality range.
+    val recorder = Recorder.Builder()
+      .setQualitySelector(QualitySelector.from(quality, FallbackStrategy.lowerQualityOrHigherThan(Quality.SD)))
+      .setAspectRatio(androidx.camera.core.AspectRatio.RATIO_16_9)
+      .setTargetVideoEncodingBitRate(if (uhd) 60_000_000 else 24_000_000)
+      .build()
+
+    // SDR effects crop and stabilize each frame before the encoder receives it.
+    // HDR stays in CameraX's 10-bit path and uses supported hardware EIS / OIS live.
+    val hdr = hdrRange != null
+    val wantStab = action || stabilization != "off"
+    val sharedSupported=try{Preview.getPreviewCapabilities(info).isStabilizationSupported}catch(_:Throwable){false}
+    val videoSupported=try{Recorder.getVideoCapabilities(info).isStabilizationSupported}catch(_:Throwable){false}
+    val stabilityPlan=CaptureStability.plan(wantStab,sharedSupported,videoSupported,hdr)
+    val previewStab=stabilityPlan.preview == true
+    requestedSharedStability=previewStab
+    val hardwareEis=stabilityPlan.hardware
+    val ois = wantStab && !hardwareEis && oisSupported(info)
+    val useEffect = !hdr
+    val vb = VideoCapture.Builder(recorder)
+      .setMirrorMode(if (rearSelfie) MirrorMode.MIRROR_MODE_ON else if (mirror) MirrorMode.MIRROR_MODE_ON_FRONT_ONLY else MirrorMode.MIRROR_MODE_OFF)
+    videoHardwareStabilized = hardwareEis
+    stabilityPlan.configureVideo { vb.setVideoStabilizationEnabled(it) }
+
+    // Prefer fixed cadence from the selected lens's actual frame-rate ranges.
+    val ranges = info.supportedFrameRateRanges.toList()
+    boundFrameRate = targetFps
+    CaptureStability.frameRate(ranges.map { it.lower to it.upper }, targetFps)
+      ?.let { boundFrameRate = it.second; vb.setTargetFrameRate(Range(it.first, it.second)) }
+
+    hdrRange?.let { vb.setDynamicRange(it) }
+    val vc = vb.build()
+    if (useEffect) {
+      // GPU effect on preview + recording: background blur, image stabilization, mirroring
+      try {
+        val proc = portraitProcessor ?: PortraitProcessor().also { portraitProcessor = it }
+        proc.strength = bokeh
+        proc.blurEnabled = portraitVideo
+        proc.enhance = true
+        proc.filter = if (filterActive(filterParams)) filterParams else null
+        proc.smoothing = faceSmoothing
+        effectPreview = true
+        proc.frontCamera = selfieVideo
+        proc.mirrorVideo = false
+        proc.mirrorAll = rearSelfie
+        // One live processing crop; hardware-stabilized video is not cropped again.
+        proc.stabilityMargin = CaptureStability.crop(mode, stabilization, selfieVideo, hardwareEis)
+        proc.onWeakGpu = { reason -> post { emitPortraitStatus(mapOf("blur" to false, "reason" to reason)) } }
+        if (USE_OWN_RECORDER && switchable) {
+          // Video / Action: iCam's own recorder (off: Android's recorder is used). CameraX only feeds the viewfinder stream; the GPU
+          // pipeline draws each frame into a fixed-size encoder, so front/back can change mid-clip.
+          val chosenRange = CaptureStability.frameRate(ranges.map { it.lower to it.upper }, targetFps)
+          val range = chosenRange?.let { Range(it.first, it.second) }
+          val pb = Preview.Builder()
+            .setResolutionSelector(
+              androidx.camera.core.resolutionselector.ResolutionSelector.Builder()
+                .setAspectRatioStrategy(androidx.camera.core.resolutionselector.AspectRatioStrategy.RATIO_16_9_FALLBACK_AUTO_STRATEGY)
+                .setResolutionStrategy(
+                  androidx.camera.core.resolutionselector.ResolutionStrategy(
+                    if (uhd) android.util.Size(3840, 2160) else android.util.Size(1920, 1080),
+                    androidx.camera.core.resolutionselector.ResolutionStrategy.FALLBACK_RULE_CLOSEST_LOWER_THEN_HIGHER,
+                  ),
+                )
+                .build(),
+            )
+          pb.setPreviewStabilizationEnabled(previewStab)
+          range?.let { pb.setTargetFrameRate(it) }
+          if (ois) {
+            androidx.camera.camera2.interop.Camera2Interop.Extender(pb)
+              .setCaptureRequestOption(CaptureRequest.LENS_OPTICAL_STABILIZATION_MODE, CaptureRequest.LENS_OPTICAL_STABILIZATION_MODE_ON)
+          }
+          val preview = pb.build().also { it.setSurfaceProvider(previewView.surfaceProvider); currentPreview = it }
+          proc.mirrorVideo = mirror || rearSelfie
+          proc.mirrorAll = rearSelfie
+          val g = UseCaseGroup.Builder().addUseCase(preview).addEffect(PortraitVideoEffect(proc, CameraEffect.PREVIEW)).build()
+          camera = p.bindToLifecycle(owner, sel, g)
+          proc.fixedRotation = ((camera?.cameraInfo?.sensorRotationDegrees ?: -90) / 90).let { if (it < 0) -1 else it % 4 }
+          // Recording orientation: rotate the camera buffer by the sensor orientation for a portrait phone
+          proc.inRotation = camera?.cameraInfo?.getSensorRotationDegrees(android.view.Surface.ROTATION_0) ?: if (selfieVideo) 270 else 90
+          ownMode = true
+          encW = if (uhd) 3840 else 1920
+          encH = if (uhd) 2160 else 1080
+          encFps = range?.upper ?: targetFps
+          encBitrate = if (uhd) 60_000_000 else if (encFps >= 60) 30_000_000 else 20_000_000
+          videoCapture = null
+          return
+        }
+        val group = UseCaseGroup.Builder()
+          .addUseCase(newPreview(stabilityPlan.preview, ois))
+          .addUseCase(vc)
+          .addEffect(PortraitVideoEffect(proc))
+          .build()
+        camera = p.bindToLifecycle(owner, sel, group)
+        proc.fixedRotation = ((camera?.cameraInfo?.sensorRotationDegrees ?: -90) / 90).let { if (it < 0) -1 else it % 4 }
+        videoCapture = vc
+        // Horizon lock crops only as much as the current tilt needs, so normal framing is kept
+        applyAperture()
+        return
+      } catch (e: Throwable) {
+        p.unbindAll()
+        videoHardwareStabilized = false
+        effectPreview = false
+        ownMode = false
+        if (portraitVideo) emitError("Background blur isn't supported here – recording without it")
+      }
+    }
+    // A native-only fallback can use video EIS, but its Preview flag must remain unspecified.
+    val fallbackPlan=if(useEffect)CaptureStability.plan(wantStab,sharedSupported,videoSupported,true) else stabilityPlan
+    videoHardwareStabilized=fallbackPlan.hardware
+    requestedSharedStability=fallbackPlan.preview == true
+    val plainVc = if(useEffect) {
+      val safe=VideoCapture.Builder(buildRecorder(Quality.FHD,20_000_000))
+        .setMirrorMode(if(rearSelfie)MirrorMode.MIRROR_MODE_ON else if(mirror)MirrorMode.MIRROR_MODE_ON_FRONT_ONLY else MirrorMode.MIRROR_MODE_OFF)
+      fallbackPlan.configureVideo { safe.setVideoStabilizationEnabled(it) }
+      CaptureStability.frameRate(ranges.map{it.lower to it.upper},30)?.let{safe.setTargetFrameRate(Range(it.first,it.second));boundFrameRate=it.second}
+      emitError("The camera rejected live effects; using a conservative native recording profile instead")
+      safe.build()
+    } else vc
+    camera = try {
+      p.bindToLifecycle(owner,sel,newPreview(fallbackPlan.preview,wantStab && !videoHardwareStabilized && oisSupported(info)),plainVc).also{videoCapture=plainVc}
+    } catch(e: Throwable) {
+      p.unbindAll();videoHardwareStabilized=false
+      if(hdr){
+        // Retry the exact HDR range without EIS if this quality/FPS combination rejects it.
+        val safe=VideoCapture.Builder(recorder)
+          .setMirrorMode(if(rearSelfie)MirrorMode.MIRROR_MODE_ON else if(mirror)MirrorMode.MIRROR_MODE_ON_FRONT_ONLY else MirrorMode.MIRROR_MODE_OFF)
+          .setDynamicRange(hdrRange!!).setVideoStabilizationEnabled(false)
+        CaptureStability.frameRate(ranges.map{it.lower to it.upper},targetFps)?.let{safe.setTargetFrameRate(Range(it.first,it.second))}
+        try{p.bindToLifecycle(owner,sel,newPreview(false,wantStab && oisSupported(info)),safe.build().also{videoCapture=it})}
+        catch(failure:Throwable){throw IllegalStateException("HDR recording is unavailable with these settings",failure)}
+      }else{
+        // Retry a conservative shared 1080p/30 session; never pretend the failed request is active.
+        val nativePlan=CaptureStability.plan(wantStab,sharedSupported,videoSupported,true)
+        videoHardwareStabilized=nativePlan.hardware
+        requestedSharedStability=nativePlan.preview == true
+        val plain=VideoCapture.Builder(buildRecorder(Quality.FHD,20_000_000))
+          .setMirrorMode(if(rearSelfie)MirrorMode.MIRROR_MODE_ON else if(mirror)MirrorMode.MIRROR_MODE_ON_FRONT_ONLY else MirrorMode.MIRROR_MODE_OFF)
+        nativePlan.configureVideo { plain.setVideoStabilizationEnabled(it) }
+        CaptureStability.frameRate(ranges.map{it.lower to it.upper},30)?.let{plain.setTargetFrameRate(Range(it.first,it.second));boundFrameRate=it.second}
+        p.bindToLifecycle(owner,sel,newPreview(nativePlan.preview,wantStab && !videoHardwareStabilized && oisSupported(info)),plain.build().also{videoCapture=it})
+          .also{emitError("Using a conservative recording profile after the camera rejected the requested effects/stabilization combination") }
+      }
+    }
+    if(hdr && wantStab && !videoHardwareStabilized)emitError(if(oisSupported(info))
+      "This HDR setting uses optical stabilization only. Choose SDR for live software stabilization."
+      else "Live HDR stabilization is unavailable on this lens. Choose SDR for software stabilization.")
+  }
+
+  /** Macro: the tele-macro or dedicated macro camera found from lens data, with close-focus AF. */
+  @OptIn(ExperimentalCamera2Interop::class)
+  @androidx.annotation.OptIn(markerClass = [ExperimentalCamera2Interop::class])
+  private fun bindMacro(p: ProcessCameraProvider, owner: LifecycleOwner) {
+    val m = MacroFinder.find(context) ?: throw IllegalStateException("This phone has no macro camera")
+    val targetId = m.parentId ?: m.id
+    val sel = CameraSelector.Builder()
+      .addCameraFilter { infos -> infos.filter { Camera2CameraInfo.from(it).cameraId == targetId } }
+      .build()
+    fun <T> macroOpts(b: androidx.camera.core.ExtendableBuilder<T>) {
+      val ext = androidx.camera.camera2.interop.Camera2Interop.Extender(b)
+      if (m.parentId != null) ext.setPhysicalCameraId(m.id)
+      ext.setCaptureRequestOption(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
+    }
+    val pb = Preview.Builder().setResolutionSelector(resolutionSelector())
+    macroOpts(pb)
+    val ib = ImageCapture.Builder()
+      .setResolutionSelector(resolutionSelector())
+      .setCaptureMode(ImageCapture.CAPTURE_MODE_MAXIMIZE_QUALITY)
+      .setJpegQuality(100)
+      .setFlashMode(flashMode())
+    macroOpts(ib)
+    val preview = pb.build().also {
+      it.setSurfaceProvider(previewView.surfaceProvider)
+      currentPreview = it
+    }
+    val ic = ib.build()
+    camera = try {
+      p.bindToLifecycle(owner, sel, preview, ic)
+    } catch (e: Throwable) {
+      // Physical-lens streaming refused: fall back to the logical camera zoomed to that lens
+      p.unbindAll()
+      val prev2 = newPreview(matchAspect = true)
+      val ic2 = newImageCapture()
+      val cam = p.bindToLifecycle(owner, selector("back"), prev2, ic2)
+      if (m.kind == "tele") macroZoom = (m.focalEq / 26.0).toFloat()
+      camera = cam
+      imageCapture = ic2
+      emitError("Macro lens isn't directly accessible here; using the closest-focusing lens instead")
+      return
+    }
+    imageCapture = ic
+  }
+
+  private fun bindPro(p: ProcessCameraProvider, owner: LifecycleOwner) {
+    val sel = selector(facing)
+    val ic = ImageCapture.Builder()
+      .setResolutionSelector(resolutionSelector())
+      .setCaptureMode(ImageCapture.CAPTURE_MODE_MAXIMIZE_QUALITY)
+      .setFlashMode(flashMode())
+      .build()
+    val vc = VideoCapture.Builder(buildRecorder(Quality.UHD, 60_000_000))
+      .setMirrorMode(if (rearSelfie) MirrorMode.MIRROR_MODE_ON else if (mirror) MirrorMode.MIRROR_MODE_ON_FRONT_ONLY else MirrorMode.MIRROR_MODE_OFF)
+      .build()
+    camera = try {
+      p.bindToLifecycle(owner, sel, newPreview(matchAspect = true), ic, vc).also { videoCapture = vc }
+    } catch (e: Throwable) {
+      p.unbindAll()
+      p.bindToLifecycle(owner, sel, newPreview(matchAspect = true), ic)
+    }
+    imageCapture = ic
+  }
+
+  @OptIn(ExperimentalHighSpeedVideo::class, androidx.camera.core.ExperimentalSessionConfig::class)
+  @androidx.annotation.OptIn(markerClass = [ExperimentalHighSpeedVideo::class, androidx.camera.core.ExperimentalSessionConfig::class])
+  private fun bindSlowMo(p: ProcessCameraProvider, owner: LifecycleOwner) {
+    val sel = selector(facing)
+    val info = p.getCameraInfo(sel)
+    if (Recorder.getHighSpeedVideoCapabilities(info) == null) {
+      throw IllegalStateException("Slow motion isn't supported by this camera")
+    }
+    val vc = VideoCapture.Builder(Recorder.Builder().build())
+      .setMirrorMode(if (rearSelfie) MirrorMode.MIRROR_MODE_ON else if (mirror) MirrorMode.MIRROR_MODE_ON_FRONT_ONLY else MirrorMode.MIRROR_MODE_OFF)
+      .build()
+    val builder = HighSpeedVideoSessionConfig.Builder(vc)
+    builder.setPreview(newPreview())
+    builder.setSlowMotionEnabled(true)
+    val best = info.getSupportedFrameRateRanges(builder.build()).maxByOrNull { it.upper }
+    if (best != null) builder.setFrameRateRange(best)
+    slowFps = best?.upper ?: 0
+    camera = p.bindToLifecycle(owner, sel, builder.build())
+    videoCapture = vc
+  }
+
+  private fun bindDual(p: ProcessCameraProvider, owner: LifecycleOwner) {
+    val pair = p.availableConcurrentCameraInfos.firstOrNull { list ->
+      list.any { it.lensFacing == CameraSelector.LENS_FACING_BACK } &&
+        list.any { it.lensFacing == CameraSelector.LENS_FACING_FRONT }
+    } ?: throw IllegalStateException("This phone can't run front and back cameras at the same time")
+
+    val back = pair.first { it.lensFacing == CameraSelector.LENS_FACING_BACK }
+    val front = pair.first { it.lensFacing == CameraSelector.LENS_FACING_FRONT }
+    val main = if (dualPrimary == "front") front else back
+    val pip = if (dualPrimary == "front") back else front
+
+    if (!dualComposed) {
+      // Preview: two independent streams, the inset is a real view you can drag smoothly
+      val mainPrev = newPreview()
+      val pipPrev = Preview.Builder().build().also { it.setSurfaceProvider(pipPreview.surfaceProvider) }
+      val primaryCfg = ConcurrentCamera.SingleCameraConfig(
+        main.cameraSelector, UseCaseGroup.Builder().addUseCase(mainPrev).build(), owner,
+      )
+      val secondaryCfg = ConcurrentCamera.SingleCameraConfig(
+        pip.cameraSelector, UseCaseGroup.Builder().addUseCase(pipPrev).build(), owner,
+      )
+      val cc = p.bindToLifecycle(listOf(primaryCfg, secondaryCfg))
+      camera = cc.cameras.firstOrNull { it.cameraInfo.lensFacing == main.lensFacing } ?: cc.cameras.firstOrNull()
+      cc.cameras.firstOrNull { it.cameraInfo.lensFacing == CameraSelector.LENS_FACING_FRONT }?.let { fr ->
+        val z = fr.cameraInfo.zoomState.value
+        fr.cameraControl.setZoomRatio((z?.minZoomRatio ?: 1f))
+      }
+      videoCapture = null
+      pipContainer.visibility = View.VISIBLE
+      layoutPip()
+      return
+    }
+
+    // Mirror mode is applied per camera: only the selfie stream is mirrored in the composed video
+    val vc = VideoCapture.Builder(buildRecorder(Quality.FHD, 20_000_000))
+      .setMirrorMode(if (rearSelfie) MirrorMode.MIRROR_MODE_ON else if (mirror) MirrorMode.MIRROR_MODE_ON_FRONT_ONLY else MirrorMode.MIRROR_MODE_OFF)
+      .build()
+    val group = UseCaseGroup.Builder().addUseCase(newPreview()).addUseCase(vc).build()
+
+    // Picture-in-picture box in normalized device coordinates (origin centre, +y up).
+    // Size it to the inset camera's own 3:4 portrait shape so faces aren't stretched.
+    // The recorder and fitted viewfinder both use 9:16 portrait (16:9 sensor output).
+    // Convert screen-space position/size (what the user drags) into the stream's NDC.
+    val viewAspect = if (height > 0) width.toFloat() / height else 9f / 20f
+    val outAspect = if(width>height) 16f/9f else 9f/16f
+    val visX = (viewAspect / outAspect).coerceAtMost(1f) // share of stream width that is on screen
+    val visY = (outAspect / viewAspect).coerceAtMost(1f)
+    val sx = (pipSize * visX).coerceIn(0.1f, 0.8f)
+    // Inset keeps the selfie stream's own 3:4 shape: h_px/w_px = 4/3 → sy = sx * outAspect * 4/3
+    val sy = (sx * outAspect * (4f / 3f)).coerceAtMost(0.9f)
+    val cx = ((pipX * 2f - 1f) * visX).coerceIn(-visX + sx, visX - sx)
+    val cy = ((1f - pipY * 2f) * visY).coerceIn(-visY + sy, visY - sy)
+
+    val primary = ConcurrentCamera.SingleCameraConfig(
+      main.cameraSelector,
+      group,
+      CompositionSettings.Builder().setAlpha(1f).setOffset(0f, 0f).setScale(1f, 1f).build(),
+      owner,
+    )
+    val secondary = ConcurrentCamera.SingleCameraConfig(
+      pip.cameraSelector,
+      group,
+      CompositionSettings.Builder().setAlpha(1f).setOffset(cx, cy).setScale(sx, sy).build(),
+      owner,
+    )
+    val cc = p.bindToLifecycle(listOf(primary, secondary))
+    camera = cc.cameras.firstOrNull { it.cameraInfo.lensFacing == main.lensFacing } ?: cc.cameras.firstOrNull()
+    // Keep the selfie lens at its natural framing; do not force a face-filling crop.
+    cc.cameras.firstOrNull { it.cameraInfo.lensFacing == CameraSelector.LENS_FACING_FRONT }?.let { front ->
+      val z = front.cameraInfo.zoomState.value
+      val target = (z?.minZoomRatio ?: 1f)
+      front.cameraControl.setZoomRatio(target)
+    }
+    videoCapture = vc
+  }
+
+  /* ---------------- manual controls ---------------- */
+
+  @OptIn(ExperimentalCamera2Interop::class)
+  @androidx.annotation.OptIn(markerClass = [ExperimentalCamera2Interop::class])
+  private fun applyControls() {
+    val cam = camera ?: return
+    try {
+      portraitProcessor?.autoWhiteBalance = wb == "auto"
+      // Camera2 overrides only in Pro; other modes stay fully automatic so the vendor 3A runs normally
+      if (mode == "pro" || manualControls) {
+        val c2 = Camera2CameraInfo.from(cam.cameraInfo)
+        val capabilities = c2.getCameraCharacteristic(android.hardware.camera2.CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES) ?: intArrayOf()
+        val isoRange = c2.getCameraCharacteristic(android.hardware.camera2.CameraCharacteristics.SENSOR_INFO_SENSITIVITY_RANGE)
+        val timeRange = c2.getCameraCharacteristic(android.hardware.camera2.CameraCharacteristics.SENSOR_INFO_EXPOSURE_TIME_RANGE)
+        val awbModes = c2.getCameraCharacteristic(android.hardware.camera2.CameraCharacteristics.CONTROL_AWB_AVAILABLE_MODES) ?: intArrayOf()
+        val b = CaptureRequestOptions.Builder()
+        val manualExposure = iso > 0 && shutterNs > 0 && isoRange != null && timeRange != null &&
+          capabilities.contains(android.hardware.camera2.CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES_MANUAL_SENSOR)
+        if (manualExposure) {
+          b.setCaptureRequestOption(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_OFF)
+          b.setCaptureRequestOption(CaptureRequest.SENSOR_SENSITIVITY, iso.coerceIn(isoRange!!.lower,isoRange.upper))
+          val exposure = shutterNs.coerceIn(timeRange!!.lower,timeRange.upper)
+          b.setCaptureRequestOption(CaptureRequest.SENSOR_EXPOSURE_TIME, exposure)
+          b.setCaptureRequestOption(CaptureRequest.SENSOR_FRAME_DURATION, max(exposure, if (mode == "pro") 33_333_333L else 1_000_000_000L / boundFrameRate.coerceAtLeast(1)))
+        }
+        if (wb == "kelvin" && capabilities.contains(android.hardware.camera2.CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES_MANUAL_POST_PROCESSING) && awbModes.contains(CaptureRequest.CONTROL_AWB_MODE_OFF)) {
+          b.setCaptureRequestOption(CaptureRequest.CONTROL_AWB_MODE, CaptureRequest.CONTROL_AWB_MODE_OFF)
+          b.setCaptureRequestOption(CaptureRequest.COLOR_CORRECTION_MODE, CaptureRequest.COLOR_CORRECTION_MODE_TRANSFORM_MATRIX)
+          b.setCaptureRequestOption(CaptureRequest.COLOR_CORRECTION_GAINS, kelvinToGains(kelvin))
+        } else if (wb != "auto") {
+          val requested = when (wb) {
+            "daylight" -> CaptureRequest.CONTROL_AWB_MODE_DAYLIGHT
+            "cloudy" -> CaptureRequest.CONTROL_AWB_MODE_CLOUDY_DAYLIGHT
+            "shade" -> CaptureRequest.CONTROL_AWB_MODE_SHADE
+            "tungsten" -> CaptureRequest.CONTROL_AWB_MODE_INCANDESCENT
+            "fluorescent" -> CaptureRequest.CONTROL_AWB_MODE_FLUORESCENT
+            "twilight" -> CaptureRequest.CONTROL_AWB_MODE_TWILIGHT
+            else -> CaptureRequest.CONTROL_AWB_MODE_AUTO
+          }
+          if (awbModes.contains(requested)) b.setCaptureRequestOption(CaptureRequest.CONTROL_AWB_MODE,requested)
+        }
+        val maxFocus = c2.getCameraCharacteristic(android.hardware.camera2.CameraCharacteristics.LENS_INFO_MINIMUM_FOCUS_DISTANCE) ?: 0f
+        if (focus >= 0f && maxFocus > 0f) {
+          b.setCaptureRequestOption(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_OFF)
+          b.setCaptureRequestOption(CaptureRequest.LENS_FOCUS_DISTANCE, focus.coerceIn(0f,maxFocus))
+        }
+        Camera2CameraControl.from(cam.cameraControl).setCaptureRequestOptions(b.build())
+        if (manualExposure) return
+      } else if (!usingNightExtension) {
+        Camera2CameraControl.from(cam.cameraControl).clearCaptureRequestOptions()
+      }
+      // A modest baseline protects bright windows / sky; manual Pro exposure remains exact.
+      val videoBias = if (mode in listOf("video", "action", "pvideo")) -1.0 / 3.0 else 0.0
+      setEvIndex(ev + burstEvOffset + videoBias)
+    } catch (e: Throwable) {
+      emitError("Camera control rejected: ${e.message}")
+    }
+  }
+
+  private fun setEvIndex(target: Double) {
+    val cam = camera ?: return
+    val state = cam.cameraInfo.exposureState
+    if (!state.isExposureCompensationSupported) return
+    val step = state.exposureCompensationStep.toDouble()
+    if (step <= 0) return
+    val idx = (target / step).roundToInt()
+      .coerceIn(state.exposureCompensationRange.lower, state.exposureCompensationRange.upper)
+    cam.cameraControl.setExposureCompensationIndex(idx)
+  }
+
+  /** Colour temperature → RGGB gains (Tanner Helland's blackbody fit, scaled to typical sensor gains). */
+  private fun kelvinToGains(k: Int): RggbChannelVector {
+    val t = k.coerceIn(2000, 10000) / 100.0
+    val r = if (t <= 66) 255.0 else 329.698727446 * (t - 60).pow(-0.1332047592)
+    val g = if (t <= 66) 99.4708025861 * ln(t) - 161.1195681661 else 288.1221695283 * (t - 60).pow(-0.0755148492)
+    val bl = when {
+      t >= 66 -> 255.0
+      t <= 19 -> 1.0
+      else -> 138.5177312231 * ln(t - 10) - 305.0447927307
+    }
+    val rr = r.coerceIn(1.0, 255.0)
+    val gg = g.coerceIn(1.0, 255.0)
+    val bb = bl.coerceIn(1.0, 255.0)
+    return RggbChannelVector(
+      (2.0 * gg / rr).toFloat().coerceIn(0.5f, 6f),
+      1f,
+      1f,
+      (1.6 * gg / bb).toFloat().coerceIn(0.5f, 6f),
+    )
+  }
+
+  fun focusAt(xDp: Float, yDp: Float) {
+    val cam = camera ?: return
+    val d = resources.displayMetrics.density
+    val px=xDp*d
+    val point = previewView.meteringPointFactory.createPoint(if(previewView.scaleX<0)previewView.width-px else px,yDp*d)
+    try {
+      cam.cameraControl.startFocusAndMetering(FocusMeteringAction.Builder(point).build())
+    } catch (_: Throwable) {}
+  }
+
+  /* ---------------- capture ---------------- */
+
+  /**
+   * Captures [count] frames back to back. A non-zero [evShift] temporarily biases exposure first
+   * (HDR+ shoots under-exposed bursts). Emits onPhotosCaptured with every saved path.
+   */
+  fun captureBurst(count: Int, evShift: Double, shortEv: Double, requestId: String) {
+    val ic = imageCapture ?: throw IllegalStateException("Photos are not ready in this mode")
+    val n = count.coerceIn(1, 8)
+    val withShort = shortEv < 0 && n > 1 && !usingNightExtension && mode != "pro"
+    val paths = ArrayList<String>()
+    val evs = ArrayList<Double>()
+    val metas = ArrayList<Map<String, Any>>()
+    var failures = 0
+    val firstFlash = ic.flashMode
+
+    fun currentEv(): Double {
+      val st = camera?.cameraInfo?.exposureState ?: return 0.0
+      return st.exposureCompensationIndex * st.exposureCompensationStep.toDouble()
+    }
+
+    fun finish(error: String?) {
+      burstEvOffset = 0.0
+      ic.flashMode = firstFlash
+      applyControls()
+      emitPhotosCaptured(
+        mapOf("requestId" to requestId,"paths" to paths, "evs" to evs, "meta" to metas,
+          "shortIndex" to if (withShort && paths.size >= 2 && evs.last() < evs.first() - 0.5) paths.size - 1 else -1,
+          "error" to error, "nightExtension" to usingNightExtension),
+      )
+    }
+
+    // Snapshot of what the preview shows (mirrored for selfies), to check whether this phone's
+    // camera already mirrors its front-camera JPEGs
+    val previewShot: android.graphics.Bitmap? = if (facing == "front") try { previewView.bitmap } catch (e: Throwable) { null } else null
+    val fitMode = previewFit
+
+    fun shoot(i: Int) {
+      val file = File(context.cacheDir, "iCam_${System.currentTimeMillis()}_$i.jpg")
+      // Mirroring is applied when the photo is processed (works the same with every capture path)
+      val meta = ImageCapture.Metadata()
+      if (i == 0) playSound(android.media.MediaActionSound.SHUTTER_CLICK)
+      if (i > 0) ic.flashMode = ImageCapture.FLASH_MODE_OFF
+      val ev = currentEv()
+      ic.takePicture(
+        ImageCapture.OutputFileOptions.Builder(file).setMetadata(meta).build(),
+        executor,
+        object : ImageCapture.OnImageSavedCallback {
+          override fun onImageSaved(output: ImageCapture.OutputFileResults) {
+            paths.add(file.absolutePath)
+            evs.add(ev)
+            metas.add(photoMeta(file, if (i == 0) previewShot else null, fitMode))
+            when {
+              i + 1 < n -> postDelayed({ shoot(i + 1) }, 40)
+              i + 1 == n && withShort -> {
+                // One darker frame to recover bright windows / sky / lamps
+                burstEvOffset = evShift + shortEv
+                applyControls()
+                postDelayed({ shoot(i + 1) }, 300)
+              }
+              else -> finish(null)
+            }
+          }
+
+          override fun onError(exception: ImageCaptureException) {
+            // Keep the burst going if a single frame fails
+            failures++
+            if (paths.isEmpty() && failures >= 3) {
+              finish(exception.message ?: "Capture failed")
+            } else if (i + 1 < n && failures < 3) {
+              postDelayed({ shoot(i + 1) }, 80)
+            } else {
+              finish(if (paths.isEmpty()) exception.message ?: "Capture failed" else null)
+            }
+          }
+        },
+      )
+    }
+
+    if (n > 1 && evShift != 0.0 && !usingNightExtension && mode != "pro") {
+      burstEvOffset = evShift
+      applyControls()
+      postDelayed({ shoot(0) }, 320)
+    } else {
+      shoot(0)
+    }
+  }
+
+  /** EXIF orientation + raw (stored) pixel size, so JS can rotate/mirror correctly. */
+  private fun photoMeta(file: File, preview: android.graphics.Bitmap? = null, fit: Boolean = false): Map<String, Any> {
+    val o = try {
+      android.media.ExifInterface(file.absolutePath)
+        .getAttributeInt(android.media.ExifInterface.TAG_ORIENTATION, android.media.ExifInterface.ORIENTATION_NORMAL)
+    } catch (e: Throwable) { 1 }
+    val b = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
+    android.graphics.BitmapFactory.decodeFile(file.absolutePath, b)
+    val m = mutableMapOf<String, Any>("orientation" to o, "width" to b.outWidth, "height" to b.outHeight)
+    if (preview != null) {
+      // -1 unknown, 0 = JPEG is the true view (normal), 1 = the phone already mirrored it
+      m["jpegMirrored"] = try { MirrorCheck.jpegMirrored(file, o, b.outWidth, b.outHeight, preview, fit) } catch (e: Throwable) { -1 }
+    }
+    return m
+  }
+
+  @SuppressLint("MissingPermission")
+  private val recordingStart=RecordingStartGate()
+  private val startingRec get()=recordingStart.pending
+  private fun cancelPendingStart() {
+    val pending=recordingStart.cancel() || pendingDualRecord
+    pendingDualRecord=false
+    if(pending)emitRecordingFinished(mapOf("durationMs" to 0.0,"slowMotion" to false,"error" to "Recording cancelled"))
+  }
+  fun startRecording() {
+    check(isAttachedToWindow && active && !RearDisplayRouter.isMoving) { "Camera is not active" }
+    if(joiningVideo || startingRec || recording!=null || ownRec!=null)return
+    stopAfterSwitch=false
+    if(mode=="dual" && !dualComposed){dualComposed=true;pendingDualRecord=true;scheduleRebind();return}
+    if(!ownMode)check(videoCapture!=null) { "Video is not ready in this mode" }
+    fun begin(){
+      if(!isAttachedToWindow || !active || RearDisplayRouter.isMoving){
+        emitRecordingFinished(mapOf("durationMs" to 0.0,"slowMotion" to false,"error" to "Recording cancelled"));return
+      }
+      if(ownMode)beginOwnRecording() else beginRecording(videoCapture ?: throw IllegalStateException("Video is not ready"))
+    }
+    if(soundOn){
+      val token=recordingStart.begin()
+      playSound(android.media.MediaActionSound.START_VIDEO_RECORDING)
+      postDelayed({
+        if(!recordingStart.consume(token))return@postDelayed
+        try{begin()}catch(e:Exception){emitRecordingFinished(mapOf("durationMs" to 0.0,"slowMotion" to false,"error" to (e.message ?: "Recording failed")))}
+      },550)
+    }else begin()
+  }
+
+  /* ---------------- own recorder (Video / Action) ---------------- */
+  private var ownMode = false
+  private var ownRec: OwnRecorder? = null
+  private var ownFile: File? = null
+  private var encW = 1920
+  private var encH = 1080
+  private var encFps = 30
+  private var encBitrate = 20_000_000
+
+  /** How the phone is held (OrientationEventListener degrees rounded to 0/90/180/270). */
+  @Volatile private var deviceDeg = 0
+  private val orientationListener by lazy {
+    object : android.view.OrientationEventListener(context) {
+      override fun onOrientationChanged(o: Int) {
+        if (o != ORIENTATION_UNKNOWN) deviceDeg = ((o + 45) / 90 * 90) % 360
+      }
+    }
+  }
+
+  private fun beginOwnRecording() {
+    if (ownRec != null) return
+    val proc = portraitProcessor ?: throw IllegalStateException("Video is not ready yet")
+    // Lock the video's orientation to how the phone is held now (portrait, landscape, upside down)
+    proc.encDeviceDeg = deviceDeg
+    proc.encHint = (proc.inRotation + deviceDeg) % 360
+    val file = File(context.cacheDir, "iCam_${mode}_${System.currentTimeMillis()}.mp4")
+    val mic = audio && ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+    val rec = try {
+      OwnRecorder(file, encW, encH, encFps, encBitrate, mic, proc.encHint).also { it.start() }
+    } catch (e: Throwable) {
+      emitRecordingFinished(mapOf("path" to null, "durationMs" to 0.0, "slowMotion" to false, "error" to "Recorder: ${e.message}"))
+      return
+    }
+    ownRec = rec
+    ownFile = file
+    proc.encoder = rec
+    palm.setEnabled(false)
+    keepScreenOn = true
+    rootView?.keepScreenOn = true
+  }
+
+  private fun stopOwnRecording() {
+    val rec = ownRec ?: return
+    portraitProcessor?.encoder = null
+    val file = ownFile
+    rec.stop { ok, durMs, err ->
+      post {
+        ownRec = null
+        ownFile = null
+        keepScreenOn = false
+        rootView?.keepScreenOn = false
+        emitRecordingFinished(
+          mapOf(
+            "path" to if (ok && file != null) file.absolutePath else null,
+            "durationMs" to durMs,
+            "slowMotion" to false,
+            "error" to err,
+          ),
+        )
+        playSound(android.media.MediaActionSound.STOP_VIDEO_RECORDING)
+        updateGestures()
+      }
+    }
+  }
+
+  @SuppressLint("MissingPermission")
+  private fun beginRecording(vc: VideoCapture<Recorder>, continuing: Boolean = false) {
+    if (recording != null || joiningVideo) return
+    if (!continuing) {
+      segments.clear()
+      segmentDurUs.clear()
+      segmentMs = 0.0
+      // How the phone is held when recording starts decides the video's orientation (like the
+      // built-in camera app), and stays the same for every piece of a multi-camera video
+      sessionRotation = when (deviceDeg) { 90 -> android.view.Surface.ROTATION_270; 180 -> android.view.Surface.ROTATION_180; 270 -> android.view.Surface.ROTATION_90; else -> android.view.Surface.ROTATION_0 }
+    }
+    try { vc.targetRotation = sessionRotation } catch (_: Throwable) {}
+    val recordProcessor=if(effectPreview)portraitProcessor else null
+    var processedAtStart=recordProcessor?.processedVideoFrames() ?: 0L
+    var auditPaused=false
+    var auditStartDuration=0L
+    var routingFailure: String?=null
+    val file = File(context.cacheDir, "iCam_${mode}_${System.currentTimeMillis()}.mp4")
+    var pending = vc.output.prepareRecording(context, FileOutputOptions.Builder(file).build())
+    val micGranted = ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
+      PackageManager.PERMISSION_GRANTED
+    if (audio && micGranted && mode != "slowmo") pending = pending.withAudioEnabled()
+    // Persistent: survives re-binding to the other camera (front/back switch while recording)
+    persistentRec = false
+    // (Persistent recording for mid-clip camera switches is off: Android's recorder can't change
+    // camera size mid-clip, which produced broken videos.)
+    // Keep the timeline continuous if the camera is switched mid-recording
+    portraitProcessor?.let { it.resetTimeline(); it.holdTimeline = true }
+    // Keep the display awake for the whole recording
+    palm.setEnabled(false)
+    keepScreenOn = true
+    rootView?.keepScreenOn = true
+    try {
+    recording = pending.start(executor) { event ->
+      if(event is VideoRecordEvent.Start || event is VideoRecordEvent.Resume){processedAtStart=recordProcessor?.processedVideoFrames() ?: 0L;auditStartDuration=event.recordingStats.recordedDurationNanos;auditPaused=false}
+      if(event is VideoRecordEvent.Pause)auditPaused=true
+      if(event is VideoRecordEvent.Status && !auditPaused && recordProcessor!=null && routingFailure==null &&
+        CaptureStability.deliveryStalled(event.recordingStats.recordedDurationNanos-auditStartDuration, recordProcessor.processedVideoFrames()-processedAtStart)){
+        routingFailure="The camera did not deliver processed frames to the recorder. The clip was retained; try a lower frame rate."
+        recording?.stop()
+      }
+      if (event is VideoRecordEvent.Pause) emitRecordingState(mapOf("paused" to true))
+      if (event is VideoRecordEvent.Resume) emitRecordingState(mapOf("paused" to false))
+      if (event is VideoRecordEvent.Finalize) {
+        recording = null
+        persistentRec = false
+        val okPiece = RecordedClip.hasVideoSample(file)
+        if (segmentSwitching) {
+          // A camera switch: keep this piece, bind the other camera, then record the next piece
+          if (okPiece) { segments.add(file); segmentDurUs.add(event.recordingStats.recordedDurationNanos / 1000); segmentMs += event.recordingStats.recordedDurationNanos / 1_000_000.0 }
+          rebind()
+          post { continueAfterSwitch() }
+          return@start
+        }
+        if (segments.isNotEmpty()) {
+          // Last piece of a multi-camera video: join everything into one file
+          if (okPiece) { segments.add(file); segmentDurUs.add(event.recordingStats.recordedDurationNanos / 1000); segmentMs += event.recordingStats.recordedDurationNanos / 1_000_000.0 }
+          keepScreenOn = false
+          rootView?.keepScreenOn = false
+          playSound(android.media.MediaActionSound.STOP_VIDEO_RECORDING)
+          post { updateGestures() }
+          finishMultiCamera()
+          return@start
+        }
+        keepScreenOn = false
+        rootView?.keepScreenOn = false
+        portraitProcessor?.let { it.holdTimeline = false; it.resetTimeline() }
+        playSound(android.media.MediaActionSound.STOP_VIDEO_RECORDING)
+        post { updateGestures() }
+        val ok = RecordedClip.hasVideoSample(file)
+        emitRecordingFinished(
+          mapOf(
+            "path" to if (ok) file.absolutePath else null,
+            "durationMs" to event.recordingStats.recordedDurationNanos / 1_000_000.0,
+            "slowMotion" to (mode == "slowmo"),
+            "error" to (routingFailure ?: if(!ok) "No playable video frames were recorded" else if (event.hasError()) "Recorder error ${event.error}" else null),
+          ),
+        )
+        if (mode == "dual" && dualComposed) {
+          dualComposed = false
+          scheduleRebind(150)
+        }
+      }
+    }
+    }catch(e:Exception){
+      keepScreenOn=false;rootView?.keepScreenOn=false
+      portraitProcessor?.let { it.holdTimeline=false;it.resetTimeline() }
+      updateGestures();throw e
+    }
+  }
+
+  fun stopRecording() {
+    if(startingRec || pendingDualRecord){cancelPendingStart();return}
+    if (ownRec != null) { stopOwnRecording(); return }
+    // Stopped while switching cameras: finish with the pieces recorded so far
+    if (segmentSwitching && recording == null) { stopAfterSwitch = true; return }
+    recording?.stop()
+  }
+
+  private var stopAfterSwitch = false
+
+  private var persistentRec = false
+
+  /* ---------------- multi-camera video (switch front/back mid-recording) ---------------- */
+  private val segments = ArrayList<File>()
+  private val segmentDurUs = ArrayList<Long>()
+  private var segmentMs = 0.0
+  private var segmentSwitching = false
+  private var sessionRotation = android.view.Surface.ROTATION_0
+
+  /** After the other camera is bound, start the next piece (retries while the camera opens). */
+  private fun continueAfterSwitch(tries: Int = 0) {
+    if(stopAfterSwitch || !active || !isAttachedToWindow){
+      stopAfterSwitch=false;segmentSwitching=false;keepScreenOn=false;rootView?.keepScreenOn=false;finishMultiCamera();return
+    }
+    val vc = videoCapture
+    val open = camera?.cameraInfo?.cameraState?.value?.type == androidx.camera.core.CameraState.Type.OPEN
+    if (vc == null || camera == null || !open) {
+      if (tries < 100) postDelayed({ continueAfterSwitch(tries + 1) }, 40)
+      else { segmentSwitching = false; finishMultiCamera() }
+      return
+    }
+    segmentSwitching = false
+    if (stopAfterSwitch) {
+      stopAfterSwitch = false
+      keepScreenOn = false
+      rootView?.keepScreenOn = false
+      playSound(android.media.MediaActionSound.STOP_VIDEO_RECORDING)
+      updateGestures()
+      finishMultiCamera()
+      return
+    }
+    beginRecording(vc, continuing = true)
+    emitRecordingState(mapOf("paused" to false))
+  }
+
+  /** Joins the pieces with Media3 Transformer: one video, same size and orientation throughout. */
+  @androidx.annotation.OptIn(markerClass = [androidx.media3.common.util.UnstableApi::class])
+  private fun finishMultiCamera() {
+    val parts = ArrayList(segments)
+    segments.clear()
+    val dur = segmentMs
+    if (parts.isEmpty()) {
+      emitRecordingFinished(mapOf("path" to null, "durationMs" to 0.0, "slowMotion" to false, "error" to "Nothing was recorded"))
       return
     }
     if (parts.size == 1) {
