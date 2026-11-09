@@ -1,18 +1,13 @@
-iCam live video and Xiaomi rear-screen update
+iCam stabilization replacement and wide-preview update
 
-Install: npm install
-Checks: npm run typecheck; node scripts/check-photo-look.cjs; node scripts/check-photo-smoothing.cjs; node scripts/check-mode-groups.cjs; node scripts/check-rear-screen.cjs; node scripts/check-xiaomi-rear.cjs; node scripts/check-live-video.cjs
+Install dependencies: npm install
+Typecheck: npm run typecheck
+Regression checks: node scripts/check-live-video.cjs; node scripts/check-photo-look.cjs; node scripts/check-photo-smoothing.cjs; node scripts/check-mode-groups.cjs; node scripts/check-rear-screen.cjs; node scripts/check-xiaomi-rear.cjs
+Preservation: node scripts/check-ui-preservation.cjs <base-sha> --allow-capture-quality --allow-live-recording --allow-hdr-processing --allow-stabilization-rebuild
+Android: npx expo prebuild --platform android --clean --no-install, then android/gradlew :icamera:compileDebugKotlin :icamera:testDebugUnitTest
 
-Video processing and crop now run while recording. Stop no longer launches a stabilization re-export. Encoder finalization and gallery copy remain; camera-switch clips may still need joining. HDR uses supported camera-side live stabilization and stays 10-bit. Use SDR for live Horizon lock. The shader processor refuses HDR input.
+The old stabilization implementation and dormant post-recording exporters are removed. SteadyFrame.kt contains the replacement. Every native viewfinder fits its stream. SENSOR replaces screen-shaped Full photo cropping; front photos use the selected lens's widest supported zoom at 1x. Hardware common-stream stabilization is preferred, with no stacked software crop. The live fallback processes the current frame with one shared sensor-space transform and small fixed margins. Recording finishes directly without a stabilization export after Stop.
 
-The Xiaomi-style rear UI appears only when a built-in rear-sized display is detected. Casting / external / virtual screens do not expose the switch. Rear mode mirrors preview, photos and video, and has a chevron back to the front screen. Access tries normal Android, granted system privilege, authorised Shizuku and explicitly opted-in root. System integration files are included; the app cannot grant itself privileges just by being copied into /system/app.
+Horizon preserves a fixed crop budget; large tilts may show black corners. HDR keeps the native 10-bit path. The synchronous low-resolution motion readback must be profiled on device. See design/stabilization-validation.md for algorithm, framing policy and limits. Do not treat deterministic tests as proof of iPhone-level stabilization or a tested phone APK.
 
-The source already includes all changes. No patch is needed. The live GL processor and rear-routing classes compile against Android dependencies and policy tests are included. A full APK build and physical-device verification are still outstanding. No APK or signing credentials are included.
-
-Recording/preview parity update (2026-11-08):
-- Prefer CameraX shared preview stabilization where supported, rather than assuming video-only EIS covers the custom effect input. SDR otherwise retains live GPU correction.
-- Preview and recording use the same per-frame rotation crop envelope, including encoder attachment to an already-running preview. One image-motion correction feeds both outputs.
-- Capture-result monitoring enables residual image correction if requested shared stabilization does not activate. Correction margin ramps in rather than snapping.
-- Stop and retain the clip with an explicit error if no processed frames reach the encoder after two active recording seconds. Pause/resume starts a fresh audit interval.
-- Effect rejection clears effect state and retries a conservative native recording profile. UI shows the negotiated frame rate.
-Validation: TypeScript, preservation/shader/static checks, 45 pure Kotlin policy/geometry/tracking tests, and standalone Android GL processor compilation passed. Full Expo Android build and phone recordings have not been verified. The submitted 15069.mp4 is a night 720x1280/60 fps walking clip; it does not expose the camera's stabilization metadata. No claim of measured improvement in a new phone recording is made.
+Rear-screen routes, mirrored selfies, photo smoothing, manual controls and other app features remain included. No signing credentials are distributed.

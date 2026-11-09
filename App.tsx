@@ -298,8 +298,8 @@ function CameraScreen() {
     }
     return base;
   }, [zoomRange, maxZoom, telephoto, caps, lensId, facing, mode, rearLenses]);
-  // Output width/height (portrait) for the chosen aspect; 'full' matches the screen
-  const aspectRatio = aspect === '4:3' ? 3 / 4 : aspect === '16:9' ? 9 / 16 : aspect === '1:1' ? 1 : win.width / win.height;
+  // Full sensor preserves the 4:3 field instead of cropping it to the phone screen.
+  const aspectRatio = aspect === '4:3' ? 3 / 4 : aspect === '16:9' ? 9 / 16 : aspect === '1:1' ? 1 : 3 / 4;
 
   useEffect(() => {
     setZoom((z) => Math.min(z, maxZoom));
@@ -411,7 +411,7 @@ function CameraScreen() {
     const original = `file://${paths[0]}`;
     setLast({ uri: original, original, isVideo: false });
     // everything the job needs is fixed now (later setting changes don't affect this shot)
-    const shot = { mode, facing, zoom, zoomMax: zoomRange.max, smoothing: captureSmoothing(mode, photoSmoothing, smoothing), filter, aspectRatio: screens.onSecondary && aspect === 'full' ? rearCameraFrame(win.width,win.height).width / win.height : aspectRatio, bokeh, captureReq, macroKind: caps?.macroKind };
+    const shot = { mode, facing, zoom, zoomMax: zoomRange.max, smoothing: captureSmoothing(mode, photoSmoothing, smoothing), filter, aspectRatio, bokeh, captureReq, macroKind: caps?.macroKind };
     const flip = needsFlip(meta0?.jpegMirrored);
 
     const job = async () => {
@@ -680,7 +680,7 @@ function CameraScreen() {
                 : `${video.resolution === '4k' ? '4K' : '1080p'} · ${video.fps}${video.stabilization === 'horizon' ? ' · LOCK' : ''}`;
 
   const topStatus = mode === 'action' ? 'ACTION' : mode === 'video' ? 'VIDEO' : mode === 'macro' ? 'MACRO' : badge;
-  const qualityLabel = mode === 'action' ? `${ready?.recordingFps ?? (facing === 'front' ? 30 : 60)} FPS` : mode === 'pro' && proVideo ? '4K · 60' : mode === 'video' ? (video.resolution === '4k' ? '4K' : '1080p') + ' · ' + (ready?.recordingFps ?? video.fps) : aspect === 'full' ? 'FULL' : aspect;
+  const qualityLabel = mode === 'action' ? `${ready?.recordingFps ?? (facing === 'front' ? 30 : 60)} FPS` : mode === 'pro' && proVideo ? '4K · 60' : mode === 'video' ? (video.resolution === '4k' ? '4K' : '1080p') + ' · ' + (ready?.recordingFps ?? video.fps) : aspect === 'full' ? 'SENSOR' : aspect;
 
   return (
     <View style={styles.root}>
@@ -731,8 +731,8 @@ function CameraScreen() {
           })()}
           nightExtension={photo.vendorNight}
           dualPip={pip}
-          aspect={aspect === '16:9' || aspect === 'full' ? '16:9' : '4:3'}
-          previewFit={isPhotoShot ? aspect !== 'full' : mode !== 'dual'}
+          aspect={aspect === '16:9' ? '16:9' : '4:3'}
+          previewFit={true}
           bokeh={bokeh}
           onPortraitStatus={(e) => {
             if (e.nativeEvent.blur === false) {

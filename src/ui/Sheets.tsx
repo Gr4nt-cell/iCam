@@ -107,7 +107,7 @@ export function SettingsSheet(p: SettingsProps) {
               </Row>
               <Row
                 label="Stabilization"
-                hint={p.video.hdr ? 'HDR uses supported phone stabilization while recording. Horizon lock requires HDR off.' : p.video.stabilization === 'horizon' ? 'Keeps the horizon level; extra crop is applied only as needed for rotation.' : 'Stabilization and cropping run while recording. Selfies keep a smaller crop; Stop only finalizes the encoded clip.'}
+                hint={p.video.hdr ? 'HDR uses supported phone stabilization while recording. Horizon lock requires HDR off.' : p.video.stabilization === 'horizon' ? 'Fixed wide framing; large tilts can show black corners rather than adding more zoom.' : 'Shared phone stabilization is preferred. The rebuilt live fallback uses one small fixed margin for preview and recording. Stop only finalizes the clip.'}
               >
                 <Segmented
                   options={p.video.hdr ? ['off', 'standard', 'cinematic'] : ['off', 'standard', 'cinematic', 'horizon']}
