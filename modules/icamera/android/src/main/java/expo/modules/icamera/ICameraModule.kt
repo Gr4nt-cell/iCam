@@ -73,7 +73,11 @@ class ICameraModule : Module() {
       val activity = appContext.currentActivity ?: throw IllegalStateException("No activity")
       val base = if (isVideo) android.provider.MediaStore.Video.Media.EXTERNAL_CONTENT_URI
         else android.provider.MediaStore.Images.Media.EXTERNAL_CONTENT_URI
-      val uri = android.content.ContentUris.withAppendedId(base, id.toLong())
+      val uri = if(id.startsWith("file://")){
+        val file=java.io.File(android.net.Uri.parse(id).path ?: throw IllegalArgumentException("Invalid capture path"))
+        require(file.isFile) { "Capture file is no longer available" }
+        androidx.core.content.FileProvider.getUriForFile(activity,activity.packageName+".FileSystemFileProvider",file)
+      }else android.content.ContentUris.withAppendedId(base,id.toLong())
       val view = android.content.Intent(android.content.Intent.ACTION_VIEW).apply {
         setDataAndType(uri, if (isVideo) "video/*" else "image/*")
         addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
@@ -120,34 +124,42 @@ class ICameraModule : Module() {
     AsyncFunction("finishCapture") { path: String, isVideo: Boolean ->
       val act = appContext.currentActivity ?: throw IllegalStateException("No activity")
       val src = java.io.File(android.net.Uri.parse(path).path ?: path.removePrefix("file://"))
+      require(src.isFile && src.length()>0) { "Capture file is empty or missing" }
       val req = act.intent
       @Suppress("DEPRECATION")
       val out: android.net.Uri? = req?.getParcelableExtra(android.provider.MediaStore.EXTRA_OUTPUT)
         ?: req?.clipData?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.uri
       val result = android.content.Intent()
       if (out != null) {
-        act.contentResolver.openOutputStream(out, "w")?.use { o -> src.inputStream().use { it.copyTo(o) } }
+        requireNotNull(act.contentResolver.openOutputStream(out, "w")) { "Could not open the destination" }.use { o -> src.inputStream().use { it.copyTo(o) } }
         result.data = out
       } else if (isVideo) {
         // No destination given: store it in Movies/iCam and return its content address
         val values = android.content.ContentValues().apply {
           put(android.provider.MediaStore.Video.Media.DISPLAY_NAME, src.name)
           put(android.provider.MediaStore.Video.Media.MIME_TYPE, "video/mp4")
-          if (android.os.Build.VERSION.SDK_INT >= 29) put(android.provider.MediaStore.Video.Media.RELATIVE_PATH, "Movies/iCam")
+          if (android.os.Build.VERSION.SDK_INT >= 29) {
+            put(android.provider.MediaStore.Video.Media.RELATIVE_PATH,"Movies/iCam")
+            put(android.provider.MediaStore.Video.Media.IS_PENDING,1)
+          }
         }
         val uri = act.contentResolver.insert(android.provider.MediaStore.Video.Media.EXTERNAL_CONTENT_URI, values)
           ?: throw IllegalStateException("Couldn't save the video")
-        act.contentResolver.openOutputStream(uri, "w")?.use { o -> src.inputStream().use { it.copyTo(o) } }
+        try{
+          requireNotNull(act.contentResolver.openOutputStream(uri,"w")) { "Could not open the video destination" }.use { o->src.inputStream().use{it.copyTo(o)} }
+          if(android.os.Build.VERSION.SDK_INT>=29)act.contentResolver.update(uri,android.content.ContentValues().apply{put(android.provider.MediaStore.Video.Media.IS_PENDING,0)},null,null)
+        }catch(e:Exception){act.contentResolver.delete(uri,null,null);throw e}
         result.data = uri
         result.addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
       } else {
         // No destination given: the convention is a small preview bitmap in "data"
-        val opts = android.graphics.BitmapFactory.Options().apply { inSampleSize = 8 }
-        val bmp = android.graphics.BitmapFactory.decodeFile(src.absolutePath, opts)
+        val bounds=android.graphics.BitmapFactory.Options().apply{inJustDecodeBounds=true}
+        android.graphics.BitmapFactory.decodeFile(src.absolutePath,bounds)
+        val opts=android.graphics.BitmapFactory.Options().apply { inSampleSize=CaptureOutputPolicy.thumbnailSample(bounds.outWidth,bounds.outHeight) }
+        val bmp=requireNotNull(android.graphics.BitmapFactory.decodeFile(src.absolutePath,opts)) { "The captured image could not be decoded" }
         result.putExtra("data", bmp)
       }
-      act.setResult(android.app.Activity.RESULT_OK, result)
-      act.finish()
+      act.runOnUiThread { act.setResult(android.app.Activity.RESULT_OK,result);act.finish() }
       true
     }
 
@@ -156,7 +168,7 @@ class ICameraModule : Module() {
       act.setResult(android.app.Activity.RESULT_CANCELED)
       act.finish()
       true
-    }
+    }.runOnQueue(expo.modules.kotlin.functions.Queues.MAIN)
 
     Function("aiAvailable") {
       val ctx = appContext.reactContext ?: return@Function false
@@ -215,8 +227,8 @@ class ICameraModule : Module() {
         )
       }
 
-      AsyncFunction("capture") { view: ICameraView, count: Int, evShift: Double, shortEv: Double ->
-        view.captureBurst(count, evShift, shortEv)
+      AsyncFunction("capture") { view: ICameraView, count: Int, evShift: Double, shortEv: Double, requestId: String ->
+        view.captureBurst(count, evShift, shortEv, requestId)
       }.runOnQueue(expo.modules.kotlin.functions.Queues.MAIN)
       AsyncFunction("movePip") { view: ICameraView, x: Double, y: Double ->
         view.movePip(x.toFloat(), y.toFloat())

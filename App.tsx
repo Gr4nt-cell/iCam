@@ -49,6 +49,7 @@ import {
   type ShutterKind,
   Slider,
 } from './src/ui/Controls';
+import { PendingCapture, PhotoJobs } from './src/camera/captureSession';
 import { clearSettings, loadDeviceFlags, loadSettings, saveDeviceFlags, saveSettings } from './src/settings';
 import { DualPipFrame } from './src/ui/DualPip';
 import { ErrorBoundary } from './src/ui/ErrorBoundary';
@@ -60,6 +61,7 @@ type Flash = 'off' | 'auto' | 'on';
 type Last = { uri?: string; original?: string; isVideo: boolean; info?: string; assetId?: string };
 type GalleryPref = 'viewer' | 'gallery' | 'ask';
 type BurstResult = {
+  requestId: string;
   paths: string[];
   evs?: number[];
   meta?: PhotoMeta[];
@@ -95,6 +97,7 @@ function usePermissions() {
   }, []);
 
   const requestAll = useCallback(async () => {
+    try {
     const res = await PermissionsAndroid.requestMultiple([
       PermissionsAndroid.PERMISSIONS.CAMERA,
       PermissionsAndroid.PERMISSIONS.RECORD_AUDIO,
@@ -102,10 +105,13 @@ function usePermissions() {
     setCamera(res[PermissionsAndroid.PERMISSIONS.CAMERA] === PermissionsAndroid.RESULTS.GRANTED);
     setMic(res[PermissionsAndroid.PERMISSIONS.RECORD_AUDIO] === PermissionsAndroid.RESULTS.GRANTED);
     if (!mediaPerm?.granted) await requestMedia().catch(() => {});
-  }, [mediaPerm, requestMedia]);
+    }catch{await refresh().catch(()=>setCamera(false));}
+  }, [mediaPerm, requestMedia, refresh]);
 
   useEffect(() => {
-    refresh().then(requestAll);
+    refresh().then(requestAll).catch(() => setCamera(false));
+    const sub=AppState.addEventListener('change', state=>{if(state==='active')refresh().catch(()=>{});});
+    return ()=>sub.remove();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -175,6 +181,9 @@ function CameraScreen() {
   const [deckHeight, setDeckHeight] = useState(200);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [viewerOpen, setViewerOpen] = useState(false);
+  const captureEpoch=useRef(0);
+  const shutterInFlight=useRef(false);
+  const photoSequence=useRef(0);
   const [appActive, setAppActive] = useState(true);
 
   /* ---------- remembered settings ---------- */
@@ -194,6 +203,8 @@ function CameraScreen() {
     aspect: Aspect;
     bokeh: number;
     galleryPref: GalleryPref;
+    flash?: Flash;
+    timer?: 0 | 3 | 10;
     videoV2?: boolean;
     palmShutter?: boolean;
     shutterSound?: boolean;
@@ -207,6 +218,8 @@ function CameraScreen() {
         if (v.video) setVideo((x) => ({ ...x, ...v.video, stabilization: restoreStabilization(v.video?.stabilization) }));
         if (v.mode) setMode(v.mode === 'pvideo' ? 'video' : v.mode); // Portrait video was removed
         if (typeof v.mirrorSelfie === 'boolean') setMirrorSelfie(v.mirrorSelfie);
+        if (v.flash === 'off' || v.flash === 'auto' || v.flash === 'on')setFlash(v.flash);
+        if (v.timer === 0 || v.timer === 3 || v.timer === 10)setTimer(v.timer);
         if (v.filter === 'natural' || v.filter === 'mono') setFilter(v.filter);
         if (typeof v.palmShutter === 'boolean') setPalmShutter(v.palmShutter);
         if (typeof v.shutterSound === 'boolean') setShutterSound(v.shutterSound);
@@ -225,16 +238,16 @@ function CameraScreen() {
   }, []);
   useEffect(() => {
     if (!settingsLoaded) return;
-    if (!remember) return;
+    if (!remember) {clearSettings();return;}
     const t = setTimeout(
-      () => saveSettings({ videoV2: true, palmShutter, shutterSound, remember, mode, photo, video, mirrorSelfie, filter, smoothing, photoSmoothing, pip, manual, brightness, shadows, aspect, bokeh, galleryPref }),
+      () => saveSettings({ videoV2: true, flash, timer, palmShutter, shutterSound, remember, mode, photo, video, mirrorSelfie, filter, smoothing, photoSmoothing, pip, manual, brightness, shadows, aspect, bokeh, galleryPref }),
       400,
     );
     return () => clearTimeout(t);
-  }, [settingsLoaded, remember, mode, photo, video, mirrorSelfie, filter, smoothing, photoSmoothing, pip, manual, brightness, shadows, aspect, bokeh, galleryPref, palmShutter, shutterSound]);
+  }, [settingsLoaded, remember, flash, timer, mode, photo, video, mirrorSelfie, filter, smoothing, photoSmoothing, pip, manual, brightness, shadows, aspect, bokeh, galleryPref, palmShutter, shutterSound]);
 
   useEffect(() => {
-    const sub = AppState.addEventListener('change', (s) => setAppActive(s === 'active'));
+    const sub = AppState.addEventListener('change', (s) => { setAppActive(s === 'active');if(s!=='active'){captureEpoch.current++;setCountdown(0);} });
     return () => sub.remove();
   }, []);
 
@@ -268,6 +281,10 @@ function CameraScreen() {
       }),
     [caps, weakGpu],
   );
+
+  useEffect(()=>{
+    if(caps && !recording && !busy && countdown===0 && !visibleModes.some(item=>item.key===mode))setMode(isVideoMode?'video':'photo');
+  },[caps,visibleModes,mode,recording,busy,countdown,isVideoMode]);
 
   // Zoom reach from the lens data: telephoto phones go far past the hardware zoom (digital, with
   // detail reconstruction for photos); phones without a telephoto stop at 2×
@@ -346,37 +363,30 @@ function CameraScreen() {
 
   const changeMode = useCallback(
     (m: CaptureMode) => {
-      if (recording || m === mode) return;
+      if (shutterInFlight.current || recording || busy || countdown > 0 || m === mode) return;
       Haptics.selectionAsync();
       setMode(m);
     },
-    [recording, mode],
+    [recording, busy, countdown, mode],
   );
 
   const saveToGallery = useCallback(
     async (uri: string): Promise<string | undefined> => {
-      if (!perms.media) return undefined;
       const asset = await MediaLibrary.createAssetAsync(uri);
-      return asset?.id;
+      if(!asset?.id)throw new Error('The gallery did not save this capture');
+      return asset.id;
     },
     [perms.media],
   );
 
   /* ---------- burst capture plumbing (native emits onPhotosCaptured) ---------- */
-  const burstWaiter = useRef<((r: BurstResult) => void) | null>(null);
-  const captureBurst = useCallback(
-    (count: number, evShift: number, shortEv: number) =>
-      new Promise<BurstResult>((resolve, reject) => {
-        const c = cam.current;
-        if (!c) return reject(new Error('Camera not ready'));
-        burstWaiter.current = resolve;
-        c.capture(count, evShift, shortEv).catch((e) => {
-          burstWaiter.current = null;
-          reject(e);
-        });
-      }),
-    [],
-  );
+  const burstWaiter = useRef(new PendingCapture<BurstResult>());
+  useEffect(()=>()=>{captureEpoch.current++;burstWaiter.current.cancel();},[]);
+  const captureBurst = useCallback((count:number,evShift:number,shortEv:number)=>{
+    const camera=cam.current;
+    if(!camera)return Promise.reject(new Error('Camera not ready'));
+    return burstWaiter.current.start(id=>camera.capture(count,evShift,shortEv,id));
+  },[]);
 
   /* ---------- capture: photo / night / pro photo ---------- */
   /** Front camera: does the JPEG need flipping to match the mirror setting? (1 = phone already mirrored it) */
@@ -385,7 +395,7 @@ function CameraScreen() {
 
   // Photos are processed one after another in the background, so the shutter is free again as soon
   // as the camera has the frame (shot-to-shot no longer waits for processing and saving)
-  const procQueue = useRef<Promise<void>>(Promise.resolve());
+  const procQueue = useRef(new PhotoJobs());
   const pendingJobs = useRef(0);
 
   const shootPhoto = useCallback(async () => {
@@ -410,6 +420,7 @@ function CameraScreen() {
       return;
     }
 
+    const shotId=++photoSequence.current;
     const original = `file://${paths[0]}`;
     setLast({ uri: original, original, isVideo: false });
     // everything the job needs is fixed now (later setting changes don't affect this shot)
@@ -459,9 +470,9 @@ function CameraScreen() {
           flashToast('Sending photo…');
           if (await finishCapture(uri, false)) return;
         }
-        const assetId = await saveToGallery(uri);
-        setLast({ uri, original, isVideo: false, info: (look ? `${info} · ${look}` : info) + zoomNote, assetId });
-        flashToast('Saved');
+        const assetId = await saveToGallery(uri).catch(()=>undefined);
+        if(shotId===photoSequence.current)setLast({ uri, original, isVideo: false, info: (look ? `${info} · ${look}` : info) + zoomNote, assetId });
+        flashToast(assetId ? 'Saved' : 'Photo kept in app; gallery save failed');
       } catch (e: any) {
         // Minimal fallback that still honours selfie mirroring and aspect ratio
         const fallback = await processSingle(paths[0], {
@@ -471,19 +482,21 @@ function CameraScreen() {
           meta: meta0,
           mirror: flip,
         }).catch(() => original);
-        await saveToGallery(fallback).catch(() => {});
-        flashToast(`Saved original — ${String(e?.message ?? e).slice(0, 80)}`, 4000);
+        if(shot.captureReq==='image' && await finishCapture(fallback,false).catch(()=>false))return;
+        const assetId=await saveToGallery(fallback).catch(()=>undefined);
+        if(shotId===photoSequence.current)setLast({uri:fallback,original,isVideo:false,assetId});
+        flashToast(assetId ? `Saved fallback — ${String(e?.message ?? e).slice(0,80)}` : 'Photo kept in app; gallery save failed',4000);
       }
     };
 
     pendingJobs.current += 1;
     setProcessing(true);
-    procQueue.current = procQueue.current.then(job).finally(() => {
+    const queued = procQueue.current.add(job).catch((e)=>flashToast(`Photo processing failed: ${String(e?.message ?? e)}`,4000)).finally(() => {
       pendingJobs.current -= 1;
       if (pendingJobs.current === 0) setProcessing(false);
     });
     // a photo requested by another app finishes before anything else can happen
-    if (captureReq === 'image') await procQueue.current;
+    if (captureReq === 'image') await queued;
     setBusy(false);
   }, [busy, ready, mode, facing, mirrorSelfie, captureReq, zoom, zoomRange, smoothing, photoSmoothing, screens.onSecondary, filter, aspectRatio, bokeh, caps, captureBurst, saveToGallery, flashToast]);
 
@@ -510,15 +523,15 @@ function CameraScreen() {
     if (!recording || paused) return;
     const id = setInterval(() => setRecSeconds((s) => s + 1), 1000);
     return () => clearInterval(id);
-  }, [recording, paused]);
+  }, [recording, paused, flashToast]);
 
   const togglePause = useCallback(() => {
     const c = cam.current;
     if (!c || !recording) return;
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    if (paused) c.resumeRecording().catch(() => {});
-    else c.pauseRecording().catch(() => {});
-    setPaused(!paused);
+    const action=paused ? c.resumeRecording() : c.pauseRecording();
+    action.catch(()=>flashToast('Could not change recording state'));
+    // Native Pause/Resume events are authoritative.
   }, [recording, paused]);
 
   // Front/back can be switched mid-recording in Video and Action (the clip continues)
@@ -526,53 +539,38 @@ function CameraScreen() {
   const canFlipWhileRecording = !video.hdr && (mode === 'video' || mode === 'action');
 
   const runCountdown = useCallback(async (secs: number) => {
-    for (let t = secs; t > 0; t--) {
-      setCountdown(t);
-      Haptics.selectionAsync();
-      await sleep(1000);
+    const epoch=captureEpoch.current;
+    for(let t=secs;t>0;t--){
+      if(epoch!==captureEpoch.current)throw new Error('Capture cancelled');
+      setCountdown(t);Haptics.selectionAsync();await sleep(1000);
     }
+    if(epoch!==captureEpoch.current)throw new Error('Capture cancelled');
     setCountdown(0);
-  }, []);
-
-  const onShutter = useCallback(async () => {
-    if (screens.switching) return;
-    if (isVideoMode) {
-      // timer delays the start of a recording (stopping is immediate)
-      if (!recording && timer > 0) await runCountdown(timer);
-      return toggleRecording();
-    }
-    if (timer > 0) {
-      for (let t = timer; t > 0; t--) {
-        setCountdown(t);
-        Haptics.selectionAsync();
-        await sleep(1000);
-      }
-      setCountdown(0);
-    }
-    return shootPhoto();
-  }, [isVideoMode, recording, timer, runCountdown, toggleRecording, shootPhoto, screens.switching]);
-
-  // Palm shutter → 3 s timer then shoot
-  const onGesture = useCallback(
-    async () => {
-      if (busy || countdown > 0 || recording || isVideoMode) return;
-      flashToast('Palm detected', 1200);
-      await runCountdown(3);
-      shootPhoto();
-    },
-    [busy, countdown, recording, isVideoMode, flashToast, runCountdown, shootPhoto],
-  );
+  },[]);
+  const triggerCapture = useCallback(async(delay:number)=>{
+    if(screens.switching || shutterInFlight.current || !appActive || busy)return;
+    shutterInFlight.current=true;
+    try{
+      if(!recording && delay>0)await runCountdown(delay);
+      return await (isVideoMode ? toggleRecording() : shootPhoto());
+    }catch(e){if((e as Error)?.message!=='Capture cancelled')flashToast(String((e as Error)?.message ?? e),4000);}
+    finally{shutterInFlight.current=false;setCountdown(0);}
+  },[screens.switching,appActive,busy,recording,isVideoMode,runCountdown,toggleRecording,shootPhoto,flashToast]);
+  const onShutter=useCallback(()=>triggerCapture(timer),[triggerCapture,timer]);
+  const onGesture=useCallback(async()=>{
+    if(busy || countdown>0 || recording || isVideoMode)return;
+    flashToast('Palm detected',1200);await triggerCapture(3);
+  },[busy,countdown,recording,isVideoMode,flashToast,triggerCapture]);
 
  /* ---------- open the last capture: iCam viewer, gallery app, or "Open with" ---------- */
   const openLast = useCallback(async () => {
     if (!last) return;
-    if (!last.assetId) {
-      flashToast('Still saving — try again in a moment');
-      return;
-    }
-    const ok = await openMedia(last.assetId, last.isVideo, false);
+    if(!last.isVideo && last.uri && galleryPref==='viewer'){setViewerOpen(true);return;}
+    const source=last.assetId ?? last.uri;
+    if(!source){flashToast('Still saving — try again in a moment');return;}
+    const ok = await openMedia(source, last.isVideo, galleryPref==='ask');
     if (!ok) flashToast('No gallery app is available to open it');
-  }, [last, flashToast]);
+  }, [last, galleryPref, flashToast]);
 
   const viewport = cameraViewport(win.width, win.height, isVideoMode, aspect, insets.top, insets.bottom);
 
@@ -731,14 +729,11 @@ function CameraScreen() {
             if (r.mode === 'slowmo' && r.slowMotionFps) flashToast(`Slow motion · ${r.slowMotionFps} fps`);
           }}
           onError={(e) => {
-            setBusy(false);
-            setRecording(false);
+            // Notices (stabilization/fallback/control warnings) do not end a capture.
             flashToast(e.nativeEvent.message, 4000);
           }}
           onPhotosCaptured={(e) => {
-            const w = burstWaiter.current;
-            burstWaiter.current = null;
-            w?.(e.nativeEvent);
+            burstWaiter.current.complete(e.nativeEvent.requestId,e.nativeEvent);
           }}
           onRecordingState={(e) => {
             const st = e.nativeEvent as { paused?: boolean; merging?: boolean; processing?: boolean };
@@ -756,7 +751,7 @@ function CameraScreen() {
             setBusy(false);
             setRecording(false);
             setPaused(false);
-            setProcessing(false);
+            setProcessing(pendingJobs.current>0);
             const { path, durationMs, slowMotion, error } = e.nativeEvent;
             const extra = (e.nativeEvent as { extraPaths?: string[] }).extraPaths ?? [];
             for (const x of extra) await saveToGallery(`file://${x}`).catch(() => undefined);
@@ -765,17 +760,18 @@ function CameraScreen() {
               flashToast(error ?? 'Recording failed', 4000);
               return;
             }
-            if (captureReq === 'video' && (await finishCapture(`file://${path}`, true))) return;
             try {
+              if (captureReq === 'video' && (await finishCapture(`file://${path}`, true))) return;
               const assetId = await saveToGallery(`file://${path}`);
               setLast({
-                isVideo: true,
+                uri: `file://${path}`, isVideo: true,
                 assetId,
                 info: `${slowMotion ? 'Slow motion · ' : mode === 'dual' ? 'Dual · ' : ''}${Math.round(durationMs / 1000)} s`,
               });
               flashToast(slowMotion ? 'Slow-motion video saved' : 'Video saved');
             } catch {
-              flashToast('Could not save video');
+              setLast({uri:`file://${path}`,isVideo:true});
+              flashToast('Video kept in app; could not finish saving');
             }
           }}
         />
@@ -821,7 +817,7 @@ function CameraScreen() {
           {screens.available && <Pressable accessibilityRole="button" accessibilityLabel="Switch camera screen" disabled={recording || busy || processing || countdown > 0 || screens.switching} onPress={screens.toggleScreen} style={styles.controlButton}>
             <MaterialCommunityIcons name="monitor-cellphone" size={18} color="#ffe16b" />
           </Pressable>}
-          <Pressable accessibilityRole="button" accessibilityLabel="Camera settings" hitSlop={8} onPress={() => setSettingsOpen(true)} style={styles.controlButton}>
+          <Pressable accessibilityRole="button" accessibilityLabel="Camera settings" hitSlop={8} disabled={recording || busy || countdown > 0} onPress={() => {if(!shutterInFlight.current)setSettingsOpen(true);}} style={styles.controlButton}>
             <GlassCircle size={34}><MaterialCommunityIcons name="tune-variant" size={18} color="#fff" /></GlassCircle>
           </Pressable>
           </Glass>
@@ -942,9 +938,10 @@ function CameraScreen() {
               ) : (
                 <IconButton
                   icon="camera-flip-outline"
+                  disabled={busy || countdown > 0 || screens.switching || (recording && !canFlipWhileRecording)}
                   size={44}
                   onPress={() => {
-                    if (recording && !canFlipWhileRecording) return;
+                    if (shutterInFlight.current || busy || countdown > 0 || (recording && !canFlipWhileRecording)) return;
                     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
                     setZoom(1);
                     setLensId(null);
@@ -1011,6 +1008,9 @@ function CameraScreen() {
           clearSettings();
           setRemember(false);
           setFlash('off'); setTimer(0);
+          setSmoothing(0);setPhotoSmoothing(DEFAULT_PHOTO_SMOOTHING);setBokeh(.6);
+          setPalmShutter(false);setShutterSound(true);setProVideo(false);setGalleryPref('viewer');
+          setZoom(1);setLensId(null);setMode('photo');
           setPhoto({ frames: 4, vendorNight: true, highlightBracket: true });
           setVideo({ resolution: '1080p', fps: 30, hdr: false, stabilization: 'cinematic' });
           setMirrorSelfie(true);
@@ -1099,7 +1099,7 @@ const styles = StyleSheet.create({
   bottom: { position: 'absolute', left: 0, bottom: 0, alignItems: 'center', gap: 6, zIndex: 8 },
   zoomFloat: { alignSelf: 'center', alignItems: 'center', marginBottom: 2 },
   shutterRow: { height: 72, alignItems: 'center', justifyContent: 'center', position: 'relative' },
-  shutterDeck: { alignSelf: 'center', maxWidth: 700, backgroundColor: 'rgba(0,0,0,0.94)', paddingTop: 4, paddingBottom: 2, gap: 4 },
+  shutterDeck: { alignSelf: 'center', backgroundColor: 'rgba(0,0,0,0.94)', paddingTop: 4, paddingBottom: 2, gap: 4 },
   nightReadyWrap: { alignSelf: 'center', marginTop: -2 },
   nightReady: { flexDirection: 'row', alignItems: 'center', gap: 7, paddingHorizontal: 12, height: 30 },
   nightReadyText: { color: '#fff', fontSize: 11, fontWeight: '700' },

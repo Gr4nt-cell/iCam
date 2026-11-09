@@ -30,8 +30,12 @@ internal object RearDisplayRouter {
   private fun <T> onMain(delay: Long=0, block: ()->T): T {
     check(Looper.myLooper()!=Looper.getMainLooper()) { "Display moves must use the background queue" }
     val result=CompletableFuture<T>()
-    main.postDelayed({try{result.complete(block())}catch(e:Exception){result.completeExceptionally(e)}},delay)
-    return result.get(4,TimeUnit.SECONDS)
+    val action=Runnable { if(!result.isDone)try{result.complete(block())}catch(e:Exception){result.completeExceptionally(e)} }
+    main.postDelayed(action,delay)
+    try{return result.get(4,TimeUnit.SECONDS)}finally{
+      if(!result.isDone)result.cancel(false)
+      main.removeCallbacks(action)
+    }
   }
   private fun cameras(view: View, block: (ICameraView)->Unit) {
     if(view is ICameraView)block(view)

@@ -12,7 +12,7 @@ const modConfig={...config,modResults:{manifest:{application:[{activity:[main]}]
  for(const c of ['density','screenSize','smallestScreenSize','keyboard','uiMode'])assert(main.$['android:configChanges'].split('|').includes(c));
  const app=fs.readFileSync('App.tsx','utf8');
  assert(app.includes('recording || busy || processing || countdown > 0'));
- assert(app.includes('if (screens.switching) return;'));
+ assert(app.includes('if(screens.switching || shutterInFlight.current || !appActive || busy)return;'));
  assert(app.includes('onScreens={screens.toggleScreen}')&&app.includes('onPress={screens.toggleScreen}'));
  assert(app.includes('active={appActive && !viewerOpen && !screens.switching}'));
  const router=fs.readFileSync('modules/icamera/android/src/main/java/expo/modules/icamera/RearDisplayRouter.kt','utf8');

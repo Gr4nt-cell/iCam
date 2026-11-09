@@ -151,6 +151,7 @@ export type ICameraProps = ViewProps & {
   ) => void;
   onPhotosCaptured?: (
     e: NativeEvent<{
+      requestId: string;
       paths: string[];
       evs?: number[];
       meta?: { orientation: number; width: number; height: number; jpegMirrored?: number }[];
@@ -162,7 +163,7 @@ export type ICameraProps = ViewProps & {
 };
 
 export type ICameraHandle = {
-  capture: (count: number, evShift: number, shortEv: number) => Promise<void>;
+  capture: (count: number, evShift: number, shortEv: number, requestId: string) => Promise<void>;
   startRecording: () => Promise<void>;
   stopRecording: () => Promise<void>;
   pauseRecording: () => Promise<void>;

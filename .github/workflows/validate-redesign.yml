@@ -26,13 +26,14 @@ jobs:
       - name: Audit preserved camera controls
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha || 'HEAD' }}
-        run: node scripts/check-ui-preservation.cjs "$BASE_SHA" --allow-capture-quality --allow-hdr-processing --allow-mode-grouping --allow-static-motion --allow-hardware-tuning --allow-offline-stabilization --allow-photo-smoothing --allow-rear-screen --allow-live-recording --allow-xiaomi-rear --allow-stabilization-rebuild --allow-viewfinder-settings --allow-rear-switch
+        run: node scripts/check-ui-preservation.cjs "$BASE_SHA" --allow-capture-quality --allow-hdr-processing --allow-mode-grouping --allow-static-motion --allow-hardware-tuning --allow-offline-stabilization --allow-photo-smoothing --allow-rear-screen --allow-live-recording --allow-xiaomi-rear --allow-stabilization-rebuild --allow-viewfinder-settings --allow-rear-switch --allow-source-audit
       - run: node scripts/check-photo-look.cjs
       - run: node scripts/check-photo-smoothing.cjs
       - run: node scripts/check-rear-screen.cjs
       - run: node scripts/check-rear-switch.cjs
       - run: node scripts/check-live-video.cjs
       - run: node scripts/check-viewfinder.cjs
+      - run: node scripts/check-source-audit.cjs
       - run: node scripts/check-xiaomi-rear.cjs
       - run: node scripts/check-mode-groups.cjs
       - name: Generate Android project
@@ -40,3 +41,14 @@ jobs:
       - name: Compile camera module and test video tuning
         working-directory: android
         run: ./gradlew :icamera:compileDebugKotlin :icamera:testDebugUnitTest --no-daemon --max-workers=2 -PreactNativeArchitectures=arm64-v8a
+
+      - name: Scan native camera with Android lint
+        working-directory: android
+        run: ./gradlew :icamera:lintDebug --no-daemon --max-workers=2 -PreactNativeArchitectures=arm64-v8a
+      - name: Upload camera lint report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: camera-lint-audit
+          path: modules/icamera/android/build/reports/lint-results-debug.*
+          if-no-files-found: warn
