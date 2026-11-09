@@ -277,7 +277,7 @@ export function ModeCarousel({
       <Glass radius={27}>
         <GlassSegmented items={[{ key: 'photo', label: 'PHOTO' }, { key: 'video', label: 'VIDEO' }]}
           value={group} onChange={(key) => onChange(key as CaptureMode)} disabled={disabled}
-          height={compact ? 38 : 42} fontSize={compact ? 11 : 13} paddingH={compact ? 16 : 20} minItemWidth={82} />
+          height={34} fontSize={compact ? 11 : 13} paddingH={compact ? 16 : 20} minItemWidth={70} />
       </Glass>
     </View>
   );
@@ -312,7 +312,7 @@ export function Shutter({
       disabled={busy && !recording}
     >
       <Animated.View style={[styles.shutterOuter, { transform: [{ scale }] }]}>
-        <Glass radius={42} style={StyleSheet.absoluteFill} tint="rgba(255,255,255,0.04)" />
+        <Glass radius={32} style={StyleSheet.absoluteFill} tint="rgba(255,255,255,0.04)" />
         {isVideo ? (
           <RecMorph recording={recording} />
         ) : (
@@ -332,8 +332,8 @@ function RecMorph({ recording }: { recording: boolean }) {
     t.value = withTiming(recording ? 1 : 0, { duration: 160 });
   }, [recording, t]);
   const st = useAnimatedStyle(() => {
-    const size = 62 - 32 * t.value;
-    return { width: size, height: size, borderRadius: 31 - 23 * t.value };
+    const size = 48 - 24 * t.value;
+    return { width: size, height: size, borderRadius: 24 - 18 * t.value };
   });
   return <RAnimated.View style={[{ backgroundColor: '#ff3b30' }, st]} />;
 }
@@ -355,7 +355,7 @@ export function Thumb({
 }) {
   return (
     <Pressable accessibilityRole="button" accessibilityLabel="Open latest capture" onPress={onPress} disabled={!uri && !enabled}>
-      <Glass radius={27} style={styles.thumb}>
+      <Glass radius={22} style={styles.thumb}>
         {uri ? (
           <RAnimated.View key={uri} entering={FadeIn.duration(160)} style={StyleSheet.absoluteFill}>
             <Image source={{ uri }} style={styles.thumbImg} />
@@ -529,20 +529,20 @@ export const styles = StyleSheet.create({
   zoomPillActive: { backgroundColor: 'rgba(255,255,255,0.92)' },
   zoomText: { color: '#fff', fontSize: 13, fontWeight: '600' },
   zoomTextActive: { color: '#111', fontWeight: '700' },
-  modeBar: { alignSelf: 'center', width: '100%', paddingHorizontal: 14, gap: 10, alignItems: 'center' },
+  modeBar: { alignSelf: 'center', width: '100%', paddingHorizontal: 4, gap: 4, alignItems: 'center' },
   specialMode: { color: '#ffe16b', fontSize: 9, fontWeight: '700', letterSpacing: 2, marginTop: 5 },
   modeChip: { paddingHorizontal: 14, height: 36, borderRadius: 18, justifyContent: 'center' },
   modeChipActive: { backgroundColor: 'rgba(214,228,255,0.95)' },
   modeText: { color: 'rgba(255,255,255,0.85)', fontSize: 14, fontWeight: '600' },
   modeTextActive: { color: '#0b1f44' },
-  shutterOuter: { width: 84, height: 84, borderRadius: 42, borderWidth: 1.5, borderColor: 'rgba(255,255,255,0.9)', alignItems: 'center', justifyContent: 'center' },
-  shutterInner: { width: 66, height: 66, borderRadius: 33, backgroundColor: '#fff9ef', alignItems: 'center', justifyContent: 'center' },
+  shutterOuter: { width: 64, height: 64, borderRadius: 32, borderWidth: 1.5, borderColor: 'rgba(255,255,255,0.9)', alignItems: 'center', justifyContent: 'center' },
+  shutterInner: { width: 50, height: 50, borderRadius: 25, backgroundColor: '#fff9ef', alignItems: 'center', justifyContent: 'center' },
   shutterNight: { backgroundColor: '#ffe7a1' },
   recDot: { width: 62, height: 62, borderRadius: 31, backgroundColor: '#ff3b30' },
   recSquare: { width: 30, height: 30, borderRadius: 8 },
-  thumb: { width: 52, height: 52 },
+  thumb: { width: 44, height: 44 },
   thumbImg: { width: '100%', height: '100%' },
-  sliderCard: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 14, height: 52, gap: 12, alignSelf: 'center', width: 300 },
+  sliderCard: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 14, height: 52, gap: 12, alignSelf: 'center', width: '100%' },
   sliderTabs: { flexDirection: 'row', gap: 12 },
   sliderTrackWrap: { flex: 1, height: 44, justifyContent: 'center' },
   sliderTrack: { height: 4, borderRadius: 2, backgroundColor: 'rgba(255,255,255,0.18)' },
