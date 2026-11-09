@@ -8,3 +8,11 @@ Video processing and crop now run while recording. Stop no longer launches a sta
 The Xiaomi-style rear UI appears only when a built-in rear-sized display is detected. Casting / external / virtual screens do not expose the switch. Rear mode mirrors preview, photos and video, and has a chevron back to the front screen. Access tries normal Android, granted system privilege, authorised Shizuku and explicitly opted-in root. System integration files are included; the app cannot grant itself privileges just by being copied into /system/app.
 
 The source already includes all changes. No patch is needed. The live GL processor and rear-routing classes compile against Android dependencies and policy tests are included. A full APK build and physical-device verification are still outstanding. No APK or signing credentials are included.
+
+Recording/preview parity update (2026-11-08):
+- Prefer CameraX shared preview stabilization where supported, rather than assuming video-only EIS covers the custom effect input. SDR otherwise retains live GPU correction.
+- Preview and recording use the same per-frame rotation crop envelope, including encoder attachment to an already-running preview. One image-motion correction feeds both outputs.
+- Capture-result monitoring enables residual image correction if requested shared stabilization does not activate. Correction margin ramps in rather than snapping.
+- Stop and retain the clip with an explicit error if no processed frames reach the encoder after two active recording seconds. Pause/resume starts a fresh audit interval.
+- Effect rejection clears effect state and retries a conservative native recording profile. UI shows the negotiated frame rate.
+Validation: TypeScript, preservation/shader/static checks, 45 pure Kotlin policy/geometry/tracking tests, and standalone Android GL processor compilation passed. Full Expo Android build and phone recordings have not been verified. The submitted 15069.mp4 is a night 720x1280/60 fps walking clip; it does not expose the camera's stabilization metadata. No claim of measured improvement in a new phone recording is made.

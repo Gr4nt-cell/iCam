@@ -14,3 +14,14 @@ assert(gl.includes('VideoStabilityPolicy.motionCrop'));
 assert(fs.readFileSync('src/ui/RearCamera.tsx','utf8').includes('available:!!status&&status.displays.some(d=>d.isRear)'));
 assert(camera.includes('MirrorMode.MIRROR_MODE_ON else if'));
 console.log('PASS: live GPU crop, no post-stop stabilization export, HDR separation and mirrored video.');
+
+assert(!gl.includes('cropState'),'Preview and encoder must share a crop envelope');
+assert(!gl.includes('encCrop'),'Own encoder must not maintain a separate crop history');
+assert(/processedVideoFrames\(\):\s*Long/.test(gl));
+assert(gl.includes('eglSwapBuffers(display, es) && isVideo)videoFrames++'));
+assert(camera.includes('RecordingStabilityPolicy.select('));
+assert(camera.includes('RecordingStabilityPolicy.deliveryStalled('));
+assert(camera.includes('auditStartDuration=event.recordingStats.recordedDurationNanos'));
+assert(camera.includes('effectPreview = false\n        ownMode = false'));
+assert(camera.includes('if(epoch!=stabilityEpoch || !requestedSharedStability || !effectPreview)return@post'));
+console.log('PASS: shared preview/encoder crop, hardware fallback, delivery and resume audit.');

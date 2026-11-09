@@ -97,7 +97,11 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
   private var camera: Camera? = null
   private var imageCapture: ImageCapture? = null
   private var videoCapture: VideoCapture<Recorder>? = null
-  private var videoHardwareStabilized = false
+  @Volatile private var videoHardwareStabilized = false
+  @Volatile private var stabilityEpoch = 0
+  @Volatile private var requestedSharedStability = false
+  private var sharedOffSamples = 0
+  @Volatile private var sharedFallbackApplied = false
   private var recording: Recording? = null
   private var slowFps = 0
   private var usingNightExtension = false // true whenever a vendor extension handles processing
@@ -437,7 +441,7 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
   private var horizonCrop = 1f
 
   /** True while the GPU effect renders the preview (video modes, or a live filter in photo modes). */
-  private var effectPreview = false
+  @Volatile private var effectPreview = false
   /** Zoom beyond the lens/hardware maximum, done digitally (preview + recording; photos are cropped in JS). */
   private var digitalZoom = 1f
   private var zoomAnim: android.animation.ValueAnimator? = null
@@ -594,6 +598,7 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
     if (owner == null) { emitError("Camera needs an active screen"); return }
     withProvider { p ->
       try {
+        stabilityEpoch++; requestedSharedStability=false
         p.unbindAll()
         camera = null; imageCapture = null; videoCapture = null
         usingNightExtension = false; activeExtension = null; slowFps = 0; horizonCrop = 1f
@@ -634,6 +639,7 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
             "zoomMax" to ((z?.maxZoomRatio ?: 1f) / baseZoom).toDouble(),
             "hasFlash" to (camera?.cameraInfo?.hasFlashUnit() ?: false),
             "horizonLock" to sensorOn,
+            "recordingFps" to boundFrameRate,
           ),
         )
         bindRetries = 0
@@ -715,6 +721,26 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
   @androidx.annotation.OptIn(markerClass = [ExperimentalCamera2Interop::class])
   private fun newPreview(stabilized: Boolean = false, ois: Boolean = false, matchAspect: Boolean = false): Preview {
     val b = Preview.Builder()
+    val epoch=stabilityEpoch
+    androidx.camera.camera2.interop.Camera2Interop.Extender(b).setSessionCaptureCallback(object: android.hardware.camera2.CameraCaptureSession.CaptureCallback(){
+      override fun onCaptureCompleted(session:android.hardware.camera2.CameraCaptureSession,request:CaptureRequest,result:android.hardware.camera2.TotalCaptureResult){
+        if(epoch!=stabilityEpoch || !requestedSharedStability || sharedFallbackApplied || !effectPreview)return
+        val actual=result.get(android.hardware.camera2.CaptureResult.CONTROL_VIDEO_STABILIZATION_MODE) ?: return
+        if(actual==2){sharedOffSamples=0;return} // PREVIEW_STABILIZATION, common to both streams.
+        sharedOffSamples++
+        if(sharedOffSamples<45)return
+        sharedFallbackApplied=true
+        post {
+          if(epoch!=stabilityEpoch || !requestedSharedStability || !effectPreview)return@post
+          videoHardwareStabilized=false
+          portraitProcessor?.let { proc ->
+            proc.horizonLock=false;proc.stabilizeRoll=false
+            proc.stabCrop=VideoStabilityPolicy.crop(mode,stabilization,facing=="front",false)
+          }
+          emitError("The phone did not activate shared stabilization. Live image correction is being applied to preview and recording.")
+        }
+      }
+    })
     // Anti-flicker for mains-powered lights (50/60 Hz): stops banding and brightness pulsing indoors
     androidx.camera.camera2.interop.Camera2Interop.Extender(b)
       .setCaptureRequestOption(CaptureRequest.CONTROL_AE_ANTIBANDING_MODE, antibandingMode())
@@ -865,6 +891,7 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
   }
 
   private fun bindVideo(p: ProcessCameraProvider, owner: LifecycleOwner) {
+    stabilityEpoch++;sharedOffSamples=0;sharedFallbackApplied=false;requestedSharedStability=false
     val sel = selector(facing)
     val info = p.getCameraInfo(sel)
     val action = mode == "action"
@@ -900,15 +927,18 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
     if (hdr && stabilization == "horizon") throw IllegalStateException("Live Horizon lock needs SDR. Turn off HDR or choose Standard stabilization.")
     val horizon = !hdr && VideoStabilityPolicy.horizon(mode, stabilization)
     val wantStab = action || horizon || portraitVideo || stabilization != "off"
-    val previewStab = false
-    val hardwareEis = wantStab && (hdr || !selfieVideo && !horizon) &&
-      (try { Recorder.getVideoCapabilities(info).isStabilizationSupported } catch (_: Throwable) { false })
+    val sharedSupported=try{Preview.getPreviewCapabilities(info).isStabilizationSupported}catch(_:Throwable){false}
+    val videoSupported=try{Recorder.getVideoCapabilities(info).isStabilizationSupported}catch(_:Throwable){false}
+    val stabilityPlan=RecordingStabilityPolicy.select(wantStab,stabilization=="horizon",sharedSupported,videoSupported,hdr)
+    val previewStab=stabilityPlan.preview
+    requestedSharedStability=previewStab
+    val hardwareEis=stabilityPlan.hardware
     val ois = wantStab && !hardwareEis && oisSupported(info)
     val useEffect = !hdr
     val vb = VideoCapture.Builder(recorder)
       .setMirrorMode(if (rearSelfie) MirrorMode.MIRROR_MODE_ON else if (mirror) MirrorMode.MIRROR_MODE_ON_FRONT_ONLY else MirrorMode.MIRROR_MODE_OFF)
     videoHardwareStabilized = hardwareEis
-    vb.setVideoStabilizationEnabled(hardwareEis)
+    vb.setVideoStabilizationEnabled(stabilityPlan.video)
 
     // Prefer fixed cadence from the selected lens's actual frame-rate ranges.
     val ranges = info.supportedFrameRateRanges.toList()
@@ -992,17 +1022,25 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
       } catch (e: Throwable) {
         p.unbindAll()
         videoHardwareStabilized = false
+        effectPreview = false
+        ownMode = false
+        if(stabilization=="horizon")throw IllegalStateException("The camera rejected live Horizon processing. Try a lower frame rate or Standard stabilization.",e)
         if (portraitVideo) emitError("Background blur isn't supported here – recording without it")
       }
     }
     setRollSensor(false)
     // A failed SDR effect can still use supported camera-side stabilization live.
-    if(useEffect) videoHardwareStabilized=wantStab && (try{Recorder.getVideoCapabilities(info).isStabilizationSupported}catch(_:Throwable){false})
-    val plainVc = if(useEffect) VideoCapture.Builder(recorder)
-      .setMirrorMode(if(rearSelfie)MirrorMode.MIRROR_MODE_ON else if(mirror)MirrorMode.MIRROR_MODE_ON_FRONT_ONLY else MirrorMode.MIRROR_MODE_OFF)
-      .setVideoStabilizationEnabled(videoHardwareStabilized).build() else vc
+    if(useEffect) videoHardwareStabilized=previewStab || wantStab && videoSupported
+    val plainVc = if(useEffect) {
+      val safe=VideoCapture.Builder(buildRecorder(Quality.FHD,20_000_000))
+        .setMirrorMode(if(rearSelfie)MirrorMode.MIRROR_MODE_ON else if(mirror)MirrorMode.MIRROR_MODE_ON_FRONT_ONLY else MirrorMode.MIRROR_MODE_OFF)
+        .setVideoStabilizationEnabled(!previewStab && videoHardwareStabilized)
+      VideoStabilityPolicy.frameRate(ranges.map{it.lower to it.upper},30)?.let{safe.setTargetFrameRate(Range(it.first,it.second));boundFrameRate=it.second}
+      emitError("The camera rejected live effects; using a conservative native recording profile instead")
+      safe.build()
+    } else vc
     camera = try {
-      p.bindToLifecycle(owner,sel,newPreview(false,wantStab && !videoHardwareStabilized && oisSupported(info)),plainVc).also{videoCapture=plainVc}
+      p.bindToLifecycle(owner,sel,newPreview(previewStab,wantStab && !videoHardwareStabilized && oisSupported(info)),plainVc).also{videoCapture=plainVc}
     } catch(e: Throwable) {
       p.unbindAll();videoHardwareStabilized=false
       if(hdr){
@@ -1014,9 +1052,15 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
         try{p.bindToLifecycle(owner,sel,newPreview(false,wantStab && oisSupported(info)),safe.build().also{videoCapture=it})}
         catch(failure:Throwable){throw IllegalStateException("HDR recording is unavailable with these settings",failure)}
       }else{
+        // Retry a conservative shared 1080p/30 session; never pretend the failed request is active.
+        val shared=wantStab && stabilization!="horizon" && sharedSupported
+        videoHardwareStabilized=shared || wantStab && videoSupported
         val plain=VideoCapture.Builder(buildRecorder(Quality.FHD,20_000_000))
-          .setMirrorMode(if(rearSelfie)MirrorMode.MIRROR_MODE_ON else if(mirror)MirrorMode.MIRROR_MODE_ON_FRONT_ONLY else MirrorMode.MIRROR_MODE_OFF).build()
-        p.bindToLifecycle(owner,sel,newPreview(false,wantStab && oisSupported(info)),plain).also{videoCapture=plain}
+          .setMirrorMode(if(rearSelfie)MirrorMode.MIRROR_MODE_ON else if(mirror)MirrorMode.MIRROR_MODE_ON_FRONT_ONLY else MirrorMode.MIRROR_MODE_OFF)
+          .setVideoStabilizationEnabled(!shared && videoHardwareStabilized)
+        VideoStabilityPolicy.frameRate(ranges.map{it.lower to it.upper},30)?.let{plain.setTargetFrameRate(Range(it.first,it.second));boundFrameRate=it.second}
+        p.bindToLifecycle(owner,sel,newPreview(shared,wantStab && !videoHardwareStabilized && oisSupported(info)),plain.build().also{videoCapture=it})
+          .also{emitError("Using a conservative recording profile after the camera rejected the requested effects/stabilization combination") }
       }
     }
     if(hdr && wantStab && !videoHardwareStabilized)emitError(if(oisSupported(info))
@@ -1497,6 +1541,11 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
       sessionRotation = when (deviceDeg) { 90 -> android.view.Surface.ROTATION_270; 180 -> android.view.Surface.ROTATION_180; 270 -> android.view.Surface.ROTATION_90; else -> android.view.Surface.ROTATION_0 }
     }
     try { vc.targetRotation = sessionRotation } catch (_: Throwable) {}
+    val recordProcessor=if(effectPreview)portraitProcessor else null
+    var processedAtStart=recordProcessor?.processedVideoFrames() ?: 0L
+    var auditPaused=false
+    var auditStartDuration=0L
+    var routingFailure: String?=null
     val file = File(context.cacheDir, "iCam_${mode}_${System.currentTimeMillis()}.mp4")
     var pending = vc.output.prepareRecording(context, FileOutputOptions.Builder(file).build())
     val micGranted = ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
@@ -1513,6 +1562,13 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
     keepScreenOn = true
     rootView?.keepScreenOn = true
     recording = pending.start(executor) { event ->
+      if(event is VideoRecordEvent.Start || event is VideoRecordEvent.Resume){processedAtStart=recordProcessor?.processedVideoFrames() ?: 0L;auditStartDuration=event.recordingStats.recordedDurationNanos;auditPaused=false}
+      if(event is VideoRecordEvent.Pause)auditPaused=true
+      if(event is VideoRecordEvent.Status && !auditPaused && recordProcessor!=null && routingFailure==null &&
+        RecordingStabilityPolicy.deliveryStalled(event.recordingStats.recordedDurationNanos-auditStartDuration, recordProcessor.processedVideoFrames()-processedAtStart)){
+        routingFailure="The camera did not deliver processed frames to the recorder. The clip was retained; try a lower frame rate."
+        recording?.stop()
+      }
       if (event is VideoRecordEvent.Pause) emitRecordingState(mapOf("paused" to true))
       if (event is VideoRecordEvent.Resume) emitRecordingState(mapOf("paused" to false))
       if (event is VideoRecordEvent.Finalize) {
@@ -1547,7 +1603,7 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
             "path" to if (ok) file.absolutePath else null,
             "durationMs" to event.recordingStats.recordedDurationNanos / 1_000_000.0,
             "slowMotion" to (mode == "slowmo"),
-            "error" to if (event.hasError()) "Recorder error ${event.error}" else null,
+            "error" to (routingFailure ?: if (event.hasError()) "Recorder error ${event.error}" else null),
           ),
         )
         if (mode == "dual" && dualComposed) {

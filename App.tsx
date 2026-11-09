@@ -680,7 +680,7 @@ function CameraScreen() {
                 : `${video.resolution === '4k' ? '4K' : '1080p'} · ${video.fps}${video.stabilization === 'horizon' ? ' · LOCK' : ''}`;
 
   const topStatus = mode === 'action' ? 'ACTION' : mode === 'video' ? 'VIDEO' : mode === 'macro' ? 'MACRO' : badge;
-  const qualityLabel = mode === 'action' ? (facing === 'front' ? '30 FPS' : '60 FPS') : mode === 'pro' && proVideo ? '4K · 60' : mode === 'video' ? (video.resolution === '4k' ? '4K' : '1080p') + ' · ' + video.fps : aspect === 'full' ? 'FULL' : aspect;
+  const qualityLabel = mode === 'action' ? `${ready?.recordingFps ?? (facing === 'front' ? 30 : 60)} FPS` : mode === 'pro' && proVideo ? '4K · 60' : mode === 'video' ? (video.resolution === '4k' ? '4K' : '1080p') + ' · ' + (ready?.recordingFps ?? video.fps) : aspect === 'full' ? 'FULL' : aspect;
 
   return (
     <View style={styles.root}>

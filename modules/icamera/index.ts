@@ -83,6 +83,7 @@ export type Capabilities = {
 type NativeEvent<T> = { nativeEvent: T };
 
 export type ReadyEvent = {
+  recordingFps?: number;
   mode: CamMode;
   slowMotionFps: number;
   nightExtension: boolean;

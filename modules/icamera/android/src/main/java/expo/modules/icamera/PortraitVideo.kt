@@ -85,7 +85,6 @@ class PortraitProcessor : SurfaceProcessor {
   @Volatile var encoder: OwnRecorder? = null
   private var encFor: OwnRecorder? = null
   private var encSurf: EGLSurface = EGL14.EGL_NO_SURFACE
-  private var encCrop = 1f
   /** The camera's sensor orientation (clockwise degrees). */
   @Volatile var inRotation = 90
   /** Phone orientation when the recording started (OrientationEventListener degrees, 0/90/180/270). */
@@ -100,7 +99,10 @@ class PortraitProcessor : SurfaceProcessor {
   private var tsOffset = 0L
   private var lastOutTs = 0L
   fun resetTimeline() { handler.post { tsOffset = 0L; lastOutTs = 0L; rebase = false } }
-  private val cropState = HashMap<SurfaceOutput, Float>()
+  private val cropEnvelope = RecordingCropEnvelope()
+  private var frameRotationCrop = 1f
+  @Volatile private var videoFrames = 0L
+  fun processedVideoFrames(): Long = videoFrames
 
   /** Video processing when blur is off: auto low-light tone curve, temporal denoise, detail. */
   @Volatile var enhance = true
@@ -130,6 +132,7 @@ class PortraitProcessor : SurfaceProcessor {
    * 1 = off; e.g. 1.12 = 12% crop margin.
    */
   @Volatile var stabCrop = 1f
+  private var cropNow = 1f
   /** Zoom past the hardware maximum (applied to every output). */
   @Volatile var digitalZoom = 1f
   /** Live skin smoothing 0..1 (video). */
@@ -225,7 +228,8 @@ class PortraitProcessor : SurfaceProcessor {
     inH = request.resolution.height
     // Never carry the previous lens's digital zoom, roll crop or motion estimate into a selfie.
     digitalZoomNow = if (frontCamera) 1f else digitalZoom
-    cropState.clear(); encCrop = 1f; liveRoll.reset(); rollTimestamp = 0L
+    cropNow=stabCrop
+    cropEnvelope.reset(); frameRotationCrop = 1f; liveRoll.reset(); rollTimestamp = 0L
     cameraPath.reset(); prevLuma = null; motDrawn = false; lastTs = 0L
     shiftX = 0f; shiftY = 0f
     val tex = IntArray(1)
@@ -253,7 +257,6 @@ class PortraitProcessor : SurfaceProcessor {
     if (released) { surfaceOutput.close(); return }
     initGl()
     val surface = surfaceOutput.getSurface(executor) {
-      cropState.remove(surfaceOutput)
       outputs.remove(surfaceOutput)?.let { EGL14.eglDestroySurface(display, it.first) }
       surfaceOutput.close()
     }
@@ -313,7 +316,13 @@ class PortraitProcessor : SurfaceProcessor {
 
     val rollDt = if(rollTimestamp>0L) (s.timestamp-rollTimestamp)/1e9 else 1.0/30
     rollTimestamp=s.timestamp
-    roll=if(horizonLock || stabilizeRoll) liveRoll.update(targetRoll,rollDt,horizonLock,if(stabCrop<=1.1f).012f else .025f) else {liveRoll.reset();0f}
+    cropNow+=(stabCrop-cropNow)*(1-Math.exp(-rollDt.coerceIn(.005,.1)/.25)).toFloat()
+    roll=if(horizonLock || stabilizeRoll) liveRoll.update(targetRoll,rollDt,horizonLock,if(cropNow<=1.1f).012f else .025f) else {liveRoll.reset();0f}
+    // Match every output to one camera-frame crop, including a newly attached recorder.
+    var aspect=maxOf(16f/9f,maxOf(inW,inH).toFloat()/maxOf(1,minOf(inW,inH)))
+    for(pair in outputs.values){val size=pair.second;aspect=maxOf(aspect,maxOf(size.width,size.height).toFloat()/maxOf(1,minOf(size.width,size.height)))}
+    val rotationNeed=if(horizonLock||stabilizeRoll)VideoStabilityPolicy.rotationCrop(aspect,1f,roll,1f)else 1f
+    frameRotationCrop=cropEnvelope.update(rotationNeed,rollDt,horizonLock)
     val stDet = stM[0] * stM[5] - stM[4] * stM[1]
     // glide digital zoom changes (log space) so zoom past the lens is as smooth as optical zoom
     digitalZoomNow = Math.exp(Math.log(digitalZoomNow.toDouble()) + (Math.log(digitalZoom.toDouble()) - Math.log(digitalZoomNow.toDouble())) * 0.22).toFloat()
@@ -322,7 +331,7 @@ class PortraitProcessor : SurfaceProcessor {
     val enh = enhance || blurOn
     if (enh) {
       if (frame % 6L == 1L) updateStats(s.timestamp)
-      if (stabCrop > 1.001f) updateMotion(s.timestamp, VideoStabilityPolicy.motionCrop(stabCrop,VideoStabilityPolicy.rotationCrop(inW.toFloat(),inH.toFloat(),roll,1f),stabilizeRoll && !horizonLock)) else { shiftX = 0f; shiftY = 0f; prevLuma = null; motDrawn = false }
+      if (cropNow > 1.001f) updateMotion(s.timestamp, VideoStabilityPolicy.motionCrop(cropNow,frameRotationCrop,stabilizeRoll && !horizonLock)) else { shiftX = 0f; shiftY = 0f; prevLuma = null; motDrawn = false }
       processFrame()
       if (blurOn) drawBokeh(cur)
       cur = 1 - cur
@@ -345,16 +354,12 @@ class PortraitProcessor : SurfaceProcessor {
         // In the camera's own (unmirrored) frame a front lens sees the roll reversed
         angle = if (frontCamera) -roll else roll
         if (cxMirrored) angle = -angle
-        val w = size.width.toFloat()
-        val h = size.height.toFloat()
-        val k = VideoStabilityPolicy.rotationCrop(w, h, angle, if(horizonLock)cropState[out] ?: 1f else 1f)
-        cropState[out] = k
-        zoomK = k
+        zoomK = frameRotationCrop
       }
       xform = floatArrayOf(size.width.toFloat(), size.height.toFloat(), angle, zoomK, if (flip) 1f else 0f)
       if (enh) drawOut(outM, blurOn) else drawCopy(outM)
       EGLExt.eglPresentationTimeANDROID(display, es, outTs)
-      EGL14.eglSwapBuffers(display, es)
+      if(EGL14.eglSwapBuffers(display, es) && isVideo)videoFrames++
     }
 
     drawEncoder(stDet, enh, blurOn)
@@ -397,7 +402,6 @@ class PortraitProcessor : SurfaceProcessor {
         encSurf = try { EGL14.eglCreateWindowSurface(display, config, rec.surface, intArrayOf(EGL14.EGL_NONE), 0) } catch (e: Throwable) { EGL14.EGL_NO_SURFACE }
       }
       encFor = rec
-      encCrop = 1f
     }
     if (rec == null || encSurf == EGL14.EGL_NO_SURFACE) return
     val pts = rec.nextVideoPtsNs()
@@ -437,8 +441,7 @@ class PortraitProcessor : SurfaceProcessor {
     var zoomK = 1f
     if (horizonLock || stabilizeRoll) {
       angle = if (frontCamera) -roll else roll
-      encCrop = VideoStabilityPolicy.rotationCrop(ew, eh, angle, if(horizonLock)encCrop else 1f)
-      zoomK = encCrop
+      zoomK = frameRotationCrop
     }
     xform = floatArrayOf(ew, eh, angle, zoomK, 0f)
     if (enh) drawOut(encM, blurOn) else drawCopy(encM)
@@ -707,7 +710,7 @@ class PortraitProcessor : SurfaceProcessor {
     GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, vtex[1 - cur])
     GLES20.glUniform1i(GLES20.glGetUniformLocation(outProg, "sCur"), 0)
     GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(outProg, "uStInv"), 1, false, stInv, 0)
-    GLES20.glUniform1f(GLES20.glGetUniformLocation(outProg, "uCrop"), VideoStabilityPolicy.motionCrop(stabCrop,xform[3],stabilizeRoll && !horizonLock) * maxOf(1f, digitalZoomNow))
+    GLES20.glUniform1f(GLES20.glGetUniformLocation(outProg, "uCrop"), VideoStabilityPolicy.motionCrop(cropNow,xform[3],stabilizeRoll && !horizonLock) * maxOf(1f, digitalZoomNow))
     val f = filter
     GLES20.glUniform1f(GLES20.glGetUniformLocation(outProg, "uFilterOn"), if (f != null && f.size >= 6) 1f else 0f)
     if (f != null && f.size >= 6) {

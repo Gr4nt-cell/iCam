@@ -13,3 +13,5 @@ Stop now emits the finalized encoded file directly. There is no automatic whole-
 Photo and Portrait share detected-face skin smoothing on both cameras (initial 45%, adjustable under Look / Skin). Video smoothing is separate. Existing modes, HDR capture, lens selection and offline image processing remain available on the main screen.
 
 Validation includes TypeScript, the actual photo shader, capture/control regression checks, manifest mods, rear layout / mirroring policy, rear display detection, root task ownership and live roll / crop math. The live GL processor and display access classes compile against their Android dependencies. Full APK compilation and physical Xiaomi testing are still required before release.
+
+Recording parity: the live path uses one crop envelope for preview/encoder and a shared-stabilization selection policy. See stabilization-validation.md for the exact validation limits and phone test matrix.

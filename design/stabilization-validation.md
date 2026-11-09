@@ -1,3 +1,13 @@
+# Current preview/encoder parity fix
+
+The saved-file mismatch has two plausible code causes: treating a generic video-stabilization capability as proof that a custom SurfaceTexture input is stabilized, and retaining separate output crop histories. The new path prefers shared-stream stabilization, uses a single per-camera-frame envelope for every output, and counts successful processed encoder submissions. A capture-result check enables residual live image correction if the phone does not actually activate the requested shared mode.
+
+A hardware test must compare the viewfinder and the saved clip from the same capture, for front/rear, Standard/Action/Horizon, 30/60 fps and HDR. Include stationary hold, walking, deliberate pan, pause/resume and camera switches. Check natural framing, no black corners, no breathing when recording starts, output playback and actual negotiated FPS. The delivery guard only detects missing processed submissions; it cannot measure final visual stability. HDR remains native 10-bit and does not use the SDR processor. Existing motion blur, rolling shutter and parallax remain limits.
+
+Local validation: 45 Kotlin tests, standalone Android GL processor compilation, TypeScript and preservation/shader/static checks. No complete APK or rebuilt-phone recording was tested. The latest supplied night clip (15069.mp4) is 720x1280 at 60 fps. It cannot establish the mode or HAL stabilization state used to capture it.
+
+---
+
 # Archived offline replay — not the current live recording pipeline
 
 The following measurements describe the earlier two-pass experiment. The current recording flow does not call this offline exporter. They are not performance claims for the live encoder path.

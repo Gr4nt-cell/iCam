@@ -68,7 +68,7 @@ const reviewed=new Set([
  'modules/icamera/android/src/main/java/expo/modules/icamera/PortraitVideo.kt',
  'modules/icamera/android/src/test/java/expo/modules/icamera/VideoTuningTest.kt',
  'src/processing/pipeline.ts','src/processing/shaders.ts',
- ...(liveRecord ? ['modules/icamera/android/src/main/java/expo/modules/icamera/LiveRollFilter.kt','modules/icamera/android/src/test/java/expo/modules/icamera/LiveRollFilterTest.kt'] : []),
+ ...(liveRecord ? ['modules/icamera/android/src/main/java/expo/modules/icamera/RecordingStabilityPolicy.kt','modules/icamera/android/src/test/java/expo/modules/icamera/RecordingStabilityPolicyTest.kt','modules/icamera/android/src/main/java/expo/modules/icamera/LiveRollFilter.kt','modules/icamera/android/src/test/java/expo/modules/icamera/LiveRollFilterTest.kt'] : []),
  ...(xiaomi ? ['src/camera/rearLayout.ts','modules/icamera/android/src/main/java/expo/modules/icamera/RearDisplayTaskMover.kt','modules/icamera/android/src/main/java/expo/modules/icamera/RearDisplayRoot.kt'] : []),
  ...(rear ? ['modules/icamera/android/src/main/java/expo/modules/icamera/RearDisplayPolicy.kt','modules/icamera/android/src/main/java/expo/modules/icamera/RearDisplayService.kt','modules/icamera/android/src/main/java/expo/modules/icamera/RearDisplayRouter.kt','modules/icamera/android/src/test/java/expo/modules/icamera/RearDisplayPolicyTest.kt','modules/icamera/android/src/main/AndroidManifest.xml','modules/icamera/android/consumer-rules.pro','modules/icamera/android/src/main/java/expo/modules/icamera/ICameraModule.kt','modules/icamera/index.ts'] : []),
  ...(photoSkin ? ['src/processing/skinSettings.ts'] : []),
