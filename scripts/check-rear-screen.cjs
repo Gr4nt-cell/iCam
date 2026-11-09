@@ -21,6 +21,8 @@ const modConfig={...config,modResults:{manifest:{application:[{activity:[main]}]
  const gl=fs.readFileSync('modules/icamera/android/src/main/java/expo/modules/icamera/PortraitVideo.kt','utf8');
  assert(gl.includes('retirement.returnInput()')&&gl.includes('retirement.beginDestroy()'));
  assert(!gl.includes('st?.release(); st = null'));
+ assert(gl.includes('display = processDisplay')&&gl.includes('private val processDisplay: EGLDisplay by lazy'));
+ assert(!gl.includes('eglTerminate('),'Retiring a camera must not terminate the app-shared EGL display');
  const service=fs.readFileSync('modules/icamera/android/src/main/java/expo/modules/icamera/RearDisplayService.kt','utf8');
  assert(service.includes('Binder.getCallingUid()==uid'));
  assert(service.includes('RearDisplayTaskMover.move'));

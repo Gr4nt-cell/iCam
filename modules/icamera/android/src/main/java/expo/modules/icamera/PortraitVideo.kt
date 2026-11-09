@@ -266,7 +266,8 @@ class PortraitProcessor : SurfaceProcessor {
         EGL14.eglMakeCurrent(display, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_CONTEXT)
         if (pbuffer != EGL14.EGL_NO_SURFACE) EGL14.eglDestroySurface(display, pbuffer)
         EGL14.eglDestroyContext(display, context)
-        EGL14.eglTerminate(display)
+        // EGL_DEFAULT_DISPLAY is shared with the replacement camera and app renderer.
+        // Destroy only our context; terminating the shared display invalidates their resources.
       }
       display = EGL14.EGL_NO_DISPLAY
       segExecutor.shutdown()
@@ -895,9 +896,7 @@ class PortraitProcessor : SurfaceProcessor {
 
   private fun initGl() {
     if (display != EGL14.EGL_NO_DISPLAY) return
-    display = EGL14.eglGetDisplay(EGL14.EGL_DEFAULT_DISPLAY)
-    val ver = IntArray(2)
-    EGL14.eglInitialize(display, ver, 0, ver, 1)
+    display = processDisplay
     val attribs = intArrayOf(
       EGL14.EGL_RED_SIZE, 8, EGL14.EGL_GREEN_SIZE, 8, EGL14.EGL_BLUE_SIZE, 8, EGL14.EGL_ALPHA_SIZE, 8,
       EGL14.EGL_RENDERABLE_TYPE, EGL14.EGL_OPENGL_ES2_BIT,
@@ -980,6 +979,14 @@ class PortraitProcessor : SurfaceProcessor {
     ByteBuffer.allocateDirect(a.size * 4).order(ByteOrder.nativeOrder()).asFloatBuffer().apply { put(a); position(0) }
 
   companion object {
+    // One process-lifetime display lease; each processor owns only its own context and surfaces.
+    private val processDisplay: EGLDisplay by lazy {
+      val shared=EGL14.eglGetDisplay(EGL14.EGL_DEFAULT_DISPLAY)
+      val version=IntArray(2)
+      check(shared!=EGL14.EGL_NO_DISPLAY && EGL14.eglInitialize(shared,version,0,version,1)) { "Camera graphics are unavailable" }
+      shared
+    }
+
     private const val VERTEX = """
       attribute vec4 aPos;
       attribute vec4 aTex;
