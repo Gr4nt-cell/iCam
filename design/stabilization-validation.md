@@ -13,3 +13,11 @@ All PreviewViews now fit the complete stream, including dual and rear-screen lay
 Validation covers known translation with exposure shifts, motion beyond the previous search radius, blank scenes, stationary drift, simulated walking-frequency jitter, discontinuities, fixed crop, geometric edge containment, hardware selection and the encoder delivery guard. This is deterministic testing, not a quality measurement from a rebuilt phone recording. Existing unrelated control bindings, photo smoothing, mode groups, rear routing, HDR separation and mirroring are audited.
 
 Physical tests still required: front/rear, 30/60 fps, HDR, Action/Horizon, locked/rear displays, lens switching, low light, moving foregrounds, deliberate pans and walking. Check saved video against preview, black corners, rolling-shutter wobble, sustained frame rate, heat and audio sync. Existing motion blur and parallax cannot be removed by this rigid transform.
+
+## CameraX flag correction after device report
+
+CameraX 1.5.1 distinguishes unspecified from explicit OFF. Its Preview.Builder contract states that Preview ON + VideoCapture OFF disables stabilization for both streams. The former two-Boolean plan produced that exact combination; the resulting toast incorrectly attributed it to the phone. Video-only fallback had the opposite conflict (Preview OFF + VideoCapture ON).
+
+Plans now preserve three states. Shared stabilization sets Preview ON and leaves VideoCapture unspecified. Native video-only stabilization leaves Preview unspecified and sets VideoCapture ON. Software/Off paths set both OFF intentionally. All primary and conservative fallback builders use those states. The runtime watchdog still reports genuinely unconfirmed hardware output, without accusing the phone or claiming a physically tested result. Requested 4K/60 is retained; the screenshot alone does not establish that the phone cannot support it.
+
+Regression coverage asserts the actual setter calls emitted by the plans, including omission of the opposing OFF flag. Static binding checks enforce those adapters on every recording builder. Reference: https://developer.android.com/reference/androidx/camera/core/Preview.Builder#setPreviewStabilizationEnabled(boolean)

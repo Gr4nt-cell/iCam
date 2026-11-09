@@ -15,6 +15,11 @@ assert(gl.includes('correction.crop')&&gl.includes('correction.x, correction.y')
 assert(!gl.includes('uniform float uAngle'),'No second per-output stabilization transform');
 assert(gl.includes('request.dynamicRange.bitDepth > 8'));
 assert(gl.includes('eglSwapBuffers(display, es) && isVideo)videoFrames++'));
+assert(camera.includes('stabilized?.let { b.setPreviewStabilizationEnabled(it) }'));
+assert(camera.includes('stabilityPlan.configureVideo { vb.setVideoStabilizationEnabled(it) }'));
+assert(camera.includes('fallbackPlan.configureVideo { safe.setVideoStabilizationEnabled(it) }'));
+assert(camera.includes('nativePlan.configureVideo { plain.setVideoStabilizationEnabled(it) }'));
+assert(!camera.includes('setVideoStabilizationEnabled(!'));
 assert(camera.includes('CaptureStability.plan(')&&camera.includes('CaptureStability.deliveryStalled('));
 assert(camera.includes('auditStartDuration=event.recordingStats.recordedDurationNanos'));
 assert(camera.includes('effectPreview = false\n        ownMode = false'));

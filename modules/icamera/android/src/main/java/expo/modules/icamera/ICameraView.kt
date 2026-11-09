@@ -714,7 +714,7 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
 
   @OptIn(ExperimentalCamera2Interop::class)
   @androidx.annotation.OptIn(markerClass = [ExperimentalCamera2Interop::class])
-  private fun newPreview(stabilized: Boolean = false, ois: Boolean = false, matchAspect: Boolean = false): Preview {
+  private fun newPreview(stabilized: Boolean? = null, ois: Boolean = false, matchAspect: Boolean = false): Preview {
     val b = Preview.Builder()
     val epoch=stabilityEpoch
     androidx.camera.camera2.interop.Camera2Interop.Extender(b).setSessionCaptureCallback(object: android.hardware.camera2.CameraCaptureSession.CaptureCallback(){
@@ -732,7 +732,7 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
             proc.horizonLock=false;proc.stabilizeRoll=false
             proc.stabilityMargin=CaptureStability.crop(mode,stabilization,facing=="front",false)
           }
-          emitError("The phone did not activate shared stabilization. Live image correction is being applied to preview and recording.")
+          emitError("Hardware stabilization was not confirmed for this configuration. Live software correction is active.")
         }
       }
     })
@@ -742,7 +742,7 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
     b.setResolutionSelector(if (matchAspect) resolutionSelector() else
       androidx.camera.core.resolutionselector.ResolutionSelector.Builder()
         .setAspectRatioStrategy(androidx.camera.core.resolutionselector.AspectRatioStrategy.RATIO_16_9_FALLBACK_AUTO_STRATEGY).build())
-    b.setPreviewStabilizationEnabled(stabilized)
+    stabilized?.let { b.setPreviewStabilizationEnabled(it) }
     if (ois) {
       androidx.camera.camera2.interop.Camera2Interop.Extender(b)
         .setCaptureRequestOption(CaptureRequest.LENS_OPTICAL_STABILIZATION_MODE, CaptureRequest.LENS_OPTICAL_STABILIZATION_MODE_ON)
@@ -928,7 +928,7 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
     val sharedSupported=try{Preview.getPreviewCapabilities(info).isStabilizationSupported}catch(_:Throwable){false}
     val videoSupported=try{Recorder.getVideoCapabilities(info).isStabilizationSupported}catch(_:Throwable){false}
     val stabilityPlan=CaptureStability.plan(wantStab,stabilization=="horizon",sharedSupported,videoSupported,hdr)
-    val previewStab=stabilityPlan.preview
+    val previewStab=stabilityPlan.preview == true
     requestedSharedStability=previewStab
     val hardwareEis=stabilityPlan.hardware
     val ois = wantStab && !hardwareEis && oisSupported(info)
@@ -936,7 +936,7 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
     val vb = VideoCapture.Builder(recorder)
       .setMirrorMode(if (rearSelfie) MirrorMode.MIRROR_MODE_ON else if (mirror) MirrorMode.MIRROR_MODE_ON_FRONT_ONLY else MirrorMode.MIRROR_MODE_OFF)
     videoHardwareStabilized = hardwareEis
-    vb.setVideoStabilizationEnabled(stabilityPlan.video)
+    stabilityPlan.configureVideo { vb.setVideoStabilizationEnabled(it) }
 
     // Prefer fixed cadence from the selected lens's actual frame-rate ranges.
     val ranges = info.supportedFrameRateRanges.toList()
@@ -1006,7 +1006,7 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
           return
         }
         val group = UseCaseGroup.Builder()
-          .addUseCase(newPreview(previewStab, ois))
+          .addUseCase(newPreview(stabilityPlan.preview, ois))
           .addUseCase(vc)
           .addEffect(PortraitVideoEffect(proc))
           .build()
@@ -1027,18 +1027,20 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
       }
     }
     setRollSensor(false)
-    // A failed SDR effect can still use supported camera-side stabilization live.
-    if(useEffect) videoHardwareStabilized=previewStab || wantStab && videoSupported
+    // A native-only fallback can use video EIS, but its Preview flag must remain unspecified.
+    val fallbackPlan=if(useEffect)CaptureStability.plan(wantStab,false,sharedSupported,videoSupported,true) else stabilityPlan
+    videoHardwareStabilized=fallbackPlan.hardware
+    requestedSharedStability=fallbackPlan.preview == true
     val plainVc = if(useEffect) {
       val safe=VideoCapture.Builder(buildRecorder(Quality.FHD,20_000_000))
         .setMirrorMode(if(rearSelfie)MirrorMode.MIRROR_MODE_ON else if(mirror)MirrorMode.MIRROR_MODE_ON_FRONT_ONLY else MirrorMode.MIRROR_MODE_OFF)
-        .setVideoStabilizationEnabled(!previewStab && videoHardwareStabilized)
+      fallbackPlan.configureVideo { safe.setVideoStabilizationEnabled(it) }
       CaptureStability.frameRate(ranges.map{it.lower to it.upper},30)?.let{safe.setTargetFrameRate(Range(it.first,it.second));boundFrameRate=it.second}
       emitError("The camera rejected live effects; using a conservative native recording profile instead")
       safe.build()
     } else vc
     camera = try {
-      p.bindToLifecycle(owner,sel,newPreview(previewStab,wantStab && !videoHardwareStabilized && oisSupported(info)),plainVc).also{videoCapture=plainVc}
+      p.bindToLifecycle(owner,sel,newPreview(fallbackPlan.preview,wantStab && !videoHardwareStabilized && oisSupported(info)),plainVc).also{videoCapture=plainVc}
     } catch(e: Throwable) {
       p.unbindAll();videoHardwareStabilized=false
       if(hdr){
@@ -1051,13 +1053,14 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
         catch(failure:Throwable){throw IllegalStateException("HDR recording is unavailable with these settings",failure)}
       }else{
         // Retry a conservative shared 1080p/30 session; never pretend the failed request is active.
-        val shared=wantStab && stabilization!="horizon" && sharedSupported
-        videoHardwareStabilized=shared || wantStab && videoSupported
+        val nativePlan=CaptureStability.plan(wantStab,false,sharedSupported,videoSupported,true)
+        videoHardwareStabilized=nativePlan.hardware
+        requestedSharedStability=nativePlan.preview == true
         val plain=VideoCapture.Builder(buildRecorder(Quality.FHD,20_000_000))
           .setMirrorMode(if(rearSelfie)MirrorMode.MIRROR_MODE_ON else if(mirror)MirrorMode.MIRROR_MODE_ON_FRONT_ONLY else MirrorMode.MIRROR_MODE_OFF)
-          .setVideoStabilizationEnabled(!shared && videoHardwareStabilized)
+        nativePlan.configureVideo { plain.setVideoStabilizationEnabled(it) }
         CaptureStability.frameRate(ranges.map{it.lower to it.upper},30)?.let{plain.setTargetFrameRate(Range(it.first,it.second));boundFrameRate=it.second}
-        p.bindToLifecycle(owner,sel,newPreview(shared,wantStab && !videoHardwareStabilized && oisSupported(info)),plain.build().also{videoCapture=it})
+        p.bindToLifecycle(owner,sel,newPreview(nativePlan.preview,wantStab && !videoHardwareStabilized && oisSupported(info)),plain.build().also{videoCapture=it})
           .also{emitError("Using a conservative recording profile after the camera rejected the requested effects/stabilization combination") }
       }
     }

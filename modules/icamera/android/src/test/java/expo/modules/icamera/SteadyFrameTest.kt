@@ -67,11 +67,23 @@ class SteadyFrameTest {
     assertEquals(1.10f,t.crop,0f);assertEquals(.7f,t.angle,.001f)
   }
   @Test fun sharedSessionModeIsSelectedBeforeVideoOnlyMode() {
-    assertEquals(CaptureStabilityPlan(true,false),CaptureStability.plan(true,false,true,true,false))
+    assertEquals(CaptureStabilityPlan(true,null),CaptureStability.plan(true,false,true,true,false))
     assertFalse(CaptureStability.plan(true,false,false,true,false).hardware)
-    assertTrue(CaptureStability.plan(true,false,false,true,true).video)
+    assertEquals(true,CaptureStability.plan(true,false,false,true,true).video)
     assertFalse(CaptureStability.plan(false,false,true,true,false).hardware)
     assertFalse(CaptureStability.plan(true,true,true,true,false).hardware)
+  }
+  @Test fun previewOnlyAndVideoOnlyPlansNeverSetTheOpposingOffFlag() {
+    val shared=CaptureStability.plan(true,false,true,true,false)
+    val previewWrites=mutableListOf<Boolean>();val videoWrites=mutableListOf<Boolean>()
+    shared.configurePreview { previewWrites.add(it) };shared.configureVideo { videoWrites.add(it) }
+    assertEquals(listOf(true),previewWrites);assertTrue(videoWrites.isEmpty())
+    val native=CaptureStability.plan(true,false,false,true,true)
+    previewWrites.clear();videoWrites.clear()
+    native.configurePreview { previewWrites.add(it) };native.configureVideo { videoWrites.add(it) }
+    assertTrue(previewWrites.isEmpty());assertEquals(listOf(true),videoWrites)
+    // Documented CameraX table: an explicit OFF on either stream defeats the other ON.
+    for(plan in listOf(shared,native)) assertFalse(plan.hardware && (plan.preview==false || plan.video==false))
   }
   @Test fun encoderAuditRespectsTheActiveIntervalAfterResume() {
     assertFalse(CaptureStability.deliveryStalled(50_000_000,0));assertTrue(CaptureStability.deliveryStalled(2_100_000_000,0))
