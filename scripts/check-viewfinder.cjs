@@ -24,6 +24,9 @@ const menu=app.slice(app.indexOf('captureControls={'),app.indexOf('photo={photo}
 for(const name of ['Timer','Video light','Exposure','Filters and skin','setTimer','setFlash','ToneSliders','LookPanel','ProPanel'])assert(menu.includes(name),name+' must be available in settings');
 assert(sheet.includes('{p.captureControls}'));
 assert(!app.includes('HORIZON')&&!sheet.includes("'horizon'")&&!app.includes('styles.quickActions'));
+const native=fs.readFileSync('modules/icamera/android/src/main/java/expo/modules/icamera/ICameraView.kt','utf8');
+assert(native.includes('Recorder.Builder()\n      .setAspectRatio(androidx.camera.core.AspectRatio.RATIO_16_9)'),'Every regular recorder must request the displayed video ratio');
+assert(native.includes('val outAspect = if(width>height) 16f/9f else 9f/16f'),'Dual composition must use the same visible video ratio');
 const controls=fs.readFileSync('src/ui/Controls.tsx','utf8');
 assert(controls.includes('width: 64, height: 64')&&controls.includes('width: 44, height: 44'));
 console.log(`PASS: ${cases} capture-ratio layouts, square crop, compact controls, moved settings and legacy setting migration.`);

@@ -803,6 +803,7 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
 
   private fun buildRecorder(quality: Quality, bitrate: Int): Recorder =
     Recorder.Builder()
+      .setAspectRatio(androidx.camera.core.AspectRatio.RATIO_16_9)
       .setQualitySelector(
         QualitySelector.from(quality, FallbackStrategy.lowerQualityOrHigherThan(Quality.SD)),
       )
@@ -1143,10 +1144,10 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
 
     // Picture-in-picture box in normalized device coordinates (origin centre, +y up).
     // Size it to the inset camera's own 3:4 portrait shape so faces aren't stretched.
-    // The composited stream is 3:4 portrait; the full-screen preview centre-crops its sides.
+    // The recorder and fitted viewfinder both use 9:16 portrait (16:9 sensor output).
     // Convert screen-space position/size (what the user drags) into the stream's NDC.
     val viewAspect = if (height > 0) width.toFloat() / height else 9f / 20f
-    val outAspect = 3f / 4f
+    val outAspect = if(width>height) 16f/9f else 9f/16f
     val visX = (viewAspect / outAspect).coerceAtMost(1f) // share of stream width that is on screen
     val visY = (outAspect / viewAspect).coerceAtMost(1f)
     val sx = (pipSize * visX).coerceIn(0.1f, 0.8f)
