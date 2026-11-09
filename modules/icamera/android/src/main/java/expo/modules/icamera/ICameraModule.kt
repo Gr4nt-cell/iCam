@@ -251,7 +251,7 @@ class ICameraModule : Module() {
   private fun capabilities(ctx: Context, provider: ProcessCameraProvider, ext: ExtensionsManager?): Map<String, Any?> {
     val pm = ctx.packageManager
     val concurrent = try {
-      pm.hasSystemFeature(PackageManager.FEATURE_CAMERA_CONCURRENT) &&
+      android.os.Build.VERSION.SDK_INT >= 30 && pm.hasSystemFeature(PackageManager.FEATURE_CAMERA_CONCURRENT) &&
         provider.availableConcurrentCameraInfos.any { pair ->
           pair.any { it.lensFacing == CameraSelector.LENS_FACING_BACK } &&
             pair.any { it.lensFacing == CameraSelector.LENS_FACING_FRONT }
@@ -259,7 +259,7 @@ class ICameraModule : Module() {
     } catch (e: Throwable) { false }
 
     val cameras = provider.availableCameraInfos.mapNotNull { info ->
-      try { describe(info, ext) } catch (e: Throwable) { null }
+      try { describe(ctx, info, ext) } catch (e: Throwable) { null }
     }
     val back = cameras.firstOrNull { it["position"] == "back" } ?: cameras.firstOrNull()
 
@@ -281,7 +281,7 @@ class ICameraModule : Module() {
 
   @OptIn(ExperimentalCamera2Interop::class, ExperimentalHighSpeedVideo::class, androidx.camera.core.ExperimentalSessionConfig::class)
   @androidx.annotation.OptIn(markerClass = [ExperimentalCamera2Interop::class, ExperimentalHighSpeedVideo::class, androidx.camera.core.ExperimentalSessionConfig::class])
-  private fun describe(info: CameraInfo, ext: ExtensionsManager?): Map<String, Any?> {
+  private fun describe(ctx: Context, info: CameraInfo, ext: ExtensionsManager?): Map<String, Any?> {
     val c2 = Camera2CameraInfo.from(info)
     fun <T> ch(key: CameraCharacteristics.Key<T>): T? = try { c2.getCameraCharacteristic(key) } catch (e: Throwable) { null }
 
@@ -302,7 +302,10 @@ class ICameraModule : Module() {
       ?.getOutputSizes(android.graphics.ImageFormat.JPEG) ?: emptyArray()
     val maxPx = jpeg.maxOfOrNull { it.width.toLong() * it.height } ?: 0L
     val focal = ch(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS)?.toList() ?: emptyList()
-    val physical = try { c2.cameraCharacteristicsMap.size } catch (e: Throwable) { 1 }
+    val physical = if(android.os.Build.VERSION.SDK_INT>=28)try {
+      val manager=ctx.getSystemService(Context.CAMERA_SERVICE) as android.hardware.camera2.CameraManager
+      manager.getCameraCharacteristics(c2.cameraId).physicalCameraIds.size.coerceAtLeast(1)
+    }catch(_:Exception){1}else 1
 
     val videoCaps = Recorder.getVideoCapabilities(info)
     val qualities = videoCaps.getSupportedQualities(DynamicRange.SDR).map { qualityName(it) }

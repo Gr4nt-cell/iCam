@@ -29,6 +29,9 @@ Reviewed the camera screen and controls, photo processing queue, permission and 
 | GL context cannot be made current | Renderer proceeded with GL calls anyway | Return before drawing and handle released texture reads |
 | Rear-display main-thread dispatch times out | Queued move could execute after the caller had given up | Cancel timed-out dispatch and remove its queued callback |
 | Wide portrait window | Bottom deck width clamp disagreed with the explicitly sized shutter row | Use one consistent screen-relative deck width |
+| Older Android camera binding | Physical-camera selection API was used without an Android 9 guard | Guard physical selection and Android 11 concurrency detection by OS version |
+| Lens capability enumeration | Used a restricted CameraX characteristics map | Read physical lens counts through public CameraManager APIs |
+| Native validation | Lint errors were allowed to pass | Fix API/opt-in errors and fail validation on future lint errors; document the intentional optional privileged permission |
 
 ## Validation and limits
 

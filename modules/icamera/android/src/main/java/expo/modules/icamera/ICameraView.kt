@@ -872,6 +872,8 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
     }
   }
 
+  @OptIn(ExperimentalCamera2Interop::class)
+  @androidx.annotation.OptIn(markerClass = [ExperimentalCamera2Interop::class])
   private fun bindVideo(p: ProcessCameraProvider, owner: LifecycleOwner) {
     stabilityEpoch++;sharedOffSamples=0;sharedFallbackApplied=false;requestedSharedStability=false
     val sel = selector(facing)
@@ -1055,7 +1057,7 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
       .build()
     fun <T> macroOpts(b: androidx.camera.core.ExtendableBuilder<T>) {
       val ext = androidx.camera.camera2.interop.Camera2Interop.Extender(b)
-      if (m.parentId != null) ext.setPhysicalCameraId(m.id)
+      if (android.os.Build.VERSION.SDK_INT >= 28 && m.parentId != null) ext.setPhysicalCameraId(m.id)
       ext.setCaptureRequestOption(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
     }
     val pb = Preview.Builder().setResolutionSelector(resolutionSelector())
@@ -1680,6 +1682,7 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
   }
 
   /** Full join (decode → effects → encode); used when the pieces can't simply be copied together. */
+  @androidx.annotation.OptIn(markerClass = [androidx.media3.common.util.UnstableApi::class])
   private fun transformJoin(parts: List<File>, durs: List<Long>, dur: Double, sessionRotation: Int) {
     val portrait = sessionRotation == android.view.Surface.ROTATION_0 || sessionRotation == android.view.Surface.ROTATION_180
     val w = if (portrait) 1080 else 1920
