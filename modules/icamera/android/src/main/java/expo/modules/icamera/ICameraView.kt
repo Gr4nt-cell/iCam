@@ -516,17 +516,30 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
     recording?.stop()
     recording = null
     if (ownRec != null) stopOwnRecording()
-    provider?.unbindAll()
+    if(!RearDisplayRouter.isMoving)provider?.unbindAll()
+    removeCallbacks(rebindAction);rebindQueued=false
     palm.setEnabled(false)
     portraitProcessor?.release()
     portraitProcessor = null
     camera = null
   }
 
+  /** Release camera-owned surfaces before Android reparents this activity to another display. */
+  internal fun pauseForDisplaySwitch() {
+    check(recording==null && ownRec==null) { "Finish recording before switching screens" }
+    removeCallbacks(rebindAction);rebindQueued=false
+    stabilityEpoch++;requestedSharedStability=false
+    provider?.unbindAll()
+    palm.setEnabled(false)
+    portraitProcessor?.release();portraitProcessor=null
+    camera=null;imageCapture=null;videoCapture=null;currentPreview=null;effectPreview=false
+  }
+  internal fun resumeAfterDisplaySwitch() { if(isAttachedToWindow)scheduleRebind(180) }
+  private val rebindAction=Runnable { rebindQueued=false;rebind() }
   private fun scheduleRebind(delayMs: Long = 0) {
-    if (rebindQueued) return
-    rebindQueued = true
-    postDelayed({ rebindQueued = false; rebind() }, delayMs)
+    if(rebindQueued)return
+    rebindQueued=true
+    postDelayed(rebindAction,delayMs)
   }
 
   private fun withProvider(block: (ProcessCameraProvider) -> Unit) {
@@ -548,7 +561,7 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
   }
 
   private fun rebind() {
-    if (!isAttachedToWindow) return
+    if (!isAttachedToWindow || RearDisplayRouter.isMoving) return
     if (recording != null) {
       // Front/back switch mid-video (Xiaomi-style): close this piece, re-open on the other camera,
       // keep recording into a new piece; pieces are joined into one video when recording stops.
@@ -562,6 +575,7 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
     if (owner == null) { emitError("Camera needs an active screen"); return }
     withProvider { p ->
       try {
+        if(!isAttachedToWindow || RearDisplayRouter.isMoving)return@withProvider
         stabilityEpoch++; requestedSharedStability=false
         p.unbindAll()
         camera = null; imageCapture = null; videoCapture = null

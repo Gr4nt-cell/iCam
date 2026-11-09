@@ -15,6 +15,9 @@ import android.os.IBinder
 import android.os.Looper
 import android.os.Parcel
 import android.view.Display
+import android.view.View
+import android.view.ViewGroup
+import java.util.concurrent.atomic.AtomicBoolean
 import rikka.shizuku.Shizuku
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.TimeUnit
@@ -22,6 +25,18 @@ import java.util.concurrent.TimeUnit
 internal object RearDisplayRouter {
   private val main=Handler(Looper.getMainLooper())
   private var keptRearAwake=false
+  private val moving=AtomicBoolean(false)
+  val isMoving: Boolean get()=moving.get()
+  private fun <T> onMain(delay: Long=0, block: ()->T): T {
+    check(Looper.myLooper()!=Looper.getMainLooper()) { "Display moves must use the background queue" }
+    val result=CompletableFuture<T>()
+    main.postDelayed({try{result.complete(block())}catch(e:Exception){result.completeExceptionally(e)}},delay)
+    return result.get(4,TimeUnit.SECONDS)
+  }
+  private fun cameras(view: View, block: (ICameraView)->Unit) {
+    if(view is ICameraView)block(view)
+    if(view is ViewGroup)for(i in 0 until view.childCount)cameras(view.getChildAt(i),block)
+  }
   private fun current(activity: Activity)=if(Build.VERSION.SDK_INT>=30)activity.display?.displayId ?: 0 else @Suppress("DEPRECATION") activity.windowManager.defaultDisplay.displayId
   private fun rear(display: Display): Boolean {
     val metrics=android.util.DisplayMetrics();@Suppress("DEPRECATION") display.getRealMetrics(metrics)
@@ -50,46 +65,65 @@ internal object RearDisplayRouter {
     return "requested"
   }
 
-  /** Called on Expo's background queue; main-thread operations never block the UI. */
-  fun move(activity: Activity,target: Int,useShizuku: Boolean,useRoot: Boolean = false): Map<String,Any> {
-    require(RearDisplayPolicy.validTarget(target,displays(activity).map{it.displayId})) { "That screen is no longer connected" }
-    if(current(activity)==target)return mapOf("moved" to true)
-    val intent=Intent(activity,activity.javaClass).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
-    val allowed=Build.VERSION.SDK_INT<29 || (activity.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager).isActivityStartAllowedOnDisplay(activity,target,intent)
-    fun verify(): Boolean {
-      val result=CompletableFuture<Boolean>()
-      main.postDelayed({
-        val moved=!activity.isDestroyed && current(activity)==target
-        if(moved){
-          if(target!=0){activity.window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);keptRearAwake=true}
-          else if(keptRearAwake){activity.window.clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);keptRearAwake=false}
-          if(Build.VERSION.SDK_INT>=27)activity.setTurnScreenOn(target!=0)
+  /** Quiesce the camera on main, move only this task, then rebuild surfaces on its live activity. */
+  fun move(activity: Activity,target: Int,useShizuku: Boolean,useRoot: Boolean = false,
+    currentActivity: ()->Activity? = { activity }): Map<String,Any> {
+    if(!moving.compareAndSet(false,true))return mapOf("moved" to false,"message" to "A screen switch is already in progress")
+    try {
+      val already=onMain {
+        require(RearDisplayPolicy.validTarget(target,displays(activity).map{it.displayId})) { "That screen is no longer connected" }
+        val same=current(activity)==target
+        if(!same)cameras(activity.window.decorView){it.pauseForDisplaySwitch()}
+        same
+      }
+      if(already)return mapOf("moved" to true)
+      fun verify(): Boolean {
+        repeat(8){
+          val moved=onMain(250){
+            val live=currentActivity()?.takeUnless{it.isDestroyed||it.isFinishing} ?: return@onMain false
+            if(current(live)!=target)return@onMain false
+            if(target!=0){live.window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);keptRearAwake=true}
+            else if(keptRearAwake){live.window.clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);keptRearAwake=false}
+            try{live.requestedOrientation=if(target==0)android.content.pm.ActivityInfo.SCREEN_ORIENTATION_PORTRAIT else android.content.pm.ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED}catch(_:Exception){}
+            if(Build.VERSION.SDK_INT>=27)live.setTurnScreenOn(target!=0)
+            true
+          }
+          if(moved)return true
         }
-        result.complete(moved)
-      },700)
-      return result.get(3,TimeUnit.SECONDS)
+        return false
+      }
+      var detail=""
+      // Move the existing task first when access is available; avoid relaunching the camera activity.
+      if(systemAccess(activity))try{
+        RearDisplayTaskMover.move(activity,activity.taskId,target,false)
+        if(verify())return mapOf("moved" to true)
+      }catch(e:Exception){detail="System route: "+(e.cause?.message ?: e.message ?: "refused")}
+      if(useShizuku && granted())try{
+        movePrivileged(activity,target)
+        if(verify())return mapOf("moved" to true)
+      }catch(e:Exception){detail="Shizuku route: "+(e.cause?.message ?: e.message ?: "refused")}
+      if(useRoot)try{
+        RearDisplayRoot.move(activity,target)
+        if(verify())return mapOf("moved" to true)
+      }catch(e:Exception){detail="Root route: "+(e.message ?: "refused")}
+      // Public front-display return still works if Shizuku has stopped.
+      val intent=Intent(activity,activity.javaClass).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+      val allowed=onMain {Build.VERSION.SDK_INT<29 || (activity.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager).isActivityStartAllowedOnDisplay(activity,target,intent)}
+      if(allowed)try{
+        onMain {activity.startActivity(intent,ActivityOptions.makeBasic().setLaunchDisplayId(target).toBundle())}
+        if(verify())return mapOf("moved" to true)
+      }catch(e:Exception){detail=e.cause?.message ?: e.message ?: "Screen switch refused"}
+      return mapOf("moved" to false,"needsShizuku" to true,"message" to
+        (detail.ifEmpty { "The phone blocked switching. Enable Shizuku or choose the root fallback." }))
+    } catch(e:Exception) {
+      return mapOf("moved" to false,"message" to (e.cause?.message ?: e.message ?: "Screen switch failed"))
+    } finally {
+      moving.set(false)
+      try{onMain {
+        val live=currentActivity()
+        if(live!=null&&!live.isDestroyed){try{UiRefresh.apply(live)}catch(_:Exception){};cameras(live.window.decorView){it.resumeAfterDisplaySwitch()}}
+      }}catch(_:Exception){}
     }
-    // Returning to the public front display must not depend on Shizuku staying alive.
-    if(allowed){
-      val started=CompletableFuture<Boolean>()
-      main.post {try{activity.startActivity(intent,ActivityOptions.makeBasic().setLaunchDisplayId(target).toBundle());started.complete(true)}catch(_:Exception){started.complete(false)}}
-      if(started.get(3,TimeUnit.SECONDS) && verify())return mapOf("moved" to true)
-    }
-    var detail=""
-    if(systemAccess(activity))try{
-      RearDisplayTaskMover.move(activity,activity.taskId,target,false)
-      if(verify())return mapOf("moved" to true)
-    }catch(e:Exception){detail="System route: "+(e.cause?.message ?: e.message ?: "refused")}
-    if(useShizuku && granted())try{
-      movePrivileged(activity,target)
-      if(verify())return mapOf("moved" to true)
-    }catch(e:Exception){detail="Shizuku route: "+(e.cause?.message ?: e.message ?: "refused")}
-    if(useRoot)try{
-      RearDisplayRoot.move(activity,target)
-      if(verify())return mapOf("moved" to true)
-    }catch(e:Exception){detail="Root route: "+(e.message ?: "refused")}
-    return mapOf("moved" to false,"needsShizuku" to true,"message" to
-      (if(detail.isNotEmpty())detail else "The phone blocked the switch. Enable Shizuku or explicitly use root. Privileged system builds can use their granted task permission."))
   }
 
   private fun movePrivileged(activity: Activity,target: Int) {

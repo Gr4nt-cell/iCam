@@ -173,6 +173,7 @@ export type ICameraHandle = {
 
 const NativeModule = requireOptionalNativeModule<{
   getCapabilities: () => Promise<Capabilities>;
+  requestUiRefreshRate: () => Promise<number>;
   getCameraDisplays: () => Promise<CameraDisplays>;
   requestRearDisplayAccess: () => Promise<string>;
   moveCameraDisplay: (target: number, privileged: boolean, root: boolean) => Promise<{moved: boolean; needsShizuku?: boolean; message?: string}>;
@@ -195,6 +196,9 @@ export type CameraDisplays = {
   rootGranted: boolean;
   displays: {id: number; name: string; width: number; height: number; isRear: boolean}[];
 };
+export async function requestUiRefreshRate(): Promise<number> {
+  return NativeModule?.requestUiRefreshRate ? NativeModule.requestUiRefreshRate() : 0;
+}
 export async function getCameraDisplays(): Promise<CameraDisplays | null> {
   return NativeModule?.getCameraDisplays ? NativeModule.getCameraDisplays() : null;
 }

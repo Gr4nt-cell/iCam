@@ -173,7 +173,7 @@ class PortraitProcessor : SurfaceProcessor {
   private val stInv = FloatArray(16)
   private val outM = FloatArray(16)
   private var frame = 0L
-  private var released = false
+  @Volatile private var released = false
 
   // Segmentation state
   @Volatile private var segBusy = false
@@ -223,11 +223,14 @@ class PortraitProcessor : SurfaceProcessor {
     val surface = Surface(surfaceTexture)
     surfaceTexture.setOnFrameAvailableListener({ render() }, handler)
     st = surfaceTexture
+    retirement.acquireInput()
     request.provideSurface(surface, executor) {
       surfaceTexture.setOnFrameAvailableListener(null)
       surfaceTexture.release()
       surface.release()
       if (st === surfaceTexture) st = null
+      retirement.returnInput()
+      finishRelease()
     }
   }
 
@@ -239,26 +242,37 @@ class PortraitProcessor : SurfaceProcessor {
       surfaceOutput.close()
     }
     val es = EGL14.eglCreateWindowSurface(display, config, surface, intArrayOf(EGL14.EGL_NONE), 0)
+    if(es==EGL14.EGL_NO_SURFACE){surfaceOutput.close();return}
     outputs[surfaceOutput] = es to surfaceOutput.size
   }
 
+  private val releaseStarted=java.util.concurrent.atomic.AtomicBoolean(false)
+  private val retirement=SurfaceRetirement()
   fun release() {
+    if(!releaseStarted.compareAndSet(false,true))return
+    released=true
     handler.post {
-      released = true
-      outputs.forEach { (out, p) -> EGL14.eglDestroySurface(display, p.first); out.close() }
-      outputs.clear()
-      st?.release(); st = null
+      val closing=outputs.toList();outputs.clear()
+      closing.forEach { (out, p) -> if(display!=EGL14.EGL_NO_DISPLAY)EGL14.eglDestroySurface(display,p.first);out.close() }
+      st=null;retirement.closeOutputs()
+      finishRelease()
+    }
+  }
+  // SurfaceRequest owns each input until its result callback. Never release a texture twice,
+  // tear down its EGL context early, or quit the executor before CameraX returns the input.
+  private fun finishRelease() {
+      if(!released || !retirement.beginDestroy())return
       if (display != EGL14.EGL_NO_DISPLAY) {
         EGL14.eglMakeCurrent(display, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_CONTEXT)
         if (pbuffer != EGL14.EGL_NO_SURFACE) EGL14.eglDestroySurface(display, pbuffer)
         EGL14.eglDestroyContext(display, context)
-        EGL14.eglTerminate(display)
+        // EGL_DEFAULT_DISPLAY is shared with the replacement camera and app renderer.
+        // Destroy only our context; terminating the shared display invalidates their resources.
       }
       display = EGL14.EGL_NO_DISPLAY
       segExecutor.shutdown()
       try { streamSeg.close(); singleSeg.close() } catch (_: Throwable) {}
       thread.quitSafely()
-    }
   }
 
   /* ---------------- rendering ---------------- */
@@ -882,9 +896,7 @@ class PortraitProcessor : SurfaceProcessor {
 
   private fun initGl() {
     if (display != EGL14.EGL_NO_DISPLAY) return
-    display = EGL14.eglGetDisplay(EGL14.EGL_DEFAULT_DISPLAY)
-    val ver = IntArray(2)
-    EGL14.eglInitialize(display, ver, 0, ver, 1)
+    display = processDisplay
     val attribs = intArrayOf(
       EGL14.EGL_RED_SIZE, 8, EGL14.EGL_GREEN_SIZE, 8, EGL14.EGL_BLUE_SIZE, 8, EGL14.EGL_ALPHA_SIZE, 8,
       EGL14.EGL_RENDERABLE_TYPE, EGL14.EGL_OPENGL_ES2_BIT,
@@ -967,6 +979,14 @@ class PortraitProcessor : SurfaceProcessor {
     ByteBuffer.allocateDirect(a.size * 4).order(ByteOrder.nativeOrder()).asFloatBuffer().apply { put(a); position(0) }
 
   companion object {
+    // One process-lifetime display lease; each processor owns only its own context and surfaces.
+    private val processDisplay: EGLDisplay by lazy {
+      val shared=EGL14.eglGetDisplay(EGL14.EGL_DEFAULT_DISPLAY)
+      val version=IntArray(2)
+      check(shared!=EGL14.EGL_NO_DISPLAY && EGL14.eglInitialize(shared,version,0,version,1)) { "Camera graphics are unavailable" }
+      shared
+    }
+
     private const val VERTEX = """
       attribute vec4 aPos;
       attribute vec4 aTex;
