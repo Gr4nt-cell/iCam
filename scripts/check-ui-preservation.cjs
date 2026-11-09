@@ -1,6 +1,7 @@
 /* Static regression audit: requires the base revision as argv[2] (default HEAD). */
 const fs=require('fs'),cp=require('child_process'),ts=require('typescript'),assert=require('assert/strict');
 const base=process.argv[2]||'HEAD';
+const rebuild=process.argv.includes('--allow-stabilization-rebuild');
 const hdr=process.argv.includes('--allow-hdr-processing');
 const grouped=process.argv.includes('--allow-mode-grouping');
 const motion=process.argv.includes('--allow-static-motion');
@@ -14,6 +15,8 @@ const printer=ts.createPrinter({removeComments:true});
 function parse(code,file){return ts.createSourceFile(file,code,ts.ScriptTarget.Latest,true,ts.ScriptKind.TSX);}
 function canonicalAttr(code){const src=parse(`<X ${code}/>`, 'temp.tsx');return printer.printNode(ts.EmitHint.Unspecified,src.statements[0].expression.attributes.properties[0],src);}
 function approvedPrefix(prefix){
+ if(rebuild)prefix=prefix.replace(/^  \/\/ (Output width\/height|Full sensor)[^\n]*\n/gm,'').replace(/  const aspectRatio = [^;]+;/,'  const aspectRatio = APPROVED_SENSOR_FRAMING;')
+  .replace("aspectRatio: screens.onSecondary && aspect === 'full' ? rearCameraFrame(win.width,win.height).width / win.height : aspectRatio",'aspectRatio');
  if(liveRecord)prefix=prefix.replace("if (v.video) setVideo((x) => ({ ...x, ...v.video, stabilization: v.video?.hdr && v.video.stabilization === 'horizon' ? 'cinematic' : v.video?.stabilization ?? x.stabilization }));","if (v.video) setVideo((x) => ({ ...x, ...v.video }));");
  if(xiaomi)prefix=prefix.replace(/^import \{ rearCameraFrame[^\n]+\n/m,'')
   .replace('mirrorPhoto(facing,mirrorSelfie,screens.onSecondary,jpegMirrored)',"facing === 'front' && (jpegMirrored === 1 ? !mirrorSelfie : mirrorSelfie)")
@@ -27,6 +30,7 @@ function approvedPrefix(prefix){
 function normalized(node,source){
  if(ts.isJsxAttribute(node)){
   const text=node.getText(source);
+  if(rebuild&&['aspect','previewFit'].includes(node.name.text))return node.name.text+':approved-wide-preview';
   if(xiaomi&&node.name.text==='style'&&text.includes('rearCameraFrame'))return canonicalAttr('style={StyleSheet.absoluteFill}');
   if(liveRecord&&node.name.text==='options'&&text.includes('p.video.hdr'))return canonicalAttr("options={['off','standard','cinematic','horizon']}");
   if(liveRecord&&node.name.text==='labels'&&text.includes('p.video.hdr'))return canonicalAttr("labels={['Off','Std','Cinema','Horizon']}");
@@ -62,6 +66,7 @@ if(ts.isJsxAttribute(n)&&(/^on[A-Z]/.test(n.name.text)||['disabled','value','min
 const quality=process.argv.includes('--allow-capture-quality');
 const offline=process.argv.includes('--allow-offline-stabilization');
 const reviewed=new Set([
+ ...(rebuild ? ['modules/icamera/android/src/main/java/expo/modules/icamera/SteadyFrame.kt','modules/icamera/android/src/test/java/expo/modules/icamera/SteadyFrameTest.kt','modules/icamera/android/src/test/java/expo/modules/icamera/VideoToneTest.kt','modules/icamera/android/src/main/java/expo/modules/icamera/LiveRollFilter.kt','modules/icamera/android/src/main/java/expo/modules/icamera/RecordingStabilityPolicy.kt','modules/icamera/android/src/main/java/expo/modules/icamera/HdrVideoStabilizer.kt','modules/icamera/android/src/main/java/expo/modules/icamera/OfflineVideoMotion.kt','modules/icamera/android/src/main/java/expo/modules/icamera/VideoProcessingTransform.kt','modules/icamera/android/src/test/java/expo/modules/icamera/LiveRollFilterTest.kt','modules/icamera/android/src/test/java/expo/modules/icamera/RecordingStabilityPolicyTest.kt','modules/icamera/android/src/test/java/expo/modules/icamera/OfflineVideoMotionTest.kt','modules/icamera/android/src/test/java/expo/modules/icamera/VideoProcessingTransformTest.kt'] : []),
  'modules/icamera/android/build.gradle',
  'modules/icamera/android/src/main/java/expo/modules/icamera/VideoTuning.kt',
  'modules/icamera/android/src/main/java/expo/modules/icamera/ICameraView.kt',

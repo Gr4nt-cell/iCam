@@ -15,3 +15,5 @@ Photo and Portrait share detected-face skin smoothing on both cameras (initial 4
 Validation includes TypeScript, the actual photo shader, capture/control regression checks, manifest mods, rear layout / mirroring policy, rear display detection, root task ownership and live roll / crop math. The live GL processor and display access classes compile against their Android dependencies. Full APK compilation and physical Xiaomi testing are still required before release.
 
 Recording parity: the live path uses one crop envelope for preview/encoder and a shared-stabilization selection policy. See stabilization-validation.md for the exact validation limits and phone test matrix.
+
+Current stabilization implementation: SteadyFrame.kt replaces the earlier live and offline engines. See stabilization-validation.md for fixed margins, SENSOR framing, testing and device limits.
