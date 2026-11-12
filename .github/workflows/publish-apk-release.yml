@@ -42,7 +42,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           RELEASE_TAG: ${{ inputs.release_tag }}
-          APK_NAME: ${{ github.workspace }}
         run: |
           if ! gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
             version="${RELEASE_TAG#v}"
