@@ -17,4 +17,19 @@ internal object RecordedClip {
       extractor.sampleTime>=0
     }catch(_:Exception){false}finally{extractor.release()}
   }
+
+  /** Encoded video size as stored in the file (the rotation tag is not applied), or null. */
+  fun dimensions(file: File): Pair<Int, Int>? {
+    if(!file.isFile || file.length()==0L)return null
+    val extractor=MediaExtractor()
+    return try {
+      extractor.setDataSource(file.absolutePath)
+      val video=(0 until extractor.trackCount).firstOrNull {
+        extractor.getTrackFormat(it).getString("mime")?.startsWith("video/")==true
+      } ?: return null
+      val format=extractor.getTrackFormat(video)
+      if(!format.containsKey("width") || !format.containsKey("height")) return null
+      format.getInteger("width") to format.getInteger("height")
+    }catch(_:Exception){null}finally{extractor.release()}
+  }
 }

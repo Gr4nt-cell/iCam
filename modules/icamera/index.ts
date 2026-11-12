@@ -147,7 +147,7 @@ export type ICameraProps = ViewProps & {
   onReady?: (e: NativeEvent<ReadyEvent>) => void;
   onError?: (e: NativeEvent<{ message: string }>) => void;
   onRecordingFinished?: (
-    e: NativeEvent<{ path: string | null; durationMs: number; slowMotion: boolean; error: string | null }>,
+    e: NativeEvent<{ path: string | null; durationMs: number; slowMotion: boolean; error: string | null; width?: number; height?: number }>,
   ) => void;
   onPhotosCaptured?: (
     e: NativeEvent<{

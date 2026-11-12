@@ -768,7 +768,13 @@ function CameraScreen() {
                 assetId,
                 info: `${slowMotion ? 'Slow motion · ' : mode === 'dual' ? 'Dual · ' : ''}${Math.round(durationMs / 1000)} s`,
               });
-              flashToast(slowMotion ? 'Slow-motion video saved' : 'Video saved');
+              // Honest resolution: warn when the saved clip is smaller than the requested setting.
+              const longEdge = Math.max(e.nativeEvent.width ?? 0, e.nativeEvent.height ?? 0);
+              const plainVideo = mode === 'video' || (mode === 'pro' && proVideo);
+              const wanted = plainVideo ? (video.resolution === '4k' ? 2160 : 1080) : 0;
+              if (wanted > 0 && longEdge > 0 && longEdge < wanted)
+                flashToast(`Video saved at ${longEdge}p — this camera can't record ${wanted === 2160 ? '4K' : '1080p'} with these settings`, 5000);
+              else flashToast(slowMotion ? 'Slow-motion video saved' : 'Video saved');
             } catch {
               setLast({uri:`file://${path}`,isVideo:true});
               flashToast('Video kept in app; could not finish saving');
@@ -991,6 +997,7 @@ function CameraScreen() {
         onPhoto={setPhoto}
         onVideo={setVideo}
         supportsVideoHdr={!!caps?.cameras.some((c) => c.position === facing && c.videoHdr)}
+        supports4k={caps ? !!caps.cameras.some((c) => c.position === facing && c.videoQualities.includes('4K')) : undefined}
         bottomInset={insets.bottom}
         mirrorSelfie={mirrorSelfie}
         onMirrorSelfie={setMirrorSelfie}

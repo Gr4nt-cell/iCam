@@ -59,12 +59,14 @@ class SteadyFrameTest {
     for(mode in listOf("video","action","pvideo")) for(setting in listOf("standard","cinematic"))
       assertEquals(1f,CaptureStability.crop(mode,setting,false,true),0f)
     assertEquals(1f,CaptureStability.crop("video","off"),0f)
-    assertTrue(CaptureStability.crop("action","standard")<=1.12f)
+    assertTrue(CaptureStability.crop("action","standard")<=1.15f)
   }
   @Test fun sharedSessionModeIsSelectedBeforeVideoOnlyMode() {
     assertEquals(CaptureStabilityPlan(true,null),CaptureStability.plan(true,true,true,false))
-    assertFalse(CaptureStability.plan(true,false,true,false).hardware)
+    // Video-stream EIS is used in SDR too when preview stabilization isn't offered.
+    assertEquals(CaptureStabilityPlan(null,true),CaptureStability.plan(true,false,true,false))
     assertEquals(true,CaptureStability.plan(true,false,true,true).video)
+    assertFalse(CaptureStability.plan(true,false,false,false).hardware)
     assertFalse(CaptureStability.plan(false,true,true,false).hardware)
   }
   @Test fun previewOnlyAndVideoOnlyPlansNeverSetTheOpposingOffFlag() {

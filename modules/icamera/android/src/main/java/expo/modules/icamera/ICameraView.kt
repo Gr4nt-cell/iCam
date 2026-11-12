@@ -96,6 +96,7 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
   @Volatile private var videoHardwareStabilized = false
   @Volatile private var stabilityEpoch = 0
   @Volatile private var requestedSharedStability = false
+  @Volatile private var requestedVideoStability = false
   private var sharedOffSamples = 0
   @Volatile private var sharedFallbackApplied = false
   private var recording: Recording? = null
@@ -670,7 +671,7 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
     } else CameraSelector.DEFAULT_BACK_CAMERA
   }
 
-  /** Optical stabilization is used when electronic stabilization is unavailable. */
+  /** Optical stabilization is layered under any electronic stabilization in stabilized video modes. */
   @OptIn(ExperimentalCamera2Interop::class)
   @androidx.annotation.OptIn(markerClass = [ExperimentalCamera2Interop::class])
   private fun oisSupported(info: androidx.camera.core.CameraInfo): Boolean = try {
@@ -678,6 +679,21 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
       .getCameraCharacteristic(android.hardware.camera2.CameraCharacteristics.LENS_INFO_AVAILABLE_OPTICAL_STABILIZATION)
       ?.contains(CaptureRequest.LENS_OPTICAL_STABILIZATION_MODE_ON) == true
   } catch (e: Throwable) { false }
+
+  /** Any on-device video encoder (H.264 or HEVC) accepts this frame size. */
+  private fun encoderSupports(w: Int, h: Int): Boolean {
+    try {
+      for (info in android.media.MediaCodecList(android.media.MediaCodecList.REGULAR_CODECS).codecInfos) {
+        if (!info.isEncoder) continue
+        for (type in info.supportedTypes) {
+          if (!type.equals(android.media.MediaFormat.MIMETYPE_VIDEO_AVC, true) &&
+            !type.equals(android.media.MediaFormat.MIMETYPE_VIDEO_HEVC, true)) continue
+          if (runCatching { info.getCapabilitiesForType(type).videoCapabilities.isSizeSupported(w, h) }.getOrDefault(false)) return true
+        }
+      }
+    } catch (e: Throwable) { }
+    return false
+  }
 
   /**
    * Mains frequency of the country the phone is in. AUTO detection often misses on front cameras,
@@ -709,14 +725,17 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
     val epoch=stabilityEpoch
     androidx.camera.camera2.interop.Camera2Interop.Extender(b).setSessionCaptureCallback(object: android.hardware.camera2.CameraCaptureSession.CaptureCallback(){
       override fun onCaptureCompleted(session:android.hardware.camera2.CameraCaptureSession,request:CaptureRequest,result:android.hardware.camera2.TotalCaptureResult){
-        if(epoch!=stabilityEpoch || !requestedSharedStability || sharedFallbackApplied || !effectPreview)return
+        if(epoch!=stabilityEpoch || sharedFallbackApplied || !effectPreview)return
+        val sharedReq=requestedSharedStability
+        if(!sharedReq && !requestedVideoStability)return
         val actual=result.get(android.hardware.camera2.CaptureResult.CONTROL_VIDEO_STABILIZATION_MODE) ?: return
-        if(actual==2){sharedOffSamples=0;return} // PREVIEW_STABILIZATION, common to both streams.
+        // Shared preview stabilization reports PREVIEW_STABILIZATION(2); video-stream EIS reports ON(1).
+        if(if(sharedReq)actual==2 else actual!=0){sharedOffSamples=0;return}
         sharedOffSamples++
         if(sharedOffSamples<45)return
         sharedFallbackApplied=true
         post {
-          if(epoch!=stabilityEpoch || !requestedSharedStability || !effectPreview)return@post
+          if(epoch!=stabilityEpoch || (!requestedSharedStability && !requestedVideoStability) || !effectPreview)return@post
           videoHardwareStabilized=false
           portraitProcessor?.let { proc ->
             proc.stabilityMargin=CaptureStability.crop(mode,stabilization,facing=="front",false)
@@ -853,7 +872,7 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
         val front = facing == "front"
         // Keep both viewfinder and recorded sensor feed wide; stabilize the saved clip.
         val stab = !effectPreview && CaptureStability.crop(mode, stabilization) > 1.001f && (try { Preview.getPreviewCapabilities(info).isStabilizationSupported } catch (e: Throwable) { false })
-        val preview = newPreview(stab, CaptureStability.crop(mode, stabilization) > 1.001f && !stab && !videoHardwareStabilized && oisSupported(info))
+        val preview = newPreview(stab, CaptureStability.crop(mode, stabilization) > 1.001f && !stab && oisSupported(info))
         val proc = portraitProcessor
         camera = if (proc != null && effectPreview) {
           proc.frontCamera = front
@@ -875,7 +894,7 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
   @OptIn(ExperimentalCamera2Interop::class)
   @androidx.annotation.OptIn(markerClass = [ExperimentalCamera2Interop::class])
   private fun bindVideo(p: ProcessCameraProvider, owner: LifecycleOwner) {
-    stabilityEpoch++;sharedOffSamples=0;sharedFallbackApplied=false;requestedSharedStability=false
+    stabilityEpoch++;sharedOffSamples=0;sharedFallbackApplied=false;requestedSharedStability=false;requestedVideoStability=false
     val sel = selector(facing)
     val info = p.getCameraInfo(sel)
     val action = mode == "action"
@@ -893,16 +912,27 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
     fun bothSupport(q: Quality) = listOf(info).all {
       try { Recorder.getVideoCapabilities(it).getSupportedQualities(hdrRange ?: DynamicRange.SDR).contains(q) } catch (e: Throwable) { false }
     }
-    val uhd = !action && !portraitVideo && videoQuality == "uhd" && bothSupport(Quality.UHD)
+    val uhdReported = bothSupport(Quality.UHD)
+    val fhdReported = bothSupport(Quality.FHD)
+    // Some phones under-report qualities to CameraX while the encoder happily takes the size, so a
+    // requested-but-unreported size is still attempted with an explicit ResolutionSelector instead
+    // of silently recording 720p. The saved clip's real size is verified and reported after recording.
+    val wantUhd = !action && !portraitVideo && videoQuality == "uhd"
+    val uhd = wantUhd && (uhdReported || encoderSupports(3840, 2160))
+    val fhd = uhd || fhdReported || encoderSupports(1920, 1080)
+    val quality = if (uhd) Quality.UHD else if (fhd) Quality.FHD else Quality.HD
+    val forceSize = if (uhd && !uhdReported) android.util.Size(3840, 2160)
+      else if (!uhd && fhd && !fhdReported) android.util.Size(1920, 1080)
+      else null
     // Front cameras record at a steady 30 fps (also in Action): at 60 fps the exposure is too short to
     // span the 100/120 Hz pulsing of indoor lights, which shows as flicker in dim rooms
     val targetFps = if (selfieVideo) minOf(fps, 30) else if (action) 60 else if (portraitVideo) 30 else fps
-    val quality = if (uhd) Quality.UHD else if (bothSupport(Quality.FHD)) Quality.FHD else Quality.HD
-    // Preserve the requested 16:9 output; use this lens's supported quality range.
+    // Preserve the requested 16:9 output; use this lens's supported quality range. A forced size must
+    // not set a QualitySelector on the recorder: CameraX rejects the two together.
     val recorder = Recorder.Builder()
-      .setQualitySelector(QualitySelector.from(quality, FallbackStrategy.lowerQualityOrHigherThan(Quality.SD)))
       .setAspectRatio(androidx.camera.core.AspectRatio.RATIO_16_9)
       .setTargetVideoEncodingBitRate(if (uhd) 60_000_000 else 24_000_000)
+      .apply { if (forceSize == null) setQualitySelector(QualitySelector.from(quality, FallbackStrategy.lowerQualityOrHigherThan(Quality.SD))) }
       .build()
 
     // SDR effects crop and stabilize each frame before the encoder receives it.
@@ -914,11 +944,27 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
     val stabilityPlan=CaptureStability.plan(wantStab,sharedSupported,videoSupported,hdr)
     val previewStab=stabilityPlan.preview == true
     requestedSharedStability=previewStab
+    requestedVideoStability=stabilityPlan.video == true
     val hardwareEis=stabilityPlan.hardware
-    val ois = wantStab && !hardwareEis && oisSupported(info)
+    // OIS and EIS are independent capture controls; stabilized video modes use both together
+    // (EIS crops the readout, OIS steadies the optics — they compose, as on the phone's own camera).
+    val ois = wantStab && oisSupported(info)
     val useEffect = !hdr
     val vb = VideoCapture.Builder(recorder)
       .setMirrorMode(if (rearSelfie) MirrorMode.MIRROR_MODE_ON else if (mirror) MirrorMode.MIRROR_MODE_ON_FRONT_ONLY else MirrorMode.MIRROR_MODE_OFF)
+    forceSize?.let { size ->
+      vb.setResolutionSelector(
+        androidx.camera.core.resolutionselector.ResolutionSelector.Builder()
+          .setAspectRatioStrategy(androidx.camera.core.resolutionselector.AspectRatioStrategy.RATIO_16_9_FALLBACK_AUTO_STRATEGY)
+          .setResolutionStrategy(
+            androidx.camera.core.resolutionselector.ResolutionStrategy(
+              size,
+              androidx.camera.core.resolutionselector.ResolutionStrategy.FALLBACK_RULE_CLOSEST_LOWER_THEN_HIGHER,
+            ),
+          )
+          .build(),
+      )
+    }
     videoHardwareStabilized = hardwareEis
     stabilityPlan.configureVideo { vb.setVideoStabilizationEnabled(it) }
 
@@ -1008,6 +1054,7 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
     val fallbackPlan=if(useEffect)CaptureStability.plan(wantStab,sharedSupported,videoSupported,true) else stabilityPlan
     videoHardwareStabilized=fallbackPlan.hardware
     requestedSharedStability=fallbackPlan.preview == true
+    requestedVideoStability=fallbackPlan.video == true
     val plainVc = if(useEffect) {
       val safe=VideoCapture.Builder(buildRecorder(Quality.FHD,20_000_000))
         .setMirrorMode(if(rearSelfie)MirrorMode.MIRROR_MODE_ON else if(mirror)MirrorMode.MIRROR_MODE_ON_FRONT_ONLY else MirrorMode.MIRROR_MODE_OFF)
@@ -1017,7 +1064,7 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
       safe.build()
     } else vc
     camera = try {
-      p.bindToLifecycle(owner,sel,newPreview(fallbackPlan.preview,wantStab && !videoHardwareStabilized && oisSupported(info)),plainVc).also{videoCapture=plainVc}
+      p.bindToLifecycle(owner,sel,newPreview(fallbackPlan.preview,wantStab && oisSupported(info)),plainVc).also{videoCapture=plainVc}
     } catch(e: Throwable) {
       p.unbindAll();videoHardwareStabilized=false
       if(hdr){
@@ -1033,11 +1080,12 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
         val nativePlan=CaptureStability.plan(wantStab,sharedSupported,videoSupported,true)
         videoHardwareStabilized=nativePlan.hardware
         requestedSharedStability=nativePlan.preview == true
+        requestedVideoStability=nativePlan.video == true
         val plain=VideoCapture.Builder(buildRecorder(Quality.FHD,20_000_000))
           .setMirrorMode(if(rearSelfie)MirrorMode.MIRROR_MODE_ON else if(mirror)MirrorMode.MIRROR_MODE_ON_FRONT_ONLY else MirrorMode.MIRROR_MODE_OFF)
         nativePlan.configureVideo { plain.setVideoStabilizationEnabled(it) }
         CaptureStability.frameRate(ranges.map{it.lower to it.upper},30)?.let{plain.setTargetFrameRate(Range(it.first,it.second));boundFrameRate=it.second}
-        p.bindToLifecycle(owner,sel,newPreview(nativePlan.preview,wantStab && !videoHardwareStabilized && oisSupported(info)),plain.build().also{videoCapture=it})
+        p.bindToLifecycle(owner,sel,newPreview(nativePlan.preview,wantStab && oisSupported(info)),plain.build().also{videoCapture=it})
           .also{emitError("Using a conservative recording profile after the camera rejected the requested effects/stabilization combination") }
       }
     }
@@ -1492,11 +1540,14 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
         ownFile = null
         keepScreenOn = false
         rootView?.keepScreenOn = false
+        val dims = if (ok && file != null) RecordedClip.dimensions(file) else null
         emitRecordingFinished(
           mapOf(
             "path" to if (ok && file != null) file.absolutePath else null,
             "durationMs" to durMs,
             "slowMotion" to false,
+            "width" to dims?.first,
+            "height" to dims?.second,
             "error" to err,
           ),
         )
@@ -1576,11 +1627,14 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
         playSound(android.media.MediaActionSound.STOP_VIDEO_RECORDING)
         post { updateGestures() }
         val ok = RecordedClip.hasVideoSample(file)
+        val dims = if (ok) RecordedClip.dimensions(file) else null
         emitRecordingFinished(
           mapOf(
             "path" to if (ok) file.absolutePath else null,
             "durationMs" to event.recordingStats.recordedDurationNanos / 1_000_000.0,
             "slowMotion" to (mode == "slowmo"),
+            "width" to dims?.first,
+            "height" to dims?.second,
             "error" to (routingFailure ?: if(!ok) "No playable video frames were recorded" else if (event.hasError()) "Recorder error ${event.error}" else null),
           ),
         )
@@ -1678,7 +1732,8 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
 
   @androidx.annotation.OptIn(markerClass = [androidx.media3.common.util.UnstableApi::class])
   private fun finishJoinedVideo(file: File, durationMs: Double) {
-    emitRecordingFinished(mapOf("path" to file.absolutePath,"durationMs" to durationMs,"slowMotion" to false))
+    val dims = RecordedClip.dimensions(file)
+    emitRecordingFinished(mapOf("path" to file.absolutePath,"durationMs" to durationMs,"slowMotion" to false,"width" to dims?.first,"height" to dims?.second))
   }
 
   /** Full join (decode → effects → encode); used when the pieces can't simply be copied together. */

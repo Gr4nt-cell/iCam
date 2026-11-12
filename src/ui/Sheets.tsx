@@ -17,6 +17,8 @@ type SettingsProps = {
   onPhoto: (p: PhotoSettings) => void;
   onVideo: (v: VideoSettings) => void;
   supportsVideoHdr: boolean;
+  /** False = the selected camera doesn't report 4K recording to the app */
+  supports4k?: boolean;
   bottomInset: number;
   mirrorSelfie: boolean;
   onMirrorSelfie: (v: boolean) => void;
@@ -89,7 +91,8 @@ export function SettingsSheet(p: SettingsProps) {
             </Section>
 
             <Section title="Video">
-              <Row label="Resolution">
+              <Row label="Resolution"
+                hint={p.supports4k === false ? "This camera doesn't report 4K recording. iCam still tries when 4K is picked, and the saved size is confirmed after recording." : undefined}>
                 <Segmented
                   options={['1080p', '4k']}
                   labels={['1080p', '4K']}

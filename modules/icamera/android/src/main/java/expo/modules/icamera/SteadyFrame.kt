@@ -12,15 +12,17 @@ internal data class CaptureStabilityPlan(val preview: Boolean?, val video: Boole
 internal object CaptureStability {
   fun crop(mode: String, setting: String, front: Boolean = false, hardware: Boolean = false): Float = when {
     hardware || (mode != "action" && setting == "off") -> 1f
-    mode == "action" -> if (front) 1.08f else 1.12f
-    setting == "cinematic" -> if (front) 1.05f else 1.08f
-    else -> 1.04f
+    mode == "action" -> if (front) 1.10f else 1.15f
+    setting == "cinematic" -> if (front) 1.06f else 1.10f
+    else -> 1.05f
   }
   fun plan(enabled: Boolean, shared: Boolean, video: Boolean, hdr: Boolean) = when {
     !enabled -> CaptureStabilityPlan(false, false)
     // CameraX 1.5.1: Preview ON + Video OFF disables both. Unspecified is a real third state.
     shared -> CaptureStabilityPlan(true, null)
-    hdr && video -> CaptureStabilityPlan(null, true)
+    // Video-stream EIS also counts when preview stabilization isn't offered (SDR included): the
+    // preview flag must stay unspecified or it would defeat the video flag on CameraX 1.5.1.
+    video -> CaptureStabilityPlan(null, true)
     else -> CaptureStabilityPlan(false, false)
   }
   fun deliveryStalled(nanos: Long, frames: Long) = nanos > 2_000_000_000L && frames <= 0L
