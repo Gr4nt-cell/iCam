@@ -9,10 +9,15 @@ on:
         type: string
         default: "42480755732"
       release_tag:
-        description: Existing release tag to attach the APK to
+        description: Release tag to attach the APK to (created when missing)
         required: true
         type: string
         default: "v1.0.181"
+      notes:
+        description: Release notes (optional)
+        required: false
+        type: string
+        default: ""
 
 permissions:
   actions: read
@@ -42,9 +47,12 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           RELEASE_TAG: ${{ inputs.release_tag }}
+          RELEASE_NOTES: ${{ inputs.notes }}
         run: |
           if ! gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
             version="${RELEASE_TAG#v}"
-            gh release create "$RELEASE_TAG" --title "iCam $version" --target main --notes ""
+            gh release create "$RELEASE_TAG" --title "iCam $version" --target main --notes "$RELEASE_NOTES"
+          elif [ -n "$RELEASE_NOTES" ]; then
+            gh release edit "$RELEASE_TAG" --notes "$RELEASE_NOTES"
           fi
           gh release upload "$RELEASE_TAG" "$APK_PATH" --clobber
