@@ -959,7 +959,7 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
     // already normalizes differing dimensions instead of limiting both cameras in advance.
     val switchable = hdrRange == null && (mode == "video" || mode == "action")
     fun bothSupport(q: Quality) = listOf(info).all {
-      try { Recorder.getVideoCapabilities(it).getSupportedQualities(hdrRange ?: DynamicRange.SDR).contains(q) } catch (e: Throwable) { false }
+      try { VideoCaps.of(it, hdrRange != null).getSupportedQualities(hdrRange ?: DynamicRange.SDR).contains(q) } catch (e: Throwable) { false }
     }
     val uhdReported = bothSupport(Quality.UHD)
     val fhdReported = bothSupport(Quality.FHD)
@@ -979,6 +979,7 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
     // Preserve the requested 16:9 output; use this lens's supported quality range. A forced size must
     // not set a QualitySelector on the recorder: CameraX rejects the two together.
     val recorder = Recorder.Builder()
+      .setVideoCapabilitiesSource(VideoCaps.source(info, hdrRange != null))
       .setAspectRatio(androidx.camera.core.AspectRatio.RATIO_16_9)
       .setTargetVideoEncodingBitRate(if (uhd) 72_000_000 else 24_000_000)
       // 4K may fall back to 1080p when the camera can't combine it with the other streams, never to 720p/SD.

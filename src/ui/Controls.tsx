@@ -266,6 +266,7 @@ export function ModeCarousel({
   disabled,
   proVideo = false,
   onProVideo,
+  compact = false,
 }: {
   mode: CaptureMode;
   modes: { key: CaptureMode; label: string }[];
@@ -273,6 +274,8 @@ export function ModeCarousel({
   disabled?: boolean;
   proVideo?: boolean;
   onProVideo?: (video: boolean) => void;
+  /** Smaller labels for the rear screen */
+  compact?: boolean;
 }) {
   const { width } = useWindowDimensions();
   const group = modeGroup(mode, proVideo);
@@ -301,8 +304,8 @@ export function ModeCarousel({
                 if (m.key === 'pro') onProVideo?.(group === 'video');
                 onChange(m.key);
               }}
-              style={styles.modeItem}>
-              <Text style={[styles.modeText, on && styles.modeTextActive]}>{m.label === 'Night Sight' ? 'Night' : m.label}</Text>
+              style={[styles.modeItem, compact && styles.modeItemCompact]}>
+              <Text style={[styles.modeText, on && styles.modeTextActive, compact && (on ? styles.modeTextCompactOn : styles.modeTextCompact)]}>{m.label === 'Night Sight' ? 'Night' : m.label}</Text>
               <View style={[styles.modeDot, on && styles.modeDotOn]} />
             </Pressable>
           );
@@ -562,6 +565,9 @@ export const styles = StyleSheet.create({
   modeBar: { alignSelf: 'center', width: '100%', height: 40, justifyContent: 'center' },
   modeItem: { paddingHorizontal: 13, alignItems: 'center', justifyContent: 'center', height: 40 },
   modeDot: { width: 4, height: 4, borderRadius: 2, marginTop: 4, backgroundColor: 'transparent' },
+  modeItemCompact: { paddingHorizontal: 8, height: 32 },
+  modeTextCompact: { fontSize: 11 },
+  modeTextCompactOn: { fontSize: 12 },
   modeDotOn: { backgroundColor: '#ffd23f' },
   specialMode: { color: '#ffe16b', fontSize: 9, fontWeight: '700', letterSpacing: 2, marginTop: 5 },
   modeChip: { paddingHorizontal: 14, height: 36, borderRadius: 18, justifyContent: 'center' },

@@ -333,7 +333,8 @@ class ICameraModule : Module() {
     }catch(_:Exception){1}else 1
 
     val videoCaps = Recorder.getVideoCapabilities(info)
-    val qualities = videoCaps.getSupportedQualities(DynamicRange.SDR).map { qualityName(it) }
+    // Lens + encoder scan: the published profiles can under-report (720p on an 8K lens).
+    val qualities = VideoCaps.of(info).getSupportedQualities(DynamicRange.SDR).map { qualityName(it) }
     val hdr = videoCaps.supportedDynamicRanges.any { it != DynamicRange.SDR }
     val fps = info.supportedFrameRateRanges.maxOfOrNull { it.upper } ?: 30
     val zoom = info.zoomState.value

@@ -18,7 +18,7 @@ internal object PhoneCameraTuning {
     .addCameraFilter { infos ->
       val candidates = infos.filter { info ->
         try {
-          val caps = Recorder.getVideoCapabilities(info)
+          val caps = VideoCaps.of(info, hdr)
           val range = if (hdr) when {
             caps.supportedDynamicRanges.contains(DynamicRange.HLG_10_BIT) -> DynamicRange.HLG_10_BIT
             caps.supportedDynamicRanges.contains(DynamicRange.HDR10_10_BIT) -> DynamicRange.HDR10_10_BIT
@@ -39,4 +39,26 @@ internal object PhoneCameraTuning {
       c2.getCameraCharacteristic(CameraCharacteristics.CONTROL_ZOOM_RATIO_RANGE)?.lower ?: 1f else 1f
     if (size == null || focal == null) 0.0 else PhoneCameraPolicy.viewScore(size.width,size.height,focal,minimum)
   } catch (_: Exception) { 0.0 }
+}
+
+/**
+ * Some phones (Xiaomi among them) publish only small recording profiles to other apps, so CameraX's
+ * default capability check reports 720p on a lens that records 8K. For SDR, also read what the lens's
+ * stream sizes and the phone's video encoder actually support, and use whichever source offers more.
+ */
+internal object VideoCaps {
+  private fun profile(info: CameraInfo) = Recorder.getVideoCapabilities(info)
+  private fun codec(info: CameraInfo) = try {
+    Recorder.getVideoCapabilities(info, Recorder.VIDEO_CAPABILITIES_SOURCE_CODEC_CAPABILITIES)
+  } catch (_: Throwable) { null }
+  /** True when the encoder-based source lists more SDR qualities than the published profiles. */
+  fun useCodec(info: CameraInfo, hdr: Boolean): Boolean {
+    if (hdr) return false
+    val c = codec(info) ?: return false
+    val p = try { profile(info).getSupportedQualities(DynamicRange.SDR).size } catch (_: Throwable) { 0 }
+    return try { c.getSupportedQualities(DynamicRange.SDR).size > p } catch (_: Throwable) { false }
+  }
+  fun of(info: CameraInfo, hdr: Boolean = false) = if (useCodec(info, hdr)) codec(info)!! else profile(info)
+  fun source(info: CameraInfo, hdr: Boolean) =
+    if (useCodec(info, hdr)) Recorder.VIDEO_CAPABILITIES_SOURCE_CODEC_CAPABILITIES else Recorder.VIDEO_CAPABILITIES_SOURCE_CAMCORDER_PROFILE
 }

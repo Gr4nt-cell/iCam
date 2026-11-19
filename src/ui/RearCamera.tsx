@@ -138,7 +138,7 @@ export function RearCameraControls(p:{
       {p.countdown>0&&<Text style={s.countdown}>{p.countdown}</Text>}
       {beauty&&<View style={s.panel}><Text style={s.white}>Skin {Math.round(p.skin*100)}</Text><Slider value={p.skin} min={0} max={1} onChange={p.onSkin}/></View>}
       {/* Same centred strip as the main screen: the current mode sits in the middle of the live image */}
-      <ModeCarousel mode={p.mode} modes={modes} onChange={p.onMode} disabled={p.recording||p.busy}/>
+      <ModeCarousel compact mode={p.mode} modes={modes} onChange={p.onMode} disabled={p.recording||p.busy}/>
     </View>
   </View>;
 }
