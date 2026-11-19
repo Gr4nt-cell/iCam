@@ -31,10 +31,11 @@ assert(native.includes('Recorder.Builder()\n      .setAspectRatio(androidx.camer
 assert(native.includes('val outAspect = if(width>height) 16f/9f else 9f/16f'),'Dual composition must use the same visible video ratio');
 assert(app.indexOf('style={styles.topMetaChip}')>app.indexOf('style={styles.topPill}'));
 assert(app.indexOf('style={styles.topMetaChip}')<app.indexOf('style={styles.instrumentCluster}'));
-assert(app.includes('minWidth: 60, maxWidth: 100')&&app.includes('height: 36, gap: 0'));
+assert(app.includes('minWidth: 60, maxWidth: 100')&&app.includes('height: 36, gap: 6'));
 assert(app.includes('Math.max(win.height - viewport.top - viewport.height + 12, deckHeight + 12)'));
-assert(app.includes("backgroundColor: isVideoMode ? 'transparent' : '#000'"));
+assert(app.includes("backgroundColor: '#000' }]} >"),'The capture deck is a solid black bar in every mode');
 const controls=fs.readFileSync('src/ui/Controls.tsx','utf8');
-assert(controls.includes('height={28}')&&controls.includes('minItemWidth={30}'));
-assert(controls.includes('width: 64, height: 64')&&controls.includes('width: 44, height: 44'));
+assert(controls.includes('styles.zoomPill')&&controls.includes('width: 34, height: 34'),'Zoom stops are compact round buttons');
+assert(controls.includes('width: 76, height: 76')&&controls.includes('width: 46, height: 46'),'Ring shutter and round gallery thumbnail');
+assert(app.indexOf('<ModeCarousel')<app.indexOf('styles.shutterRow'),'Mode strip sits above the shutter row');
 console.log(`PASS: ${cases} capture-ratio layouts, square crop, compact controls, moved settings and legacy setting migration.`);

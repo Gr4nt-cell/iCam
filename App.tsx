@@ -53,7 +53,7 @@ import { PendingCapture, PhotoJobs } from './src/camera/captureSession';
 import { clearSettings, loadDeviceFlags, loadSettings, saveDeviceFlags, saveSettings } from './src/settings';
 import { DualPipFrame } from './src/ui/DualPip';
 import { ErrorBoundary } from './src/ui/ErrorBoundary';
-import { Glass, GlassCircle } from './src/ui/Glass';
+import { Glass } from './src/ui/Glass';
 import { AUTO_MANUAL, LookPanel, ProPanel, type ManualSettings } from './src/ui/ProPanel';
 import { PermissionGate, SettingsSheet, Viewer } from './src/ui/Sheets';
 
@@ -794,7 +794,7 @@ function CameraScreen() {
       {/* Floating camera instruments */}
       <View style={[styles.top, { top: viewport.top + 8, left: viewport.left + 10, right: win.width - viewport.left - viewport.width + 10 }]} pointerEvents="box-none">
         <View style={styles.topRow}>
-          <Glass radius={26} style={styles.topPill}>
+          <View style={styles.topPill}>
             {(isPhotoShot || isVideoMode) && (
               <Pressable
                 accessibilityRole="button"
@@ -814,19 +814,19 @@ function CameraScreen() {
                 <MaterialCommunityIcons name="chevron-down" size={13} color="rgba(255,255,255,0.78)" />
               </Pressable>
             )}
-          </Glass>
+          </View>
           <View style={styles.topMetaChip}>
             <View style={styles.statusDot} />
             <Text numberOfLines={1} ellipsizeMode="tail" style={styles.topMetaLabel}>{topStatus}</Text>
           </View>
-          <Glass radius={24} style={styles.instrumentCluster}>
+          <View style={styles.instrumentCluster}>
           {screens.available && <Pressable accessibilityRole="button" accessibilityLabel="Switch camera screen" disabled={recording || busy || processing || countdown > 0 || screens.switching} onPress={screens.toggleScreen} style={styles.controlButton}>
             <MaterialCommunityIcons name="monitor-cellphone" size={18} color="#ffe16b" />
           </Pressable>}
           <Pressable accessibilityRole="button" accessibilityLabel="Camera settings" hitSlop={8} disabled={recording || busy || countdown > 0} onPress={() => {if(!shutterInFlight.current)setSettingsOpen(true);}} style={styles.controlButton}>
-            <GlassCircle size={34}><MaterialCommunityIcons name="tune-variant" size={18} color="#fff" /></GlassCircle>
+            <MaterialCommunityIcons name="menu" size={22} color="#fff" />
           </Pressable>
-          </Glass>
+          </View>
         </View>
           <View style={styles.topMetaTools}>
             {(facing === 'front' || mode === 'dual') && (
@@ -918,7 +918,8 @@ function CameraScreen() {
         <Toast text={toast} />
 
         <View style={{ width: '100%', alignItems: 'center' }}>
-          <View style={[styles.shutterDeck, { width: win.width > win.height ? 176 : win.width, backgroundColor: isVideoMode ? 'transparent' : '#000' }]} >
+          <View style={[styles.shutterDeck, { width: win.width > win.height ? 176 : win.width, backgroundColor: '#000' }]} >
+            <ModeCarousel mode={mode} modes={visibleModes} onChange={changeMode} disabled={recording || busy} proVideo={proVideo} onProVideo={setProVideo} />
             <View style={[styles.shutterRow, { width: win.width > win.height ? 176 : win.width }]} >
               {recording && mode !== 'slowmo' ? (
                 <Animated.View key="pause" entering={FadeIn.duration(160)} exiting={FadeOut.duration(120)} style={[styles.galleryAnchor, { left: (win.width > win.height ? 176 : win.width) * .18 - 22 }]}>
@@ -957,7 +958,6 @@ function CameraScreen() {
               )}
               </View>
             </View>
-            <ModeCarousel mode={mode} modes={visibleModes} onChange={changeMode} disabled={recording || busy} proVideo={proVideo} onProVideo={setProVideo} />
 
           </View>
         </View>
@@ -1079,9 +1079,9 @@ function Pop({ children }: { children: React.ReactNode }) {
 }
 
 const styles = StyleSheet.create({
-  instrumentCluster: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 1, height: 36, gap: 0 },
-  galleryAnchor: { position: 'absolute', top: 14, left: 12, zIndex: 3 },
-  flipAnchor: { position: 'absolute', top: 14, right: 12, zIndex: 3 },
+  instrumentCluster: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 1, height: 36, gap: 6 },
+  galleryAnchor: { position: 'absolute', top: 25, left: 12, zIndex: 3 },
+  flipAnchor: { position: 'absolute', top: 25, right: 12, zIndex: 3 },
   settingLabel: { color: '#fff', fontSize: 14, fontWeight: '600' },
   root: { flex: 1, backgroundColor: '#000' },
   center: { alignItems: 'center', justifyContent: 'center' },
@@ -1105,8 +1105,8 @@ const styles = StyleSheet.create({
   countdown: { color: '#fff', fontSize: 96, fontWeight: '200' },
   bottom: { position: 'absolute', left: 0, bottom: 0, alignItems: 'center', gap: 6, zIndex: 8 },
   zoomFloat: { alignSelf: 'center', alignItems: 'center', marginBottom: 2 },
-  shutterRow: { height: 72, alignItems: 'center', justifyContent: 'center', position: 'relative' },
-  shutterDeck: { alignSelf: 'center', backgroundColor: 'rgba(0,0,0,0.94)', paddingTop: 4, paddingBottom: 2, gap: 4 },
+  shutterRow: { height: 96, alignItems: 'center', justifyContent: 'center', position: 'relative' },
+  shutterDeck: { alignSelf: 'center', backgroundColor: '#000', paddingTop: 6, paddingBottom: 6, gap: 2 },
   nightReadyWrap: { alignSelf: 'center', marginTop: -2 },
   nightReady: { flexDirection: 'row', alignItems: 'center', gap: 7, paddingHorizontal: 12, height: 30 },
   nightReadyText: { color: '#fff', fontSize: 11, fontWeight: '700' },

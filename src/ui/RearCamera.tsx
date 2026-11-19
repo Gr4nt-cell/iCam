@@ -6,7 +6,6 @@ import {getCameraDisplays,moveCameraDisplay,requestRearDisplayAccess,type Camera
 import type {CaptureMode,Lens} from '../camera/hardware';
 import {Glass} from './Glass';
 import {Slider} from './Controls';
-import {LinearGradient} from 'expo-linear-gradient';
 import {rearCameraFrame} from '../camera/rearLayout';
 
 export function useCameraScreens(locked: boolean,notify: (message: string)=>void) {
@@ -85,7 +84,7 @@ export function CameraScreenPicker({screens,locked}:{screens:ReturnType<typeof u
   </Modal>;
 }
 
-export function RearCameraBackdrop(){return <LinearGradient colors={['#95958d','#9b826e','#343536']} style={StyleSheet.absoluteFill} />}
+export function RearCameraBackdrop(){return <View style={[StyleSheet.absoluteFill,{backgroundColor:'#000'}]} />}
 
 export function RearCameraControls(p:{
   mode:CaptureMode;video:boolean;modes:{key:string;label:string}[];recording:boolean;paused:boolean;busy:boolean;locked:boolean;
@@ -108,14 +107,14 @@ export function RearCameraControls(p:{
       <View style={{flex:1}}/>
       <Pressable accessibilityRole="button" accessibilityLabel="Change rear camera zoom" accessibilityHint="Long press to switch camera" disabled={p.busy} onPress={nextLens} onLongPress={()=>{if(p.canFlip&&!p.recording)p.onFlip()}} style={[s.round,{width:button,height:button}]}><Text style={s.white}>{p.zoomLabel}×</Text></Pressable>
       <Pressable accessibilityRole="button" accessibilityLabel={p.recording?(p.paused?'Resume recording':'Pause recording'):'Face smoothing'} disabled={p.busy} onPress={()=>p.recording?p.onPause():setBeauty(v=>!v)} style={[s.round,{width:button,height:button}]}><MaterialCommunityIcons name={p.recording?(p.paused?'play':'pause'):'auto-fix'} size={23} color="#ffd63b"/></Pressable>
-      <Pressable accessibilityRole="button" accessibilityLabel={p.recording?'Stop recording':'Capture'} disabled={p.busy} onPress={p.onShutter} style={[s.shutter,{width:size,height:size,borderRadius:size/2},p.busy&&s.dim]}><View style={[{width:size-10,height:size-10,borderRadius:(size-10)/2,backgroundColor:p.video?'#ff3b30':'#fff'},p.recording&&s.stop]}/></Pressable>
+      <Pressable accessibilityRole="button" accessibilityLabel={p.recording?'Stop recording':'Capture'} disabled={p.busy} onPress={p.onShutter} style={[s.shutter,{width:size,height:size,borderRadius:size/2},p.busy&&s.dim]}><View style={[{width:size-14,height:size-14,borderRadius:(size-14)/2,backgroundColor:p.video?'#ff3b30':'#fff'},p.recording&&s.stop]}/></Pressable>
     </View>
     <View style={[s.modeBottom,{left:Math.max(8,frame.left+8),right:rail+4}]}>
       {!!p.toast&&<Text numberOfLines={2} style={s.toast}>{p.toast}</Text>}
       {p.countdown>0&&<Text style={s.countdown}>{p.countdown}</Text>}
-      {beauty&&<Glass radius={14} style={{padding:10,gap:5}}><Text style={s.white}>Skin {Math.round(p.skin*100)}</Text><Slider value={p.skin} min={0} max={1} onChange={p.onSkin}/></Glass>}
+      {beauty&&<View style={s.panel}><Text style={s.white}>Skin {Math.round(p.skin*100)}</Text><Slider value={p.skin} min={0} max={1} onChange={p.onSkin}/></View>}
       <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.modeLabels}>
-        {modes.map(m=><Pressable key={m.key} disabled={p.recording||p.busy} onPress={()=>p.onMode(m.key as CaptureMode)} style={s.modeLabel}><Text style={[s.modeText,p.mode===m.key&&{color:'#ffd63b',fontWeight:'600'}]}>{m.label}</Text></Pressable>)}
+        {modes.map(m=><Pressable key={m.key} disabled={p.recording||p.busy} onPress={()=>p.onMode(m.key as CaptureMode)} style={s.modeLabel}><Text style={[s.modeText,p.mode===m.key&&s.modeOn]}>{m.label}</Text><View style={[s.modeDot,p.mode===m.key&&s.modeDotOn]}/></Pressable>)}
       </ScrollView>
     </View>
   </View>;
@@ -124,6 +123,6 @@ const s=StyleSheet.create({
   scrim:{flex:1,justifyContent:'center',alignItems:'center',backgroundColor:'rgba(0,0,0,.62)',padding:8},sheet:{width:'100%',maxWidth:430,maxHeight:'96%'},heading:{flexDirection:'row',alignItems:'center',justifyContent:'space-between'},
   title:{color:'#fff',fontSize:18,fontWeight:'700'},close:{padding:10},hint:{color:'#ccc',fontSize:12,lineHeight:17},white:{color:'#fff',fontSize:12},accent:{color:'#ffe16b',fontSize:12,fontWeight:'600'},row:{padding:12,borderRadius:16,backgroundColor:'rgba(255,255,255,.08)',gap:5},active:{backgroundColor:'rgba(255,225,107,.20)'},
   front:{position:'absolute',top:2,width:44,minHeight:40,alignItems:'center',justifyContent:'center'},xiaomiRail:{position:'absolute',right:0,top:8,bottom:8,alignItems:'center'},round:{borderRadius:40,backgroundColor:'rgba(10,10,10,.68)',alignItems:'center',justifyContent:'center'},
-  shutter:{borderColor:'#fff',borderWidth:2,alignItems:'center',justifyContent:'center'},stop:{width:22,height:22,borderRadius:5},dim:{opacity:.4},modeBottom:{position:'absolute',bottom:2,gap:6},modeLabels:{alignItems:'center',gap:2},modeLabel:{minHeight:38,paddingHorizontal:10,alignItems:'center',justifyContent:'center'},modeText:{fontSize:13,color:'#fff',textShadowColor:'rgba(0,0,0,.6)',textShadowRadius:2},
+  shutter:{borderColor:'#fff',borderWidth:3.5,alignItems:'center',justifyContent:'center'},panel:{padding:10,gap:5,borderRadius:14,backgroundColor:'rgba(0,0,0,.72)'},modeOn:{color:'#fff',fontWeight:'700',fontSize:14},modeDot:{width:4,height:4,borderRadius:2,marginTop:3,backgroundColor:'transparent'},modeDotOn:{backgroundColor:'#ffd23f'},stop:{width:22,height:22,borderRadius:5},dim:{opacity:.4},modeBottom:{position:'absolute',bottom:2,gap:6},modeLabels:{alignItems:'center',gap:2},modeLabel:{minHeight:38,paddingHorizontal:10,alignItems:'center',justifyContent:'center'},modeText:{fontSize:13,color:'rgba(255,255,255,.6)',textShadowColor:'rgba(0,0,0,.6)',textShadowRadius:2},
   toast:{color:'#fff',backgroundColor:'rgba(0,0,0,.7)',fontSize:11,padding:5,borderRadius:8},countdown:{color:'#fff',fontSize:28,textAlign:'center'},
 });

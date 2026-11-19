@@ -7,6 +7,7 @@ import {
   Image,
   PanResponder,
   Pressable,
+  ScrollView,
   StyleSheet,
   Text,
   View,
@@ -22,9 +23,9 @@ import RAnimated, {
   withTiming,
 } from 'react-native-reanimated';
 import type { CaptureMode, Lens } from '../camera/hardware';
-import { Glass, GlassCircle } from './Glass';
+import { Glass } from './Glass';
 import { GlassSegmented } from './GlassSegmented';
-import { modeGroup, modesForGroup } from '../camera/modeGroups';
+import { modeGroup } from '../camera/modeGroups';
 
 export const MODES: { key: CaptureMode; label: string }[] = [
   { key: 'night', label: 'Night Sight' },
@@ -138,23 +139,28 @@ export function ZoomPills({
       }}
     >
       <DimView dim={dial}>
-        <Glass radius={18} style={styles.zoomBar}>
-          <GlassSegmented
-            items={stops.map((s) => ({ key: s.label, label: s.label }))}
-            value={stops[activeIdx].label}
-            activeLabel={`${label}×`}
-            onChange={(k) => {
-              // ignore the pills while / right after the dial was used
-              if (dial || g.current.active || Date.now() - g.current.lastDial < 400) return;
-              const st = stops.find((s) => s.label === k);
-              if (st) onSelect(st.zoom, st);
-            }}
-            height={28}
-            fontSize={11}
-            paddingH={5}
-            minItemWidth={30}
-          />
-        </Glass>
+        <View style={styles.zoomBar}>
+          {stops.map((s, i) => {
+            const on = i === activeIdx;
+            return (
+              <Pressable
+                key={s.label}
+                accessibilityRole="button"
+                accessibilityLabel={`Zoom ${s.label}`}
+                accessibilityState={{ selected: on }}
+                hitSlop={4}
+                onPress={() => {
+                  // ignore the pills while / right after the dial was used
+                  if (dial || g.current.active || Date.now() - g.current.lastDial < 400) return;
+                  onSelect(s.zoom, s);
+                }}
+                style={[styles.zoomPill, on && styles.zoomPillActive]}
+              >
+                <Text style={[styles.zoomText, on && styles.zoomTextActive]}>{on ? `${label}X` : s.label}</Text>
+              </Pressable>
+            );
+          })}
+        </View>
       </DimView>
       {dial && (
         <RAnimated.View
@@ -246,6 +252,9 @@ function ZoomDial({ zoom, min, max, stops }: { zoom: number; min: number; max: n
 
 /* ---------------- Mode carousel ---------------- */
 
+/** Preferred left-to-right order for the single mode strip. */
+const STRIP_ORDER: CaptureMode[] = ['pro', 'night', 'portrait', 'photo', 'video', 'slowmo', 'action', 'dual', 'macro'];
+
 export function ModeCarousel({
   mode,
   modes,
@@ -261,24 +270,40 @@ export function ModeCarousel({
   proVideo?: boolean;
   onProVideo?: (video: boolean) => void;
 }) {
-  const compact = useWindowDimensions().width < 360;
+  const { width } = useWindowDimensions();
   const group = modeGroup(mode, proVideo);
-  const grouped = modesForGroup(modes, group);
+  const strip = [...modes].sort((x, y) => STRIP_ORDER.indexOf(x.key) - STRIP_ORDER.indexOf(y.key));
+  const scroll = useRef<ScrollView>(null);
+  const spots = useRef<Record<string, { x: number; w: number }>>({});
+  const [barW, setBarW] = useState(width);
+  const centre = (key: string, animated = true) => {
+    const s = spots.current[key];
+    if (s) scroll.current?.scrollTo({ x: Math.max(0, s.x + s.w / 2 - barW / 2), animated });
+  };
+  useEffect(() => { centre(mode); }, [mode, barW]);
   return (
-    <View style={styles.modeBar}>
-      <Glass radius={24} style={{ maxWidth: '100%', alignSelf: 'center' }}>
-        <GlassSegmented items={grouped} value={mode}
-          onChange={(key) => {
-            if (key === 'pro') onProVideo?.(group === 'video');
-            onChange(key as CaptureMode);
-          }} scrollable disabled={disabled}
-          height={32} fontSize={compact ? 11 : 12} paddingH={compact ? 10 : 12} />
-      </Glass>
-      <Glass radius={27}>
-        <GlassSegmented items={[{ key: 'photo', label: 'PHOTO' }, { key: 'video', label: 'VIDEO' }]}
-          value={group} onChange={(key) => onChange(key as CaptureMode)} disabled={disabled}
-          height={34} fontSize={compact ? 11 : 13} paddingH={compact ? 16 : 20} minItemWidth={70} />
-      </Glass>
+    <View style={styles.modeBar} onLayout={(e) => setBarW(e.nativeEvent.layout.width)}>
+      <ScrollView ref={scroll} horizontal showsHorizontalScrollIndicator={false}
+        contentContainerStyle={{ paddingHorizontal: barW / 2 - 30, alignItems: 'center' }}>
+        {strip.map((m) => {
+          const on = m.key === mode;
+          return (
+            <Pressable key={m.key} accessibilityRole="button" accessibilityLabel={m.label} accessibilityState={{ selected: on, disabled }}
+              disabled={disabled} hitSlop={6}
+              onLayout={(e) => { spots.current[m.key] = { x: e.nativeEvent.layout.x, w: e.nativeEvent.layout.width }; if (on) centre(m.key, false); }}
+              onPress={() => {
+                if (on) return;
+                Haptics.selectionAsync();
+                if (m.key === 'pro') onProVideo?.(group === 'video');
+                onChange(m.key);
+              }}
+              style={styles.modeItem}>
+              <Text style={[styles.modeText, on && styles.modeTextActive]}>{m.label === 'Night Sight' ? 'Night' : m.label}</Text>
+              <View style={[styles.modeDot, on && styles.modeDotOn]} />
+            </Pressable>
+          );
+        })}
+      </ScrollView>
     </View>
   );
 }
@@ -312,7 +337,6 @@ export function Shutter({
       disabled={busy && !recording}
     >
       <Animated.View style={[styles.shutterOuter, { transform: [{ scale }] }]}>
-        <Glass radius={32} style={StyleSheet.absoluteFill} tint="rgba(255,255,255,0.04)" />
         {isVideo ? (
           <RecMorph recording={recording} />
         ) : (
@@ -332,8 +356,8 @@ function RecMorph({ recording }: { recording: boolean }) {
     t.value = withTiming(recording ? 1 : 0, { duration: 160 });
   }, [recording, t]);
   const st = useAnimatedStyle(() => {
-    const size = 48 - 24 * t.value;
-    return { width: size, height: size, borderRadius: 24 - 18 * t.value };
+    const size = 58 - 30 * t.value;
+    return { width: size, height: size, borderRadius: 29 - 23 * t.value };
   });
   return <RAnimated.View style={[{ backgroundColor: '#ff3b30' }, st]} />;
 }
@@ -355,7 +379,7 @@ export function Thumb({
 }) {
   return (
     <Pressable accessibilityRole="button" accessibilityLabel="Open latest capture" onPress={onPress} disabled={!uri && !enabled}>
-      <Glass radius={22} style={styles.thumb}>
+      <View style={styles.thumb}>
         {uri ? (
           <RAnimated.View key={uri} entering={FadeIn.duration(160)} style={StyleSheet.absoluteFill}>
             <Image source={{ uri }} style={styles.thumbImg} />
@@ -374,7 +398,7 @@ export function Thumb({
             <ActivityIndicator color="#fff" />
           </RAnimated.View>
         )}
-      </Glass>
+      </View>
     </Pressable>
   );
 }
@@ -396,9 +420,9 @@ export function IconButton({
 }) {
   return (
     <Pressable accessibilityRole="button" accessibilityLabel={icon === "camera-flip-outline" ? "Switch camera" : icon === "swap-horizontal" ? "Swap dual cameras" : icon === "pause" ? "Pause recording" : icon === "record" ? "Resume recording" : icon.replace(/-/g, " ")} onPress={onPress} disabled={disabled} accessibilityState={{disabled}} hitSlop={8}>
-      <GlassCircle size={size} active={active}>
+      <View style={[styles.flatCircle, { width: size, height: size, borderRadius: size / 2 }, active && styles.flatCircleOn]}>
         <MaterialCommunityIcons name={icon} size={size * 0.48} color={active ? '#111' : '#fff'} />
-      </GlassCircle>
+      </View>
     </Pressable>
   );
 }
@@ -515,34 +539,39 @@ export function Toast({ text }: { text: string | null }) {
   if (!text) return null;
   return (
     <RAnimated.View entering={FadeInDown.duration(200)} exiting={FadeOut.duration(180)} style={{ alignSelf: 'center' }}>
-      <Glass radius={18} style={styles.toast}>
+      <View style={styles.toast}>
         <Text style={styles.toastText}>{text}</Text>
-      </Glass>
+      </View>
     </RAnimated.View>
   );
 }
 
 export const styles = StyleSheet.create({
   center: { alignItems: 'center', justifyContent: 'center' },
-  zoomBar: { alignSelf: 'center' },
+  zoomBar: { alignSelf: 'center', flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 6, paddingVertical: 4, borderRadius: 26, backgroundColor: 'rgba(0,0,0,0.28)' },
   dialValue: { color: '#ffe16b', fontSize: 14, fontWeight: '700', textAlign: 'center', marginTop: 4, fontVariant: ['tabular-nums'] },
   dialLabel: { width: 40, textAlign: 'center', color: 'rgba(255,255,255,0.9)', fontSize: 11, fontWeight: '700' },
-  zoomPill: { minWidth: 38, height: 38, borderRadius: 19, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 6 },
-  zoomPillActive: { backgroundColor: 'rgba(255,255,255,0.92)' },
-  zoomText: { color: '#fff', fontSize: 13, fontWeight: '600' },
-  zoomTextActive: { color: '#111', fontWeight: '700' },
-  modeBar: { alignSelf: 'center', width: '100%', paddingHorizontal: 4, gap: 4, alignItems: 'center' },
+  zoomPill: { width: 34, height: 34, borderRadius: 17, alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(0,0,0,0.5)' },
+  zoomPillActive: { width: 44, height: 44, borderRadius: 22, backgroundColor: 'rgba(0,0,0,0.62)' },
+  zoomText: { color: '#fff', fontSize: 11, fontWeight: '600' },
+  zoomTextActive: { color: '#ffd23f', fontSize: 13, fontWeight: '800' },
+  modeBar: { alignSelf: 'center', width: '100%', height: 40, justifyContent: 'center' },
+  modeItem: { paddingHorizontal: 13, alignItems: 'center', justifyContent: 'center', height: 40 },
+  modeDot: { width: 4, height: 4, borderRadius: 2, marginTop: 4, backgroundColor: 'transparent' },
+  modeDotOn: { backgroundColor: '#ffd23f' },
   specialMode: { color: '#ffe16b', fontSize: 9, fontWeight: '700', letterSpacing: 2, marginTop: 5 },
   modeChip: { paddingHorizontal: 14, height: 36, borderRadius: 18, justifyContent: 'center' },
   modeChipActive: { backgroundColor: 'rgba(214,228,255,0.95)' },
-  modeText: { color: 'rgba(255,255,255,0.85)', fontSize: 14, fontWeight: '600' },
-  modeTextActive: { color: '#0b1f44' },
-  shutterOuter: { width: 64, height: 64, borderRadius: 32, borderWidth: 1.5, borderColor: 'rgba(255,255,255,0.9)', alignItems: 'center', justifyContent: 'center' },
-  shutterInner: { width: 50, height: 50, borderRadius: 25, backgroundColor: '#fff9ef', alignItems: 'center', justifyContent: 'center' },
+  modeText: { color: 'rgba(255,255,255,0.58)', fontSize: 14, fontWeight: '500' },
+  modeTextActive: { color: '#fff', fontSize: 15, fontWeight: '700' },
+  shutterOuter: { width: 76, height: 76, borderRadius: 38, borderWidth: 4, borderColor: '#fff', alignItems: 'center', justifyContent: 'center' },
+  shutterInner: { width: 60, height: 60, borderRadius: 30, backgroundColor: '#fff', alignItems: 'center', justifyContent: 'center' },
   shutterNight: { backgroundColor: '#ffe7a1' },
   recDot: { width: 62, height: 62, borderRadius: 31, backgroundColor: '#ff3b30' },
   recSquare: { width: 30, height: 30, borderRadius: 8 },
-  thumb: { width: 44, height: 44 },
+  thumb: { width: 46, height: 46, borderRadius: 23, overflow: 'hidden', borderWidth: 2, borderColor: '#fff', backgroundColor: '#1c1c1e', alignItems: 'center', justifyContent: 'center' },
+  flatCircle: { alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(255,255,255,0.14)' },
+  flatCircleOn: { backgroundColor: '#fff' },
   thumbImg: { width: '100%', height: '100%' },
   sliderCard: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 14, height: 52, gap: 12, alignSelf: 'center', width: '100%' },
   sliderTabs: { flexDirection: 'row', gap: 12 },
@@ -551,6 +580,6 @@ export const styles = StyleSheet.create({
   sliderCenterTick: { position: 'absolute', left: '50%', width: 2, height: 12, marginLeft: -1, backgroundColor: 'rgba(255,255,255,0.7)' },
   sliderKnob: { position: 'absolute', width: 22, height: 22, borderRadius: 11, backgroundColor: '#ffe16b', borderWidth: 2, borderColor: 'rgba(255,255,255,0.85)' },
   focusRing: { position: 'absolute', width: 72, height: 72, borderRadius: 12, borderWidth: 1.5, borderColor: '#ffe16b' },
-  toast: { alignSelf: 'center', paddingHorizontal: 16, paddingVertical: 9 },
+  toast: { alignSelf: 'center', paddingHorizontal: 16, paddingVertical: 9, borderRadius: 18, backgroundColor: 'rgba(0,0,0,0.66)' },
   toastText: { color: '#fff', fontSize: 13, fontWeight: '600' },
 });
