@@ -671,6 +671,8 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
     } else CameraSelector.DEFAULT_BACK_CAMERA
   }
 
+  private fun isXiaomi() = android.os.Build.MANUFACTURER.lowercase().let { it == "xiaomi" || it == "redmi" || it == "poco" }
+
   /** Optical stabilization is layered under any electronic stabilization in stabilized video modes. */
   @OptIn(ExperimentalCamera2Interop::class)
   @androidx.annotation.OptIn(markerClass = [ExperimentalCamera2Interop::class])
@@ -931,8 +933,9 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
     // not set a QualitySelector on the recorder: CameraX rejects the two together.
     val recorder = Recorder.Builder()
       .setAspectRatio(androidx.camera.core.AspectRatio.RATIO_16_9)
-      .setTargetVideoEncodingBitRate(if (uhd) 60_000_000 else 24_000_000)
-      .apply { if (forceSize == null) setQualitySelector(QualitySelector.from(quality, FallbackStrategy.lowerQualityOrHigherThan(Quality.SD))) }
+      .setTargetVideoEncodingBitRate(if (uhd) 72_000_000 else 24_000_000)
+      // 4K may fall back to 1080p when the camera can't combine it with the other streams, never to 720p/SD.
+      .apply { if (forceSize == null) setQualitySelector(QualitySelector.from(quality, FallbackStrategy.lowerQualityOrHigherThan(if (uhd) Quality.FHD else Quality.SD))) }
       .build()
 
     // SDR effects crop and stabilize each frame before the encoder receives it.
@@ -941,14 +944,18 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
     val wantStab = action || stabilization != "off"
     val sharedSupported=try{Preview.getPreviewCapabilities(info).isStabilizationSupported}catch(_:Throwable){false}
     val videoSupported=try{Recorder.getVideoCapabilities(info).isStabilizationSupported}catch(_:Throwable){false}
-    val stabilityPlan=CaptureStability.plan(wantStab,sharedSupported,videoSupported,hdr)
+    // Preview stabilization only runs on preview-sized streams (≤1080p). Using it for 4K made the
+    // shared preview+video stream fall back to 720p, so 4K uses the video stream's own EIS instead.
+    val stabilityPlan=CaptureStability.plan(wantStab,sharedSupported && !uhd,videoSupported,hdr)
     val previewStab=stabilityPlan.preview == true
     requestedSharedStability=previewStab
     requestedVideoStability=stabilityPlan.video == true
     val hardwareEis=stabilityPlan.hardware
     // OIS and EIS are independent capture controls; stabilized video modes use both together
     // (EIS crops the readout, OIS steadies the optics — they compose, as on the phone's own camera).
-    val ois = wantStab && oisSupported(info)
+    // Xiaomi's own camera never requests OIS together with EIS (its HAL treats both as a conflict
+    // and wobbles when walking); other phones keep the two layered.
+    val ois = wantStab && oisSupported(info) && !(hardwareEis && isXiaomi())
     val useEffect = !hdr
     val vb = VideoCapture.Builder(recorder)
       .setMirrorMode(if (rearSelfie) MirrorMode.MIRROR_MODE_ON else if (mirror) MirrorMode.MIRROR_MODE_ON_FRONT_ONLY else MirrorMode.MIRROR_MODE_OFF)
@@ -1027,7 +1034,7 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
           encW = if (uhd) 3840 else 1920
           encH = if (uhd) 2160 else 1080
           encFps = range?.upper ?: targetFps
-          encBitrate = if (uhd) 60_000_000 else if (encFps >= 60) 30_000_000 else 20_000_000
+          encBitrate = if (uhd) 72_000_000 else if (encFps >= 60) 36_000_000 else 24_000_000
           videoCapture = null
           return
         }

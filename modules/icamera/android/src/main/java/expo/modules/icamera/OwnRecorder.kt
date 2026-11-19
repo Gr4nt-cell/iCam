@@ -62,21 +62,37 @@ class OwnRecorder(
   @Volatile private var error: String? = null
 
   init {
-    val (w, h) = pickSize(requestedW, requestedH)
+    // HEVC like the phone's own camera; H.264 (with a little more bitrate) when HEVC can't do this size.
+    val hevc = supports(MediaFormat.MIMETYPE_VIDEO_HEVC, requestedW, requestedH)
+    val mime = if (hevc) MediaFormat.MIMETYPE_VIDEO_HEVC else MediaFormat.MIMETYPE_VIDEO_AVC
+    val (w, h) = if (hevc) requestedW to requestedH else pickSize(requestedW, requestedH)
     width = w
     height = h
-    val fmt = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, w, h).apply {
+    fun format(type: String, rate: Int) = MediaFormat.createVideoFormat(type, w, h).apply {
       setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)
-      setInteger(MediaFormat.KEY_BIT_RATE, bitrate)
+      setInteger(MediaFormat.KEY_BIT_RATE, rate)
       setInteger(MediaFormat.KEY_FRAME_RATE, fps)
       setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1)
     }
-    video = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
-    video.configure(fmt, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+    video = try {
+      MediaCodec.createEncoderByType(mime).also { it.configure(format(mime, bitrate), null, null, MediaCodec.CONFIGURE_FLAG_ENCODE) }
+    } catch (e: Exception) {
+      if (!hevc) throw e
+      MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC).also {
+        it.configure(format(MediaFormat.MIMETYPE_VIDEO_AVC, (bitrate * 1.3).toInt()), null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+      }
+    }
     surface = video.createInputSurface()
     muxer.setOrientationHint(((orientationHint % 360) + 360) % 360)
     if (withAudio) setupAudio()
   }
+
+  private fun supports(type: String, w: Int, h: Int): Boolean = try {
+    MediaCodecList(MediaCodecList.REGULAR_CODECS).codecInfos.any { info ->
+      info.isEncoder && info.supportedTypes.any { it.equals(type, true) } &&
+        info.getCapabilitiesForType(type).videoCapabilities.isSizeSupported(w, h)
+    }
+  } catch (e: Throwable) { false }
 
   /** Largest size ≤ the request that the phone's H.264 encoder accepts (falls back to 1080p / 720p). */
   private fun pickSize(w: Int, h: Int): Pair<Int, Int> {
