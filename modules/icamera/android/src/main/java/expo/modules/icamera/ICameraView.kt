@@ -74,6 +74,51 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
   private val onPortraitStatus by EventDispatcher()
   private val onRecordingState by EventDispatcher()
   private val onGesture by EventDispatcher()
+  private val onAmbient by EventDispatcher()
+
+  /* Rear-screen glow: edge colours of the live image, ~5×/s, smoothed so the glow never flickers. */
+  private var ambientGlow = false
+  private val ambientColors = FloatArray(12)
+  private var ambientPrimed = false
+  private var lastAmbient = ""
+  private val ambientTick = object : Runnable {
+    override fun run() {
+      sampleAmbient()
+      if (ambientGlow && isAttachedToWindow) postDelayed(this, 200)
+    }
+  }
+  fun setAmbientGlow(v: Boolean) {
+    if (v == ambientGlow) return
+    ambientGlow = v; ambientPrimed = false
+    removeCallbacks(ambientTick)
+    if (v && isAttachedToWindow) post(ambientTick)
+  }
+  private fun sampleAmbient() {
+    val src = try { previewView.bitmap } catch (_: Throwable) { null } ?: return
+    try {
+      val small = android.graphics.Bitmap.createScaledBitmap(src, 12, 16, true)
+      // left-top, left-bottom, right-top, right-bottom edge averages
+      val areas = listOf(0 to 0, 0 to 8, 8 to 0, 8 to 8)
+      val hsv = FloatArray(3)
+      for ((i, a) in areas.withIndex()) {
+        var r = 0; var g = 0; var b = 0; var n = 0
+        for (y in a.second until a.second + 8) for (x in a.first until a.first + 4) {
+          val c = small.getPixel(x, y); r += (c shr 16) and 255; g += (c shr 8) and 255; b += c and 255; n++
+        }
+        android.graphics.Color.RGBToHSV(r / n, g / n, b / n, hsv)
+        hsv[1] = (hsv[1] * 1.45f).coerceAtMost(1f); hsv[2] = (hsv[2] * 1.15f).coerceAtMost(1f)
+        val c = android.graphics.Color.HSVToColor(hsv)
+        val rgb = floatArrayOf(((c shr 16) and 255).toFloat(), ((c shr 8) and 255).toFloat(), (c and 255).toFloat())
+        for (k in 0..2) ambientColors[i * 3 + k] = if (ambientPrimed) ambientColors[i * 3 + k] + (rgb[k] - ambientColors[i * 3 + k]) * 0.35f else rgb[k]
+      }
+      ambientPrimed = true
+      if (small !== src) small.recycle()
+      fun hex(i: Int) = String.format("#%02X%02X%02X", ambientColors[i * 3].toInt(), ambientColors[i * 3 + 1].toInt(), ambientColors[i * 3 + 2].toInt())
+      val key = "${hex(0)}${hex(1)}${hex(2)}${hex(3)}"
+      if (key != lastAmbient) { lastAmbient = key; onAmbient(mapOf("leftTop" to hex(0), "leftBottom" to hex(1), "rightTop" to hex(2), "rightBottom" to hex(3))) }
+    } catch (_: Throwable) {
+    } finally { src.recycle() }
+  }
 
   companion object {
     /** iCam's own recorder (needed only for front/back switching mid-recording) — off by request. */
@@ -511,12 +556,14 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
 
   override fun onAttachedToWindow() {
     super.onAttachedToWindow()
+    if (ambientGlow) { removeCallbacks(ambientTick); post(ambientTick) }
     try { if (orientationListener.canDetectOrientation()) orientationListener.enable() } catch (_: Throwable) {}
     scheduleRebind(150)
   }
 
   override fun onDetachedFromWindow() {
     super.onDetachedFromWindow()
+    removeCallbacks(ambientTick)
     try { orientationListener.disable() } catch (_: Throwable) {}
     cancelPendingStart();stopAfterSwitch=true
     recording?.stop()

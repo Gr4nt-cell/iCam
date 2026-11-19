@@ -209,7 +209,7 @@ class ICameraModule : Module() {
     }
 
     View(ICameraView::class) {
-      Events("onReady", "onError", "onRecordingFinished", "onPhotosCaptured", "onDualChange", "onPortraitStatus", "onRecordingState", "onGesture")
+      Events("onReady", "onError", "onRecordingFinished", "onPhotosCaptured", "onDualChange", "onPortraitStatus", "onRecordingState", "onGesture", "onAmbient")
 
       Prop("mode") { view: ICameraView, v: String -> view.setMode(v) }
       Prop("facing") { view: ICameraView, v: String -> view.setFacing(v) }
@@ -243,6 +243,7 @@ class ICameraModule : Module() {
       Prop("faceSmoothing") { view: ICameraView, v: Double -> view.setFaceSmoothing(v.toFloat()) }
       Prop("filterParams") { view: ICameraView, v: List<Double> -> view.setFilterParams(v.map { it.toFloat() }.toFloatArray()) }
       Prop("previewFit") { view: ICameraView, v: Boolean -> view.setPreviewFit(v) }
+      Prop("ambientGlow") { view: ICameraView, v: Boolean -> view.setAmbientGlow(v) }
       Prop("dualPip") { view: ICameraView, v: Map<String, Any?> ->
         view.setDualPip(
           (v["x"] as? Number)?.toFloat() ?: 0.78f,

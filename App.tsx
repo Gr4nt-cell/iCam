@@ -22,6 +22,7 @@ import {
   type Capabilities,
   type ICameraHandle,
   type ReadyEvent,
+  type AmbientGlow,
 } from './modules/icamera';
 import {
   lensStops,
@@ -154,6 +155,7 @@ function CameraScreen() {
   const [aspect, setAspect] = useState<Aspect>('4:3');
   const [bokeh, setBokeh] = useState(0.6);
   const [galleryPref, setGalleryPref] = useState<GalleryPref>('viewer');
+  const [rearGlow, setRearGlow] = useState<AmbientGlow | null>(null);
   const [weakGpu, setWeakGpu] = useState(false);
   useEffect(() => {
     loadDeviceFlags().then((f) => setWeakGpu(!!f.weakGpu));
@@ -673,7 +675,7 @@ function CameraScreen() {
     <View style={styles.root}>
       <StatusBar style="light" hidden />
 
-      {screens.onSecondary && <RearCameraBackdrop />}
+      {screens.onSecondary && <RearCameraBackdrop glow={rearGlow} />}
       {cameraModuleAvailable ? (
         <ICameraView
           ref={cam}
@@ -692,6 +694,8 @@ function CameraScreen() {
           torch={isVideoMode && flash === 'on'}
           mirror={mirrorSelfie}
           rearSelfie={screens.onSecondary}
+          ambientGlow={screens.onSecondary}
+          onAmbient={(e) => setRearGlow(e.nativeEvent)}
           audio={perms.mic}
           active={appActive && !viewerOpen && !screens.switching}
           videoQuality={video.resolution === '4k' ? 'uhd' : 'fhd'}

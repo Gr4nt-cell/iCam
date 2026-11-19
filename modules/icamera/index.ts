@@ -139,6 +139,9 @@ export type ICameraProps = ViewProps & {
   onPortraitStatus?: (e: NativeEvent<{ blur: boolean; reason?: string }>) => void;
   onRecordingState?: (e: NativeEvent<{ paused?: boolean; merging?: boolean; processing?: boolean }>) => void;
   onGesture?: (e: NativeEvent<{ kind: 'palm' | 'status'; status?: string }>) => void;
+  /** Rear screen: report the live image's edge colours (~5×/s) for the glow around the viewfinder */
+  ambientGlow?: boolean;
+  onAmbient?: (e: NativeEvent<AmbientGlow>) => void;
   palmShutter?: boolean;
   shutterSound?: boolean;
   /** Open this rear camera id directly (null = the default rear camera) */
@@ -283,6 +286,9 @@ export async function openMedia(id: string, isVideo: boolean, chooser: boolean):
     return false;
   }
 }
+
+/** Edge colours of the live image (#RRGGBB), smoothed. */
+export type AmbientGlow = { leftTop: string; leftBottom: string; rightTop: string; rightBottom: string };
 
 export type FaceBox = { x: number; y: number; w: number; h: number; confidence: number };
 

@@ -6,6 +6,7 @@ import {getCameraDisplays,moveCameraDisplay,requestRearDisplayAccess,type Camera
 import type {CaptureMode,Lens} from '../camera/hardware';
 import {Glass} from './Glass';
 import {Slider,ModeCarousel,stripOrder} from './Controls';
+import {LinearGradient} from 'expo-linear-gradient';
 import {rearCameraFrame} from '../camera/rearLayout';
 
 export function useCameraScreens(locked: boolean,notify: (message: string)=>void) {
@@ -84,7 +85,25 @@ export function CameraScreenPicker({screens,locked}:{screens:ReturnType<typeof u
   </Modal>;
 }
 
-export function RearCameraBackdrop(){return <View style={[StyleSheet.absoluteFill,{backgroundColor:'#000'}]} />}
+type Glow={leftTop:string;leftBottom:string;rightTop:string;rightBottom:string};
+/**
+ * Rear-screen backdrop: the space under the lenses and behind the control rail glows with the live
+ * image's own edge colours, strongest beside the viewfinder and fading outward.
+ */
+export function RearCameraBackdrop({glow}:{glow?:Glow|null}){
+  const {width,height}=useWindowDimensions();const frame=rearCameraFrame(width,height);
+  const leftW=frame.left+30;const rightW=width-frame.left-frame.width+30;
+  return <View style={[StyleSheet.absoluteFill,{backgroundColor:'#000'}]} pointerEvents="none">
+    {glow&&leftW>30&&<View style={{position:'absolute',left:0,top:0,bottom:0,width:leftW}}>
+      <LinearGradient colors={[glow.leftTop,glow.leftBottom]} style={StyleSheet.absoluteFill}/>
+      <LinearGradient colors={['rgba(0,0,0,0.63)','rgba(0,0,0,0.20)']} start={{x:0,y:0}} end={{x:1,y:0}} style={StyleSheet.absoluteFill}/>
+    </View>}
+    {glow&&<View style={{position:'absolute',right:0,top:0,bottom:0,width:rightW}}>
+      <LinearGradient colors={[glow.rightTop,glow.rightBottom]} style={StyleSheet.absoluteFill}/>
+      <LinearGradient colors={['rgba(0,0,0,0.20)','rgba(0,0,0,0.63)']} start={{x:0,y:0}} end={{x:1,y:0}} style={StyleSheet.absoluteFill}/>
+    </View>}
+  </View>;
+}
 
 /** The rear screen's short mode list, in strip order (the current mode is always included). */
 export function rearModes<T extends {key:CaptureMode}>(modes:T[],mode:CaptureMode):T[]{
