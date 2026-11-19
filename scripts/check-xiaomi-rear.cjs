@@ -3,12 +3,12 @@ const filename=require('path').resolve('src/camera/rearLayout.ts');const m=new M
 m._compile(ts.transpileModule(fs.readFileSync(filename,'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS}}).outputText,filename);
 const {rearCameraFrame,cameraFocusPoint,mirrorPhoto}=m.exports;
 for(const [w,h] of [[976,596],[400,244],[320,200],[280,400]]){
- const f=rearCameraFrame(w,h);assert.equal(f.left,0,'No unused left section on the rear display');
+ const f=rearCameraFrame(w,h);assert.equal(f.left,w>h?Math.round(w*.40):0,'The live image starts right of the lenses on a landscape rear display');
  assert(f.width>0&&f.left+f.width<=w);
- const rail=w-f.width;assert(rail>=54&&rail<=96);
- assert(f.width>=w-.34*w,'Most of the rear display must be live image');
- assert.deepEqual(cameraFocusPoint(1,1,w,h,true),{x:1,y:1},'The previously blank area must accept focus');
- assert.equal(cameraFocusPoint(f.width,h/2,w,h,true),null,'Control-rail boundary is outside the camera');
+ const rail=w-f.left-f.width;assert(rail>=58&&rail<=110);
+ assert(f.width>=w*.40 && f.left+f.width<=w-58,'The live image fills the space between the lenses and the control rail');
+ assert.deepEqual(cameraFocusPoint(1,1,w,h,true),w>h?null:{x:1,y:1},'Taps under the lenses are not camera taps');
+ assert.equal(cameraFocusPoint(f.left+f.width,h/2,w,h,true),null,'Control-rail boundary is outside the camera');
  assert.deepEqual(cameraFocusPoint(f.left+f.width/2,h/2,w,h,true),{x:f.width/2,y:h/2});
  assert.equal(cameraFocusPoint(w-1,h/2,w,h,true),null,'Toolbar taps are outside the camera');
 }

@@ -182,6 +182,7 @@ const NativeModule = requireOptionalNativeModule<{
   detectFaces: (path: string) => Promise<FaceBox[]>;
   segmentPerson: (path: string) => Promise<PersonMask | null>;
   openMedia: (id: string, isVideo: boolean, chooser: boolean) => Promise<void>;
+  saveMedia: (path: string, isVideo: boolean) => Promise<string>;
   aiUpscale: (path: string, maxEdge: number) => Promise<AiUpscaleResult | null>;
   aiAvailable: () => boolean;
   getCaptureRequest: () => 'image' | 'video' | null;

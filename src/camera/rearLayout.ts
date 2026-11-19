@@ -1,8 +1,14 @@
-/** Fill the rear display up to a narrow control rail; focus stays in camera-local coordinates. */
+/**
+ * Share of a landscape rear display that sits under the two stacked camera lenses (left side on
+ * the Xiaomi 17 Pro Max). Nothing is drawn there; the live image starts just right of the lenses.
+ */
+export const REAR_LENS_ZONE=0.40;
+/** Live image between the lens zone and the control rail; focus stays in camera-local coordinates. */
 export function rearCameraFrame(width: number,height: number) {
-  const rail=Math.min(96,Math.max(54,width*.10));
-  const preview=Math.max(1,width-rail);
-  return {left:0,top:0,width:preview,height};
+  const lens=width>height?Math.round(width*REAR_LENS_ZONE):0;
+  const rail=Math.min(110,Math.max(58,width*.15));
+  const preview=Math.max(1,width-lens-rail);
+  return {left:lens,top:0,width:preview,height};
 }
 export function cameraFocusPoint(x:number,y:number,width:number,height:number,rear:boolean) {
   if(!rear)return {x,y};
