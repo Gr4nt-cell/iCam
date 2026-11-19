@@ -36,12 +36,13 @@ import { rearCameraFrame, cameraFocusPoint, mirrorPhoto } from './src/camera/rea
 import { filterByKey, type FilterKey } from './src/processing/filters';
 import { processSingle, type PhotoMeta } from './src/processing/pipeline';
 import { DEFAULT_PHOTO_SMOOTHING, restorePhotoSmoothing, captureSmoothing } from './src/processing/skinSettings';
-import { CameraScreenPicker, RearCameraControls, RearCameraBackdrop, useCameraScreens } from './src/ui/RearCamera';
+import { CameraScreenPicker, RearCameraControls, RearCameraBackdrop, useCameraScreens, rearModes } from './src/ui/RearCamera';
 import {
   FocusRing,
   IconButton,
   MODES,
   ModeCarousel,
+  stripOrder,
   Shutter,
   Thumb,
   Toast,
@@ -617,8 +618,9 @@ function CameraScreen() {
             if(!point)return;
             setFocus({ x: x + (L.rear ? 0 : L.frame.left), y: y + (L.rear ? 0 : L.frame.top), key: Date.now() });
             cam.current?.focus(point.x, point.y).catch(() => {});
-          } else if (Math.abs(g.dx) > 70 && Math.abs(g.dx) > Math.abs(g.dy) * 1.5 && !L.recording) {
-            const list = L.visibleModes;
+          } else if (Math.abs(g.dx) > (L.rear ? 36 : 70) && Math.abs(g.dx) > Math.abs(g.dy) * 1.5 && !L.recording) {
+            // Swipe to the neighbour the strip shows (the rear screen has its own shorter list)
+            const list = L.rear ? rearModes(L.visibleModes, L.mode) : stripOrder(L.visibleModes);
             const idx = list.findIndex((m) => m.key === L.mode);
             const next = list[clamp(idx + (g.dx < 0 ? 1 : -1), 0, list.length - 1)];
             changeModeRef.current(next.key);

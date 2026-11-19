@@ -5,7 +5,7 @@ import {MaterialCommunityIcons} from '@expo/vector-icons';
 import {getCameraDisplays,moveCameraDisplay,requestRearDisplayAccess,type CameraDisplays} from '../../modules/icamera';
 import type {CaptureMode,Lens} from '../camera/hardware';
 import {Glass} from './Glass';
-import {Slider} from './Controls';
+import {Slider,ModeCarousel,stripOrder} from './Controls';
 import {rearCameraFrame} from '../camera/rearLayout';
 
 export function useCameraScreens(locked: boolean,notify: (message: string)=>void) {
@@ -86,6 +86,12 @@ export function CameraScreenPicker({screens,locked}:{screens:ReturnType<typeof u
 
 export function RearCameraBackdrop(){return <View style={[StyleSheet.absoluteFill,{backgroundColor:'#000'}]} />}
 
+/** The rear screen's short mode list, in strip order (the current mode is always included). */
+export function rearModes<T extends {key:CaptureMode}>(modes:T[],mode:CaptureMode):T[]{
+  const main:CaptureMode[]=['portrait','photo','video','action'];
+  return stripOrder(modes.filter(m=>main.includes(m.key)||m.key===mode));
+}
+
 export function RearCameraControls(p:{
   mode:CaptureMode;video:boolean;modes:{key:string;label:string}[];recording:boolean;paused:boolean;busy:boolean;locked:boolean;
   countdown:number;stops:Lens[];zoomLabel:string;onMode:(mode:CaptureMode)=>void;onLens:(lens:Lens)=>void;
@@ -96,8 +102,7 @@ export function RearCameraControls(p:{
   const rail=width-frame.left-frame.width;const size=Math.min(72,Math.max(44,rail-10));
   const button=Math.min(44,Math.max(30,height*.1));const gap=Math.min(10,Math.max(4,height*.015));
   const [beauty,setBeauty]=useState(false);
-  const mainModes=['video','photo','portrait','action'];
-  const modes=p.modes.filter(m=>mainModes.includes(m.key)||m.key===p.mode).sort((a,b)=>mainModes.indexOf(a.key)-mainModes.indexOf(b.key));
+  const modes=rearModes(p.modes as {key:CaptureMode;label:string}[],p.mode);
   const nextLens=()=>{if(!p.stops.length)return;const i=p.stops.findIndex(s=>s.label===p.zoomLabel);p.onLens(p.stops[(i+1+p.stops.length)%p.stops.length])};
   return <View pointerEvents="box-none" style={StyleSheet.absoluteFill}>
     <Pressable accessibilityRole="button" accessibilityLabel="Return camera to front screen" disabled={p.locked} onPress={p.onScreens}
@@ -113,9 +118,8 @@ export function RearCameraControls(p:{
       {!!p.toast&&<Text numberOfLines={2} style={s.toast}>{p.toast}</Text>}
       {p.countdown>0&&<Text style={s.countdown}>{p.countdown}</Text>}
       {beauty&&<View style={s.panel}><Text style={s.white}>Skin {Math.round(p.skin*100)}</Text><Slider value={p.skin} min={0} max={1} onChange={p.onSkin}/></View>}
-      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.modeLabels}>
-        {modes.map(m=><Pressable key={m.key} disabled={p.recording||p.busy} onPress={()=>p.onMode(m.key as CaptureMode)} style={s.modeLabel}><Text style={[s.modeText,p.mode===m.key&&s.modeOn]}>{m.label}</Text><View style={[s.modeDot,p.mode===m.key&&s.modeDotOn]}/></Pressable>)}
-      </ScrollView>
+      {/* Same centred strip as the main screen: the current mode sits in the middle of the live image */}
+      <ModeCarousel mode={p.mode} modes={modes} onChange={p.onMode} disabled={p.recording||p.busy}/>
     </View>
   </View>;
 }

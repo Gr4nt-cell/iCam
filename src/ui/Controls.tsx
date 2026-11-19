@@ -254,6 +254,10 @@ function ZoomDial({ zoom, min, max, stops }: { zoom: number; min: number; max: n
 
 /** Preferred left-to-right order for the single mode strip. */
 const STRIP_ORDER: CaptureMode[] = ['pro', 'night', 'portrait', 'photo', 'video', 'slowmo', 'action', 'dual', 'macro'];
+/** Modes in the order the strip shows them, so a swipe moves to the visible neighbour. */
+export function stripOrder<T extends { key: CaptureMode }>(modes: T[]): T[] {
+  return [...modes].sort((x, y) => STRIP_ORDER.indexOf(x.key) - STRIP_ORDER.indexOf(y.key));
+}
 
 export function ModeCarousel({
   mode,
@@ -272,7 +276,7 @@ export function ModeCarousel({
 }) {
   const { width } = useWindowDimensions();
   const group = modeGroup(mode, proVideo);
-  const strip = [...modes].sort((x, y) => STRIP_ORDER.indexOf(x.key) - STRIP_ORDER.indexOf(y.key));
+  const strip = stripOrder(modes);
   const scroll = useRef<ScrollView>(null);
   const spots = useRef<Record<string, { x: number; w: number }>>({});
   const [barW, setBarW] = useState(width);
