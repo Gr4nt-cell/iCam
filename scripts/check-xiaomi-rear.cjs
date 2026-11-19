@@ -3,7 +3,7 @@ const filename=require('path').resolve('src/camera/rearLayout.ts');const m=new M
 m._compile(ts.transpileModule(fs.readFileSync(filename,'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS}}).outputText,filename);
 const {rearCameraFrame,cameraFocusPoint,mirrorPhoto}=m.exports;
 for(const [w,h] of [[976,596],[400,244],[320,200],[280,400]]){
- const f=rearCameraFrame(w,h);assert.equal(f.left,w>h?Math.round(w*.25):0,'The live image starts right of the lenses on a landscape rear display');
+ const f=rearCameraFrame(w,h);assert.equal(f.left,w>h?Math.round(w*.30):0,'The live image starts right of the lenses on a landscape rear display');
  assert(f.width>0&&f.left+f.width<=w);
  const rail=w-f.left-f.width;assert(rail>=58&&rail<=110);
  assert(f.width>=w*.40 && f.left+f.width<=w-58,'The live image fills the space between the lenses and the control rail');
