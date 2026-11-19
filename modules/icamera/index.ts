@@ -266,6 +266,12 @@ export async function segmentPerson(path: string): Promise<PersonMask | null> {
   }
 }
 
+/** Saves a capture into DCIM/iCam via MediaStore; returns its MediaStore id, or null if unavailable. */
+export async function saveMedia(path: string, isVideo: boolean): Promise<string | null> {
+  if (!NativeModule?.saveMedia) return null;
+  return await NativeModule.saveMedia(path, isVideo);
+}
+
 /** Open a saved photo/video in the gallery app (default) or via the "Open with" picker. */
 export async function openMedia(id: string, isVideo: boolean, chooser: boolean): Promise<boolean> {
   try {

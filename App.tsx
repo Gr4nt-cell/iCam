@@ -12,6 +12,7 @@ import {
   requestUiRefreshRate,
   detectFaces,
   openMedia,
+  saveMedia,
   segmentPerson,
   getCapabilities,
   getCaptureRequest,
@@ -372,6 +373,11 @@ function CameraScreen() {
 
   const saveToGallery = useCallback(
     async (uri: string): Promise<string | undefined> => {
+      const isVideo = /\.(mp4|mov|3gp|webm)$/i.test(uri);
+      try {
+        const id = await saveMedia(uri, isVideo);
+        if (id) return id;
+      } catch {}
       const asset = await MediaLibrary.createAssetAsync(uri);
       if(!asset?.id)throw new Error('The gallery did not save this capture');
       return asset.id;
@@ -565,10 +571,9 @@ function CameraScreen() {
  /* ---------- open the last capture: iCam viewer, gallery app, or "Open with" ---------- */
   const openLast = useCallback(async () => {
     if (!last) return;
-    if(!last.isVideo && last.uri && galleryPref==='viewer'){setViewerOpen(true);return;}
     const source=last.assetId ?? last.uri;
     if(!source){flashToast('Still saving — try again in a moment');return;}
-    const ok = await openMedia(source, last.isVideo, galleryPref==='ask');
+    const ok = await openMedia(source, last.isVideo, false);
     if (!ok) flashToast('No gallery app is available to open it');
   }, [last, galleryPref, flashToast]);
 

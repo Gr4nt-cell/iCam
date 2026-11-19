@@ -86,6 +86,30 @@ class ICameraModule : Module() {
       activity.startActivity(intent)
     }.runOnQueue(expo.modules.kotlin.functions.Queues.MAIN)
 
+    /** Saves a capture into DCIM/iCam through MediaStore and returns its id (no gallery permission needed). */
+    AsyncFunction("saveMedia") { path: String, isVideo: Boolean ->
+      val ctx = appContext.reactContext ?: throw IllegalStateException("No context")
+      val src = java.io.File(android.net.Uri.parse(path).path ?: path.removePrefix("file://"))
+      require(src.isFile && src.length() > 0) { "Capture file is empty or missing" }
+      val lower = src.name.lowercase()
+      val mime = if (isVideo) "video/mp4" else if (lower.endsWith(".heic") || lower.endsWith(".heif")) "image/heic" else if (lower.endsWith(".png")) "image/png" else "image/jpeg"
+      val collection = if (isVideo) android.provider.MediaStore.Video.Media.EXTERNAL_CONTENT_URI else android.provider.MediaStore.Images.Media.EXTERNAL_CONTENT_URI
+      val values = android.content.ContentValues().apply {
+        put(android.provider.MediaStore.MediaColumns.DISPLAY_NAME, src.name)
+        put(android.provider.MediaStore.MediaColumns.MIME_TYPE, mime)
+        put(android.provider.MediaStore.MediaColumns.RELATIVE_PATH, "DCIM/iCam")
+        put(android.provider.MediaStore.MediaColumns.DATE_TAKEN, System.currentTimeMillis())
+        put(android.provider.MediaStore.MediaColumns.IS_PENDING, 1)
+      }
+      val resolver = ctx.contentResolver
+      val uri = resolver.insert(collection, values) ?: throw IllegalStateException("The gallery refused the capture")
+      try {
+        requireNotNull(resolver.openOutputStream(uri, "w")) { "Could not open the gallery file" }.use { o -> src.inputStream().use { it.copyTo(o, 1 shl 20) } }
+        resolver.update(uri, android.content.ContentValues().apply { put(android.provider.MediaStore.MediaColumns.IS_PENDING, 0) }, null, null)
+      } catch (e: Exception) { resolver.delete(uri, null, null); throw e }
+      android.content.ContentUris.parseId(uri).toString()
+    }
+
     /** Person mask for Portrait mode (grayscale PNG, upright, 1 = person). */
     AsyncFunction("segmentPerson") { path: String ->
       val ctx = appContext.reactContext ?: throw IllegalStateException("No context")

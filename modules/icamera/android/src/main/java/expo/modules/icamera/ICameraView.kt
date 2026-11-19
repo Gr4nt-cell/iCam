@@ -956,7 +956,9 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
     // Xiaomi's own camera never requests OIS together with EIS (its HAL treats both as a conflict
     // and wobbles when walking); other phones keep the two layered.
     val ois = wantStab && oisSupported(info) && !(hardwareEis && isXiaomi())
-    val useEffect = !hdr
+    // 4K records straight from the camera with hardware stabilization: the live-effect pipeline shares
+    // one stream between preview and recording, and that shared stream was capping 4K at 720p.
+    val useEffect = !hdr && !uhd
     val vb = VideoCapture.Builder(recorder)
       .setMirrorMode(if (rearSelfie) MirrorMode.MIRROR_MODE_ON else if (mirror) MirrorMode.MIRROR_MODE_ON_FRONT_ONLY else MirrorMode.MIRROR_MODE_OFF)
     forceSize?.let { size ->
@@ -1095,6 +1097,11 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
         p.bindToLifecycle(owner,sel,newPreview(nativePlan.preview,wantStab && oisSupported(info)),plain.build().also{videoCapture=it})
           .also{emitError("Using a conservative recording profile after the camera rejected the requested effects/stabilization combination") }
       }
+    }
+    if(uhd){
+      // Say plainly when this camera can't give 4K with these settings, instead of a silent drop.
+      val size=try{videoCapture?.resolutionInfo?.resolution}catch(_:Throwable){null}
+      if(size!=null && maxOf(size.width,size.height)<3000)emitError("4K isn't available on this camera with these settings — recording at ${maxOf(size.width,size.height)}×${minOf(size.width,size.height)}")
     }
     if(hdr && wantStab && !videoHardwareStabilized)emitError(if(oisSupported(info))
       "This HDR setting uses optical stabilization only. Choose SDR for live software stabilization."

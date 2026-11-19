@@ -55,15 +55,9 @@ class SteadyFrameTest {
       assertTrue(abs(t.y)+(c+s*(16.0/9))/(2*t.crop)<=.5+.00001)
     }
   }
-  @Test fun hardwareStabilizationOnlyKeepsASmallSuperSteadyMargin() {
-    for(mode in listOf("video","pvideo")) assertEquals(1f,CaptureStability.crop(mode,"standard",false,true),0f)
-    for(mode in listOf("video","action","pvideo")) for(setting in listOf("standard","cinematic")) for(front in listOf(false,true)) {
-      val c=CaptureStability.crop(mode,setting,front,true)
-      assertTrue(c>=1f && c<=1.10f)
-      assertTrue(c<=CaptureStability.crop(mode,setting,front,false) || c==1f || mode=="action")
-    }
-    assertEquals(1.06f,CaptureStability.crop("video","cinematic",false,true),0f)
-    assertEquals(1.10f,CaptureStability.crop("action","standard",false,true),0f)
+  @Test fun hardwareStabilizationNeverGetsACumulativeCrop() {
+    for(mode in listOf("video","action","pvideo")) for(setting in listOf("standard","cinematic"))
+      assertEquals(1f,CaptureStability.crop(mode,setting,false,true),0f)
     assertEquals(1f,CaptureStability.crop("video","off"),0f)
     assertTrue(CaptureStability.crop("action","standard")<=1.15f)
   }

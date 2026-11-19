@@ -9,14 +9,11 @@ internal data class CaptureStabilityPlan(val preview: Boolean?, val video: Boole
 }
 
 /**
- * A single, fixed software margin. Like Xiaomi's Super steady (hardware EIS plus a wider crop
- * window), cinematic and action keep a small residual margin over hardware EIS so walking bounce
- * that EIS leaves behind is smoothed too; standard hardware EIS is not cropped again.
+ * A single, fixed software margin. Hardware EIS never gets a second software correction: stacking
+ * frame-based correction on rolling-shutter frames that EIS already moved bends straight lines.
  */
 internal object CaptureStability {
   fun crop(mode: String, setting: String, front: Boolean = false, hardware: Boolean = false): Float = when {
-    hardware && mode == "action" -> if (front) 1.06f else 1.10f
-    hardware && setting == "cinematic" -> if (front) 1.04f else 1.06f
     hardware || (mode != "action" && setting == "off") -> 1f
     mode == "action" -> if (front) 1.10f else 1.15f
     setting == "cinematic" -> if (front) 1.06f else 1.10f
