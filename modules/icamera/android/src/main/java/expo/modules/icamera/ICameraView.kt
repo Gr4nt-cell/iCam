@@ -10,7 +10,6 @@ import android.util.Range
 import android.view.View
 import android.view.ViewGroup
 import android.view.MotionEvent
-import android.view.TextureView
 import androidx.camera.camera2.interop.Camera2CameraControl
 import androidx.camera.camera2.interop.Camera2CameraInfo
 import androidx.camera.camera2.interop.CaptureRequestOptions
@@ -227,54 +226,6 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
   }
   private val root = android.widget.FrameLayout(context)
   private var portraitProcessor: PortraitProcessor? = null
-
-  /* ---------------- direct 4K (Camera2 + MediaRecorder) ---------------- */
-  private val directTexture = TextureView(context).apply { visibility = View.GONE }
-  private var direct: DirectVideo? = null
-  private fun closeDirect() {
-    direct?.close(); direct = null
-    directTexture.visibility = View.GONE
-    previewView.visibility = View.VISIBLE
-  }
-  /** 4K when the camera library caps this phone lower: open the lens directly at its real recording size. */
-  @OptIn(ExperimentalCamera2Interop::class)
-  @androidx.annotation.OptIn(markerClass = [ExperimentalCamera2Interop::class])
-  private fun bindDirect(info: androidx.camera.core.CameraInfo): Boolean {
-    val front = facing == "front"
-    val id = try { Camera2CameraInfo.from(info).cameraId } catch (_: Throwable) { return false }
-    val pick = LensScan.pick(context, id, front, 3840)
-    if (pick == null) {
-      val scan = LensScan.all(context).filter { it.front == front }.joinToString("; ") { it.describe() }
-      emitError("No lens offers 4K to apps here (lens scan: $scan)")
-      return false
-    }
-    previewView.visibility = View.INVISIBLE
-    directTexture.visibility = View.VISIBLE
-    val rate = if (fps >= 60) 60 else 30
-    direct = DirectVideo(context, directTexture, pick.first, pick.second, rate, if (rate >= 60) 100_000_000 else 72_000_000) { msg -> post { emitError(msg) } }
-      .also { d -> d.zoom = zoom; postDelayed({ if (direct === d) d.open() }, 350) }
-    boundFrameRate = rate
-    videoHardwareStabilized = true
-    return true
-  }
-  private fun beginDirect(d: DirectVideo) {
-    val file = File(context.cacheDir, "iCam_video_${System.currentTimeMillis()}.mp4")
-    val mic = audio && ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
-    try { d.startRecording(file, deviceDeg, mic) } catch (e: Throwable) {
-      emitRecordingFinished(mapOf("path" to null, "durationMs" to 0.0, "slowMotion" to false, "error" to "4K recorder: ${e.message}")); return
-    }
-    palm.setEnabled(false); keepScreenOn = true; rootView?.keepScreenOn = true
-  }
-  private fun stopDirect(d: DirectVideo) {
-    val (file, dur, err) = d.stopRecording()
-    keepScreenOn = false; rootView?.keepScreenOn = false
-    val ok = file != null && RecordedClip.hasVideoSample(file)
-    val dims = if (ok) RecordedClip.dimensions(file!!) else null
-    emitRecordingFinished(mapOf("path" to if (ok) file!!.absolutePath else null, "durationMs" to dur, "slowMotion" to false,
-      "width" to dims?.first, "height" to dims?.second, "error" to (err ?: if (!ok) "No playable video frames were recorded" else null)))
-    playSound(android.media.MediaActionSound.STOP_VIDEO_RECORDING)
-    updateGestures()
-  }
   private var bokeh = 0.6f
   private var dualComposed = false
   private var pendingDualRecord = false
@@ -282,7 +233,6 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
   init {
     addView(root, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
     root.addView(previewView)
-    root.addView(directTexture, android.widget.FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
     root.addView(
       pipContainer,
       android.widget.FrameLayout.LayoutParams(1, 1, android.view.Gravity.TOP or android.view.Gravity.START),
@@ -542,10 +492,6 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
   private var macroZoom: Float? = null
 
   private fun applyZoom() {
-    direct?.let { d ->
-      val front = facing == "front"
-      d.zoom = PhoneCameraPolicy.hardwareZoom(front, zoom, d.zoomRange.lower, d.zoomRange.upper); d.update(); return
-    }
     val cam = camera ?: return
     val z = cam.cameraInfo.zoomState.value
     val zMin = z?.minZoomRatio ?: 1f
@@ -617,8 +563,6 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
 
   override fun onDetachedFromWindow() {
     super.onDetachedFromWindow()
-    direct?.takeIf { it.recording }?.let { stopDirect(it) }
-    closeDirect()
     removeCallbacks(ambientTick)
     try { orientationListener.disable() } catch (_: Throwable) {}
     cancelPendingStart();stopAfterSwitch=true
@@ -671,7 +615,6 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
 
   private fun rebind() {
     if (!isAttachedToWindow || RearDisplayRouter.isMoving) return
-    if (direct?.recording == true) return
     if(startingRec)cancelPendingStart()
     if (recording != null) {
       // Front/back switch mid-video (Xiaomi-style): close this piece, re-open on the other camera,
@@ -689,7 +632,6 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
         if(!isAttachedToWindow || RearDisplayRouter.isMoving)return@withProvider
         stabilityEpoch++; requestedSharedStability=false
         p.unbindAll()
-        closeDirect()
         camera = null; imageCapture = null; videoCapture = null
         usingNightExtension = false; activeExtension = null; slowFps = 0
         effectPreview = false; macroZoom = null; ownMode = false
@@ -720,16 +662,15 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
         setTorch(torch)
         applyControls()
         val z = camera?.cameraInfo?.zoomState?.value
-        val dz = direct?.zoomRange
-        val baseZoom = PhoneCameraPolicy.zoomBase((if (mode == "dual") dualPrimary == "front" else facing == "front") , z?.minZoomRatio ?: dz?.lower ?: 1f)
+        val baseZoom = PhoneCameraPolicy.zoomBase((if (mode == "dual") dualPrimary == "front" else facing == "front") , z?.minZoomRatio ?: 1f)
         emitReady(
           mapOf(
             "mode" to mode,
             "slowMotionFps" to slowFps,
             "nightExtension" to (activeExtension == "night"),
             "extension" to activeExtension,
-            "zoomMin" to ((z?.minZoomRatio ?: dz?.lower ?: 1f) / baseZoom).toDouble(),
-            "zoomMax" to ((z?.maxZoomRatio ?: dz?.upper ?: 1f) / baseZoom).toDouble(),
+            "zoomMin" to ((z?.minZoomRatio ?: 1f) / baseZoom).toDouble(),
+            "zoomMax" to ((z?.maxZoomRatio ?: 1f) / baseZoom).toDouble(),
             "hasFlash" to (camera?.cameraInfo?.hasFlashUnit() ?: false),
             "recordingFps" to boundFrameRate,
           ),
@@ -1008,10 +949,6 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
     val action = mode == "action"
     val portraitVideo = mode == "pvideo"
     val selfieVideo = facing == "front"
-    if (mode == "video" && videoQuality == "uhd" && !hdrVideo) {
-      val libraryUhd = try { VideoCaps.of(info).getSupportedQualities(DynamicRange.SDR).contains(Quality.UHD) } catch (_: Throwable) { false }
-      if (!libraryUhd && bindDirect(info)) return
-    }
     val hdrRanges = try { Recorder.getVideoCapabilities(info).supportedDynamicRanges } catch (_: Throwable) { emptySet<DynamicRange>() }
     val hdrRange = if (!hdrVideo || portraitVideo) null else when {
       hdrRanges.contains(DynamicRange.HLG_10_BIT) -> DynamicRange.HLG_10_BIT
@@ -1594,16 +1531,15 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
   }
   fun startRecording() {
     check(isAttachedToWindow && active && !RearDisplayRouter.isMoving) { "Camera is not active" }
-    if(joiningVideo || startingRec || recording!=null || ownRec!=null || direct?.recording==true)return
+    if(joiningVideo || startingRec || recording!=null || ownRec!=null)return
     stopAfterSwitch=false
     if(mode=="dual" && !dualComposed){dualComposed=true;pendingDualRecord=true;scheduleRebind();return}
-    if(!ownMode && direct==null)check(videoCapture!=null) { "Video is not ready in this mode" }
+    if(!ownMode)check(videoCapture!=null) { "Video is not ready in this mode" }
     fun begin(){
       if(!isAttachedToWindow || !active || RearDisplayRouter.isMoving){
         emitRecordingFinished(mapOf("durationMs" to 0.0,"slowMotion" to false,"error" to "Recording cancelled"));return
       }
-      val d=direct
-      if(d!=null)beginDirect(d) else if(ownMode)beginOwnRecording() else beginRecording(videoCapture ?: throw IllegalStateException("Video is not ready"))
+      if(ownMode)beginOwnRecording() else beginRecording(videoCapture ?: throw IllegalStateException("Video is not ready"))
     }
     if(soundOn){
       val token=recordingStart.begin()
@@ -1779,7 +1715,6 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
 
   fun stopRecording() {
     if(startingRec || pendingDualRecord){cancelPendingStart();return}
-    direct?.takeIf { it.recording }?.let { stopDirect(it); return }
     if (ownRec != null) { stopOwnRecording(); return }
     // Stopped while switching cameras: finish with the pieces recorded so far
     if (segmentSwitching && recording == null) { stopAfterSwitch = true; return }
@@ -1933,12 +1868,10 @@ class ICameraView(context: Context, appContext: AppContext) : ExpoView(context, 
   private fun makePersistent(p: androidx.camera.video.PendingRecording) = p.asPersistentRecording()
 
   fun pauseRecording() {
-    direct?.takeIf { it.recording }?.let { it.pause(); emitRecordingState(mapOf("paused" to true)); return }
     ownRec?.let { it.pause(); emitRecordingState(mapOf("paused" to true)); return }
     recording?.pause()
   }
   fun resumeRecording() {
-    direct?.takeIf { it.recording }?.let { it.resume(); emitRecordingState(mapOf("paused" to false)); return }
     ownRec?.let { it.resume(); emitRecordingState(mapOf("paused" to false)); return }
     recording?.resume()
   }
